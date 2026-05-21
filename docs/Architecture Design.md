@@ -143,7 +143,6 @@ Workflow files live in the `--workflows` directory (default: `.`). Each file is 
 # What events trigger this workflow
 [trigger]
 type = "github_issue_assigned"
-actions = ["assigned"]
 assigned_to = "zeroklaw"
 
 # Git configuration
@@ -182,8 +181,8 @@ Trigger types are prefixed with the platform name — `github_` or `gitlab_` —
 
 **GitHub trigger types:**
 
-| Type                                 | GitHub Event                  | Action      |
-| ------------------------------------ | ----------------------------- | ----------- |
+| Type                                 | GitHub Event                  | Fixed Action  |
+| ------------------------------------ | ----------------------------- | ------------- |
 | `github_issue_assigned`              | `issues`                      | `assigned`  |
 | `github_issue_comment`               | `issue_comment`               | `created`   |
 | `github_pull_request_review`         | `pull_request_review`         | `submitted` |
@@ -191,9 +190,9 @@ Trigger types are prefixed with the platform name — `github_` or `gitlab_` —
 
 **GitLab trigger types:**
 
-| Type                                  | GitLab Event | Object Kind                                            |
+| Type                                  | GitLab Event | Fixed Action/Object Kind                               |
 | ------------------------------------- | ------------ | ------------------------------------------------------ |
-| `gitlab_issue_assigned`               | `Issue Hook` | `issue`                                                |
+| `gitlab_issue_assigned`               | `Issue Hook` | `issue` (action: `update`)                             |
 | `gitlab_note`                         | `Note Hook`  | `note`                                                 |
 | `gitlab_merge_request_review`         | `Note Hook`  | `note` (noteable_type = MergeRequest)                  |
 | `gitlab_merge_request_review_comment` | `Note Hook`  | `note` (noteable_type = MergeRequest, type = DiffNote) |
@@ -232,7 +231,6 @@ If different repos need different workflows, use `[trigger]` filters (e.g., `ass
 | Field | Purpose | Default |
 |---|---|---|
 | `[trigger].type` | Event type (e.g. `github_issue_assigned`, `gitlab_merge_request_review`) | required |
-| `[trigger].actions` | Event actions to match | varies by type |
 | `[trigger].assigned_to` | Filter: only fire for this assignee | none (any) |
 | `[trigger].allowed_users` | Filter: only fire for these users | none (any) |
 | `[git].clone` | Whether to git clone the repo | `true` |
@@ -429,6 +427,16 @@ Trigger-specific variables:
 
 Additional variables are extracted automatically from the platform's event JSON and merged into the template variable map. Webhook payloads carry the full event data, giving template authors access to rich context beyond just numeric IDs.
 
+### Prompt Template Validation
+
+At startup, the orchestrator validates all prompt templates:
+
+- **Variable existence**: Each `{{variable}}` placeholder is checked against the known set of global and trigger-specific variables. Unknown variables cause a hard exit.
+- **Syntax errors**: Malformed placeholders (e.g., `{{variable`, `{{ }}`) are rejected.
+- **Empty templates**: Templates that are empty or whitespace-only after rendering are flagged.
+
+This catches user error early, before any webhook is received.
+
 ### Hooks
 
 Pre/post step hooks:
@@ -555,12 +563,16 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
     repo/                     # git clone
     {workspace_id}/           # per-event workspace
       worktree-{N}/           # per-event worktree (if git.worktree = true)
-      step_00_Plan.log        # harness output
+      step_00_Plan.log        # harness stdout/stderr
       step_00_Plan.error      # error details (if step failed)
       step_00_Plan.prompt     # rendered prompt for auditing
+      step_00_Plan.request.json  # full Hermes API request (for debugging)
+      step_00_Plan.response.json # full Hermes API response (for debugging)
       step_01_Implement.log
       step_01_Implement.error
       step_01_Implement.prompt
+      step_01_Implement.request.json
+      step_01_Implement.response.json
 ```
 
 `workdir` defaults to `~/.agent-orchestrator` and is configurable in `config.toml`.
@@ -697,7 +709,6 @@ webhook_secret = "your-gitlab-webhook-token"
 ```toml
 [trigger]
 type = "github_issue_assigned"
-actions = ["assigned"]
 assigned_to = "zeroklaw"
 
 [git]
@@ -726,7 +737,6 @@ Create a PR with your changes.
 ```toml
 [trigger]
 type = "github_pull_request_review"
-actions = ["submitted"]
 allowed_users = ["zeroklaw"]
 
 [git]
@@ -747,7 +757,6 @@ Review ID: {{review_id}}
 ```toml
 [trigger]
 type = "gitlab_issue_assigned"
-actions = ["update"]
 
 [git]
 clone = true
@@ -775,7 +784,6 @@ Create an MR with your changes.
 ```toml
 [trigger]
 type = "gitlab_merge_request_review"
-actions = ["created"]
 
 [git]
 clone = true
