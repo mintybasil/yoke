@@ -826,3 +826,108 @@ Review ID: {{review_id}}
 15. **Assignment-only issue triggers**: The `github_issue_assigned` and `gitlab_issue_assigned` trigger types fire on the assignment event only, not on issue open. "Issue opened" is a semantically distinct event (the issue exists but no one is responsible for acting on it yet) and warrants its own trigger type if needed in the future. Conflating the two would require workflows to handle two different contexts (newly filed vs. explicitly assigned) in the same template logic.
 
 16. **GitLab review triggers mirror GitHub**: GitLab does not have separate webhook events for "review submitted" vs. "inline review comment" — both arrive as `Note Hook` events. The orchestrator splits them into `gitlab_merge_request_review` (any Note on a MergeRequest) and `gitlab_merge_request_review_comment` (DiffNote on a MergeRequest) to maintain naming parity with GitHub's `github_pull_request_review` and `github_pull_request_review_comment`. The split is implemented by inspecting the `noteable_type` and `type` fields in the Note Hook payload. This gives workflow authors a consistent trigger vocabulary across platforms, even though the underlying webhook mechanism differs.
+
+## 18. Operations
+
+### Webhook Management CLI
+
+The orchestrator provides CLI subcommands to configure and remove webhooks on the platform. These commands are idempotent and safe to run multiple times.
+
+```bash
+# Configure webhooks for all repos in config.toml
+agent-orchestrator webhooks add --config config.toml
+
+# Remove webhooks (e.g., before decommissioning)
+agent-orchestrator webhooks remove --config config.toml
+
+# List configured webhooks (idempotency check)
+agent-orchestrator webhooks list --config config.toml
+```
+
+**`webhooks add` behavior:**
+
+For each repo in `config.toml`:
+1. Check if a webhook exists with matching URL (`https://your-orchestrator-host/webhook`)
+2. If yes: update the webhook secret and event subscriptions
+3. If no: create a new webhook with the configured secret
+4. Report summary: created/updated/skipped count
+
+**`webhooks remove` behavior:**
+
+For each repo in `config.toml`:
+1. Find webhooks matching the orchestrator's URL
+2. Delete matching webhooks
+3. Report summary: deleted count
+
+**`webhooks list` behavior:**
+
+For each repo in `config.toml`:
+1. Fetch all webhooks
+2. Display: URL, secret (last 4 chars only), events subscribed, active status
+3. Highlight which webhooks match the orchestrator's configuration
+
+### Initial Setup
+
+1. Deploy the orchestrator and note its public URL (e.g., `https://orchestrator.example.com`)
+2. Set `webhook_secret` in `config.toml`
+3. Run `agent-orchestrator webhooks add --config config.toml`
+4. Verify with `agent-orchestrator webhooks list --config config.toml`
+5. Start the orchestrator daemon
+
+The `webhooks add` command configures the platform to send events for the specific event types the orchestrator handles:
+
+**GitHub events:**
+- `issues` (action: `assigned`)
+- `issue_comment` (action: `created`)
+- `pull_request_review` (action: `submitted`)
+- `pull_request_review_comment` (action: `created`)
+
+**GitLab events:**
+- `Issue Hook`
+- `Note Hook`
+
+### Secret Rotation
+
+To rotate the webhook secret:
+
+1. Generate a new secret (e.g., `openssl rand -hex 32`)
+2. Update `webhook_secret` in `config.toml`
+3. Run `agent-orchestrator webhooks add --config config.toml` — this updates the secret on all platform webhooks
+4. Restart the orchestrator to load the new secret
+
+There is no grace period — the secret changes atomically. If the restart fails, the platform will be sending webhooks with the new secret but the orchestrator will reject them (logged as 401). Roll back by reverting `config.toml` and running `webhooks add` again.
+
+### Decommissioning
+
+Before shutting down an orchestrator instance permanently:
+
+1. Run `agent-orchestrator webhooks remove --config config.toml`
+2. Verify with `webhooks list` that webhooks are deleted
+3. Stop the orchestrator daemon
+
+This prevents the platform from continuing to send webhooks to a dead endpoint, which would fill up delivery failure logs.
+
+### Troubleshooting
+
+**Webhooks not being received:**
+
+1. Run `webhooks list` to verify webhooks exist and are active
+2. Check platform delivery logs (GitHub: repo Settings → Webhooks → Recent Deliveries; GitLab: Settings → Webhooks → Recent Events)
+3. Look for non-2xx responses or timeouts
+4. Verify the orchestrator's public URL is reachable (test with `curl -X POST https://your-host/webhook`)
+
+**401 errors in orchestrator logs:**
+
+- Secret mismatch between `config.toml` and platform webhook configuration
+- Run `webhooks add` to sync the secret, then restart
+
+**503 Service Unavailable:**
+
+- Dispatcher is overwhelmed (all semaphore slots in use)
+- Increase `[runtime].max_concurrent` or reduce webhook event volume
+
+**Missing events:**
+
+- Check if the event type + action matches a configured trigger
+- Verify the repo is listed in `config.toml`
+- Check platform delivery logs for failed deliveries (platform may have stopped retrying)
