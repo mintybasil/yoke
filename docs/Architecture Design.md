@@ -4,8 +4,6 @@
 
 The orchestrator is a Rust daemon that receives webhook events from a code platform (GitHub or GitLab) via a built-in HTTP server, deduplicates them, and runs multi-step agent workflows through the Hermes Agent REST API.
 
-A single orchestrator instance handles one platform. To support both GitHub and GitLab, run two instances with separate configs.
-
 The code platform delivers webhook events to the orchestrator's HTTP server. The daemon verifies, parses, and routes each event to a workflow runner, which executes a sequence of agent steps via the Hermes `/v1/responses` endpoint. Each step is a prompt template rendered with event variables and sent as a request to the Hermes API.
 
 ### Design Goals
@@ -17,14 +15,6 @@ The code platform delivers webhook events to the orchestrator's HTTP server. The
 5. **Graceful shutdown** — SIGINT/SIGTERM drains active workflows, persists state, exits. Second signal forces immediate exit.
 6. **Hot-reload** — Workflow TOML files are reloaded on change without restart.
 7. **Config separation** — User-specific settings (repos, agent instances, concurrency) live in a global `config.toml`. Workflow definitions (triggers, steps, git opts) are reusable `.toml` files that reference agents by name.
-
-### Non-Goals
-
-- Horizontal scaling or multi-instance coordination
-- Built-in retry with exponential backoff (GitHub and GitLab handle webhook retries)
-- Metrics / Prometheus endpoint
-- Intra-workflow branching or conditional step execution
-- Webhook delivery to external systems (the orchestrator receives webhooks, it doesn't send them)
 
 ## 2. High-Level Architecture
 
@@ -93,7 +83,7 @@ The webhook handler identifies the repo the event belongs to and matches it agai
 
 Configuration is split into two files with distinct responsibilities:
 
-1. **`config.toml`** — global, user-specific settings that tie the daemon to a particular deployment. Contains the platform choice, repos, named agent instances, runtime settings, and server settings.
+1. **`config.toml`** — global settings, including platform choice, repos, named agent instances, runtime settings, and server settings.
 2. **Workflow `.toml` files** — reusable workflow definitions that can be shared across deployments. Contain triggers, steps, git options, and a reference to an agent by name.
 
 This separation means a workflow definition (e.g., "plan-then-implement") can be applied to any repo and any agent instance by wiring it in `config.toml`, without duplicating the step templates or prompt logic.
@@ -157,7 +147,7 @@ agent = "local"
 prompt_template = """
 You are an expert software engineer. Issue {{owner}}/{{repo}}#{{issue_number}} has been assigned to you.
 Read the issue and create an implementation plan.
-Save the plan to {{output_path}}/plan.md
+Save the plan to {{output_dir}}/plan.md
 
 Issue details: {{{issue_body}}}
 """
@@ -167,7 +157,7 @@ name = "Implement"
 agent = "local"
 prompt_template = """
 You are an expert software engineer working on {{owner}}/{{repo}}#{{issue_number}}.
-Read the plan at {{output_path}}/plan.md and implement it.
+Read the plan at {{output_dir}}/plan.md and implement it.
 Create a PR with your changes.
 """
 ```
@@ -390,21 +380,20 @@ Each step has:
 - `pre_hooks` — optional list of hooks to check before running the step
 - `post_hooks` — optional list of hooks to check after running the step
 
-The `agent` field on each step allows different steps in the same workflow to target different Hermes API instances.
+The `agent` field on each step allows different steps in the same workflow to target different Hermes profiles. Hermes requires a distinct API server for each profile.
 
 ### Template Variables
 
 Global variables provided by the runner:
 
-| Variable | Value |
-|---|---|
-| `owner` | Repository owner (namespace) |
-| `repo` | Repository name |
+| Variable         | Value |
+|------------------|---|
+| `owner`          | Repository owner (namespace) |
+| `repo`           | Repository name |
 | `default_branch` | From `[git].default_branch` |
-| `output_path` | Per-event workspace directory |
-| `repo_path` | Path to the repo clone (empty if `git.clone = false`) |
+| `output_dir`       | Per-event workspace directory |
 
-Trigger-specific variables:
+Additional variables are extracted from the event JSON and merged into the template variable map.
 
 **GitHub:**
 
@@ -424,7 +413,6 @@ Trigger-specific variables:
 | `gitlab_merge_request_review`         | `mr_iid`, `review_id`, `review_body`                                    |
 | `gitlab_merge_request_review_comment` | `mr_iid`, `review_id`, `comment_id`                                     |
 
-Additional variables are extracted automatically from the platform's event JSON and merged into the template variable map. Webhook payloads carry the full event data, giving template authors access to rich context beyond just numeric IDs.
 
 ### Prompt Template Validation
 
@@ -516,20 +504,6 @@ Token never embedded in URLs or git config stored persistently — only used in 
 
 The Hermes API agent receives the worktree path via the `instructions` field and uses `cd <path>` as its first action. If the path doesn't exist or isn't accessible, the agent falls back to the platform's file API via MCP tools (GitHub Contents API or GitLab Repository Files API).
 
-### Self-Hosted GitLab
-
-When `platform = "gitlab"`, the optional `gitlab_url` field overrides the default `https://gitlab.com`:
-
-```toml
-platform = "gitlab"
-gitlab_url = "https://gitlab.mycompany.com"
-repos = [
-    { owner = "internal-team", repo = "backend-service" },
-]
-```
-
-This affects clone URL construction and is useful for documentation and future API integration.
-
 ## 10. Concurrency Model
 
 ```
@@ -562,15 +536,15 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
     repo/                     # git clone
     {workspace_id}/           # per-event workspace
       worktree-{N}/           # per-event worktree (if git.worktree = true)
-      step_00_Plan.log        # Full Hermes API request + response, with final message rendered
-      step_00_Plan.error      # Error details (if step failed)
-      step_00_Plan.prompt     # Rendered prompt for auditing
-      step_01_Implement.log
-      step_01_Implement.error
-      step_01_Implement.prompt
+      00_Plan.log        # Full Hermes API request + response, with final message rendered
+      00_Plan.error      # Error details (if step failed)
+      00_Plan.prompt     # Rendered prompt for auditing
+      01_Implement.log
+      01_Implement.error
+      01_Implement.prompt
 ```
 
-`step_XX_<name>.log` contains the full HTTP exchange: the request body sent to Hermes API, the response received, and the extracted final message (from `output[].content[].type == "output_text"`) rendered in a human-readable format at the end of the file.
+`XX_<name>.log` contains the full HTTP exchange: the request body sent to Hermes API, the response received, and the extracted final message (from `output[].content[].type == "output_text"`) rendered in a human-readable format at the end of the file.
 
 ## 12. Error Handling
 
@@ -628,7 +602,6 @@ agent-orchestrator [OPTIONS]
 Options:
   --config <FILE>              Path to config.toml (default: ./config.toml)
   --workflows <DIR>            Directory containing workflow TOML files (default: .)
-  --show-logs                  Print harness output to terminal
   --host <ADDR>                Server bind address (overrides config.toml)
   --port <PORT>                Server listen port (overrides config.toml)
 ```
@@ -715,14 +688,14 @@ name = "Plan"
 agent = "local"
 prompt_template = """
 Plan the implementation for {{owner}}/{{repo}}#{{issue_number}}.
-Save the plan to {{output_path}}/plan.md
+Save the plan to {{output_dir}}/plan.md
 """
 
 [[steps]]
 name = "Implement"
 agent = "local"
 prompt_template = """
-Read the plan at {{output_path}}/plan.md and implement it for {{owner}}/{{repo}}#{{issue_number}}.
+Read the plan at {{output_dir}}/plan.md and implement it for {{owner}}/{{repo}}#{{issue_number}}.
 Create a PR with your changes.
 """
 ```
@@ -762,14 +735,14 @@ name = "Plan"
 agent = "local"
 prompt_template = """
 Plan the implementation for {{owner}}/{{repo}}#!{{issue_iid}}.
-Save the plan to {{output_path}}/plan.md
+Save the plan to {{output_dir}}/plan.md
 """
 
 [[steps]]
 name = "Implement"
 agent = "local"
 prompt_template = """
-Read the plan at {{output_path}}/plan.md and implement it for {{owner}}/{{repo}}#!{{issue_iid}}.
+Read the plan at {{output_dir}}/plan.md and implement it for {{owner}}/{{repo}}#!{{issue_iid}}.
 Create an MR with your changes.
 """
 ```
@@ -1038,7 +1011,7 @@ async fn test_webhook_valid_github_issue() {
     assert!(request.input.contains("Issue #42 has been assigned"));
     
     // Verify output files exist
-    assert!(harness.temp_dir.path().join("step_00_Plan.log").exists());
+    assert!(harness.temp_dir.path().join("00_Plan.log").exists());
 }
 ```
 
