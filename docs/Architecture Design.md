@@ -187,8 +187,8 @@ If different repos need different workflows, use `[trigger]` filters (e.g., `ass
 | Field | Purpose | Default |
 |---|---|---|
 | `[trigger].type` | Event type (e.g. `github_issue_assigned`, `gitlab_merge_request_review`) | required |
-| `[trigger].assigned_to` | Filter: only fire for this assignee | none (any) |
-| `[trigger].allowed_users` | Filter: only fire for these users | none (any) |
+| `[trigger].assigned_to` | Filter: only fire for this assignee (trigger-specific) | none (any) |
+| `[trigger].allowed_users` | Filter: only fire for these users (trigger-specific) | none (any) |
 | `[git].clone` | Whether to git clone the repo | `true` |
 | `[git].worktree` | Whether to create a per-event worktree | `true` |
 | `[git].default_branch` | Branch for clone/worktree base | `"main"` |
@@ -197,6 +197,8 @@ If different repos need different workflows, use `[trigger]` filters (e.g., `ass
 | `[[steps]].prompt_template` | `{{variable}}` template | required |
 | `[[steps]].pre_hooks` | Hooks to check before step | none |
 | `[[steps]].post_hooks` | Hooks to check after step | none |
+
+**Note:** `assigned_to` and `allowed_users` are only valid for specific trigger types. See **Appendix A: Trigger Reference** for which filters apply to each trigger.
 
 ## 4. Event Sources (Webhooks)
 
@@ -1204,21 +1206,29 @@ This appendix consolidates all trigger types, event mappings, and template varia
 
 ### GitHub Triggers
 
-| Trigger Type                         | Event Header          | Action      | Variables                                                         |
-| ------------------------------------ | --------------------- | ----------- | ----------------------------------------------------------------- |
-| `github_issue_assigned`              | `issues`              | `assigned`  | `issue_number`, `action`, `assignee`, `issue_title`, `issue_body` |
-| `github_issue_comment`               | `issue_comment`       | `created`   | `issue_number`, `comment_id`                                      |
-| `github_pull_request_review`         | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body`                           |
-| `github_pull_request_review_comment` | `pull_request_review_comment` | `created`   | `pr_number`, `review_id`, `comment_id`                            |
+| Trigger Type                         | Event Header          | Action      | Variables                                                         | Available Filters |\n| ------------------------------------ | --------------------- | ----------- | ----------------------------------------------------------------- | ----------------- |\n| `github_issue_assigned`              | `issues`              | `assigned`  | `issue_number`, `action`, `assignee`, `issue_title`, `issue_body` | `assigned_to`     |\n| `github_issue_comment`               | `issue_comment`       | `created`   | `issue_number`, `comment_id`                                      | `allowed_users`   |\n| `github_pull_request_review`         | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body`                           | `allowed_users`   |\n| `github_pull_request_review_comment` | `pull_request_review_comment` | `created`   | `pr_number`, `review_id`, `comment_id`                            | `allowed_users`   |
 
 ### GitLab Triggers
 
-| Trigger Type                          | Event Header   | Object Kind                                            | Variables                                                               |
-| ------------------------------------- | -------------- | ------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `gitlab_issue_assigned`               | `Issue Hook`   | `issue` (action: `update`)                             | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` |
-| `gitlab_note`                         | `Note Hook`    | `note`                                                 | `issue_iid` or `mr_iid`, `note_id`                                      |
-| `gitlab_merge_request_review`         | `Note Hook`    | `note` (noteable_type = MergeRequest)                  | `mr_iid`, `review_id`, `review_body`                                    |
-| `gitlab_merge_request_review_comment` | `Note Hook`    | `note` (noteable_type = MergeRequest, type = DiffNote) | `mr_iid`, `review_id`, `comment_id`                                     |
+| Trigger Type                          | Event Header   | Object Kind                                            | Variables                                                               | Available Filters |\n| ------------------------------------- | -------------- | ------------------------------------------------------ | ----------------------------------------------------------------------- | ----------------- |\n| `gitlab_issue_assigned`               | `Issue Hook`   | `issue` (action: `update`)                             | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` | `assigned_to`     |\n| `gitlab_note`                         | `Note Hook`    | `note`                                                 | `issue_iid` or `mr_iid`, `note_id`                                      | `allowed_users`   |\n| `gitlab_merge_request_review`         | `Note Hook`    | `note` (noteable_type = MergeRequest)                  | `mr_iid`, `review_id`, `review_body`                                    | `allowed_users`   |\n| `gitlab_merge_request_review_comment` | `Note Hook`    | `note` (noteable_type = MergeRequest, type = DiffNote) | `mr_iid`, `review_id`, `comment_id`                                     | `allowed_users`   |
+
+### Filter Options
+
+Filters are optional `[trigger]` fields that scope when a workflow fires. Only filters listed for a trigger type are valid; unknown filters cause a startup error.
+
+| Filter | Type | Description | Valid For |\n| ------ | ---- | ----------- | --------- |\n| `assigned_to` | string | Only fire when the issue is assigned to this username | `*_issue_assigned` triggers |\n| `allowed_users` | array of strings | Only fire when the event is from one of these usernames | `*_comment`, `*_review` triggers |
+
+**Example:**
+
+```toml
+[trigger]
+type = "github_issue_assigned"
+assigned_to = "alice"  # Only fires when alice is assigned
+
+[trigger]
+type = "github_pull_request_review"
+allowed_users = ["alice", "bob"]  # Only fires for reviews from alice or bob
+```
 
 ### Global Template Variables
 
