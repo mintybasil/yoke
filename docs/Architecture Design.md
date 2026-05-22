@@ -528,13 +528,13 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
     repo/                     # git clone
     {workspace_id}/           # per-event workspace
       worktree-{N}/           # per-event worktree (if git.worktree = true)
-      step_00_Plan.log        # Full Hermes API request + response, with final message rendered
-      step_00_Plan.prompt     # Rendered prompt for auditing
-      step_01_Implement.log
-      step_01_Implement.prompt
+      00_Plan.log             # Full Hermes API request + response, with final message rendered
+      00_Plan.prompt          # Rendered prompt for auditing
+      01_Implement.log
+      01_Implement.prompt
 ```
 
-`step_XX_<name>.log` contains the full HTTP exchange: the request body sent to Hermes API, the response received, and the extracted final message (from `output[].content[].type == "output_text"`) rendered in a human-readable format at the end of the file.
+`XX_<name>.log` contains the full HTTP exchange: the request body sent to Hermes API, the response received, and the extracted final message (from `output[].content[].type == "output_text"`) rendered in a human-readable format at the end of the file.
 
 ## 12. Error Handling
 
