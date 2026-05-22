@@ -24,47 +24,47 @@ The code platform delivers webhook events to Yoke's HTTP server. The daemon veri
            ┌─────────────────────────────┐
            │   Code Platform             │
            │   (GitHub or GitLab)        │
-           │   Webhooks UI              │
+           │   Webhooks UI               │
            └────────────┬────────────────┘
                         │ POST /webhook
                         ▼
            ┌──────────────────────────┐
-           │     HTTP Server (axum)    │
-           │  ┌─────────────────────┐  │
-           │  │  Webhook Handler    │  │
-           │  │  - HMAC/token auth  │  │
-           │  │  - Parse payload    │  │
-           │  │  - Quick dedup skip │  │
-           │  │  - Build EventKey   │  │
-           │  └─────────┬───────────┘  │
-           └────────────┼──────────────┘
-                        │ mpsc channel
-                        ▼
+           │     HTTP Server (axum)   │
+           │  ┌────────────────────┐  │
+           │  │  Webhook Handler   │  │
+           │  │  - HMAC/token auth │  │
+           │  │  - Parse payload   │  │
+           │  │  - Quick dedup skip│  │
+           │  │  - Build EventKey  │  │
+           │  └────────┬───────────┘  │
+           └───────────┼──────────────┘
+                       │ mpsc channel
+                       ▼
            ┌──────────────────────────┐
-           │       Dispatcher          │
-           │  - Dedup (in_flight,      │
-           │    completed, failed)     │
-           │  - Semaphore-gated        │
-           │  - Spawns tokio tasks     │
-           └────────────┬──────────────┘
+           │       Dispatcher         │
+           │  - Dedup (in_flight,     │
+           │    completed, failed)    │
+           │  - Semaphore-gated       │
+           │  - Spawns tokio tasks    │
+           └────────────┬─────────────┘
                         │ per event
                         ▼
            ┌──────────────────────────┐
-           │      Workflow Runner       │
-           │  - Git clone/worktree      │
-           │  - Step loop               │
-           │    pre-hooks → harness →   │
-           │    post-hooks              │
-           │  - Worktree cleanup         │
-           └────────────┬──────────────┘
+           │      Workflow Runner     │
+           │  - Git clone/worktree    │
+           │  - Step loop             │
+           │    pre-hooks → harness → │
+           │    post-hooks            │
+           │  - Worktree cleanup      │
+           └────────────┬─────────────┘
                         │ each step
                         ▼
            ┌──────────────────────────┐
-           │   Hermes API Harness       │
-           │   POST /v1/responses       │
-           │   - instructions + input   │
-           │   - Bearer auth            │
-           │   - store: true            │
+           │   Hermes API Harness     │
+           │   POST /v1/responses     │
+           │   - instructions + input │
+           │   - Bearer auth          │
+           │   - store: true          │
            └──────────────────────────┘
 ```
 
@@ -333,28 +333,28 @@ The dispatcher consumes `DispatchMessage`s from the mpsc channel, manages dedup 
 
 ```
 ┌──────────────────┐  ┌──────────────────┐
-│  Webhook Handler  │  │  Signal Handler   │
-│  (axum route)     │  │  (SIGINT/SIGTERM) │
-└────────┬──────────┘  └────────┬──────────┘
-         │ mpsc                 │ watch
-         ▼                      ▼
+│  Webhook Handler │  │  Signal Handler  │
+│  (axum route)    │  │  (SIGINT/SIGTERM)│
+└────────┬─────────┘  └────────┬─────────┘
+         │ mpsc                │ watch
+         ▼                     ▼
 ┌────────────────────────┐  ┌──────────────────────┐
-│      Dispatcher         │  │  (shutdown signal)   │
+│      Dispatcher        │  │  (shutdown signal)   │
 │  (single consumer)     │  └──────────────────────┘
 │  - dedup check         │
 │  - semaphore acquire   │
 │  - spawn workflow task │
 │  - track in_flight     │
 │  - drain on shutdown   │
-└────────────────────────┘
-         │ per event (tokio::spawn)
-         ▼
+└───────────┬────────────┘
+            │ per event (tokio::spawn)
+            ▼
 ┌────────────────────────┐
-│  Workflow Runner (N)  │
-│  - Git ops            │
-│  - Step execution     │
-│  - Hermes API call    │
-│  - Cleanup            │
+│  Workflow Runner (N)   │
+│  - Git ops             │
+│  - Step execution      │
+│  - Hermes API call     │
+│  - Cleanup             │
 └────────────────────────┘
 ```
 
