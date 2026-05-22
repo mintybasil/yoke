@@ -149,7 +149,6 @@ assigned_to = "zeroklaw"
 [git]
 clone = true
 worktree = true
-default_branch = "main"
 
 # Steps to execute (in order)
 [[steps]]
@@ -181,8 +180,8 @@ Trigger types are prefixed with the platform name — `github_` or `gitlab_` —
 
 **GitHub trigger types:**
 
-| Type                                 | GitHub Event                  | Fixed Action  |
-| ------------------------------------ | ----------------------------- | ------------- |
+| Type                                 | GitHub Event                  | Action      |
+| ------------------------------------ | ----------------------------- | ----------- |
 | `github_issue_assigned`              | `issues`                      | `assigned`  |
 | `github_issue_comment`               | `issue_comment`               | `created`   |
 | `github_pull_request_review`         | `pull_request_review`         | `submitted` |
@@ -190,7 +189,7 @@ Trigger types are prefixed with the platform name — `github_` or `gitlab_` —
 
 **GitLab trigger types:**
 
-| Type                                  | GitLab Event | Fixed Action/Object Kind                               |
+| Type                                  | GitLab Event | Action/Object Kind                                     |
 | ------------------------------------- | ------------ | ------------------------------------------------------ |
 | `gitlab_issue_assigned`               | `Issue Hook` | `issue` (action: `update`)                             |
 | `gitlab_note`                         | `Note Hook`  | `note`                                                 |
@@ -563,19 +562,15 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
     repo/                     # git clone
     {workspace_id}/           # per-event workspace
       worktree-{N}/           # per-event worktree (if git.worktree = true)
-      step_00_Plan.log        # harness stdout/stderr
-      step_00_Plan.error      # error details (if step failed)
-      step_00_Plan.prompt     # rendered prompt for auditing
-      step_00_Plan.request.json  # full Hermes API request (for debugging)
-      step_00_Plan.response.json # full Hermes API response (for debugging)
+      step_00_Plan.log        # Full Hermes API request + response, with final message rendered
+      step_00_Plan.error      # Error details (if step failed)
+      step_00_Plan.prompt     # Rendered prompt for auditing
       step_01_Implement.log
       step_01_Implement.error
       step_01_Implement.prompt
-      step_01_Implement.request.json
-      step_01_Implement.response.json
 ```
 
-`workdir` defaults to `~/.agent-orchestrator` and is configurable in `config.toml`.
+`step_XX_<name>.log` contains the full HTTP exchange: the request body sent to Hermes API, the response received, and the extracted final message (from `output[].content[].type == "output_text"`) rendered in a human-readable format at the end of the file.
 
 ## 12. Error Handling
 
