@@ -548,7 +548,7 @@ Two-tier model: startup errors are hard exits, runtime errors are per-event soft
 - Unknown agent name in a workflow file (doesn't match any `[[agents]]` entry)
 - Missing platform token env var (`GITHUB_TOKEN` for github, `GITLAB_TOKEN` for gitlab)
 - Missing `HERMES_API_KEY` env var
-- Invalid `agents[].base_url` (contains a path segment like `/v1` or `/chat`)
+- Invalid `agents[].base_url` (must be a valid HTTP URL)
 - Missing `webhook_secret` in `[server]`
 - Data directory not writable
 - No workflow `.toml` files found
@@ -581,8 +581,8 @@ Two-tier model: startup errors are hard exits, runtime errors are per-event soft
 | `src/hooks.rs` | Hook enum + run_hook() dispatcher |
 | `src/template.rs` | `{{key}}` placeholder renderer |
 | `src/workflow.rs` | Step type definition |
-| `src/github.rs` | GitHub webhook payload types (event structs) |
-| `src/gitlab.rs` | GitLab webhook payload types (event structs) |
+| `src/webhooks/github.rs` | GitHub webhook payload types (event structs) |
+| `src/webhooks/gitlab.rs` | GitLab webhook payload types (event structs) |
 
 ## 14. CLI
 
@@ -762,9 +762,7 @@ Review ID: {{review_id}}
 
 ## 17. Design Decisions (Resolved)
 
-1. **Single platform per instance**: The orchestrator handles one platform (GitHub or GitLab) per instance, set globally in `config.toml`. Supporting both in a single instance adds complexity across config, routing, dedup, authentication, and data layout for a marginal use case. Running two instances with separate configs is simpler to operate and reason about.
-
-2. **Unified webhook path**: A single `POST /webhook` endpoint — only one handler is active at a time, selected by the `platform` setting. There is no ambiguity about which verification and parsing logic to apply.
+1. **Single platform per instance with unified webhook path**: The orchestrator handles one platform (GitHub or GitLab) per instance, set globally in `config.toml`. A single `POST /webhook` endpoint serves that platform — only one handler is active at a time, selected by the `platform` setting. There is no ambiguity about which verification and parsing logic to apply. Supporting both platforms in a single instance adds complexity across config, routing, dedup, authentication, and data layout for a marginal use case. Running two instances with separate configs is simpler to operate and reason about.
 
 3. **Platform-specific trigger types**: Trigger types carry the platform prefix (e.g., `github_issue_assigned`, `gitlab_merge_request_review`). GitHub and GitLab have different event models, payload shapes, and action semantics — unified names paper over real differences and create ambiguous mappings. Prefixed types make workflows explicit about which platform they target. At startup, any workflow containing a trigger type that doesn't match the configured platform is rejected with a hard exit, catching misconfigured workflows immediately.
 
