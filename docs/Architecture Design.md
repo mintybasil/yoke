@@ -931,3 +931,377 @@ This prevents the platform from continuing to send webhooks to a dead endpoint, 
 - Check if the event type + action matches a configured trigger
 - Verify the repo is listed in `config.toml`
 - Check platform delivery logs for failed deliveries (platform may have stopped retrying)
+
+## 19. Testing
+
+### Testing Strategy
+
+The orchestrator is tested at three levels:
+
+1. **Unit tests** — Individual components (template rendering, webhook parsing, dedup logic)
+2. **Integration tests** — HTTP server, webhook handling, workflow execution with mocked Hermes API
+3. **End-to-end tests** — Full event flow with realistic payloads and temporary workspaces
+
+### Unit Tests
+
+**Coverage targets:**
+
+| Module | What to Test |
+|---|---|
+| `template.rs` | Variable substitution, missing variables (panic), nested braces `{{{var}}}` |
+| `webhook/github.rs` | HMAC verification (valid/invalid), payload parsing, event mapping |
+| `webhook/gitlab.rs` | Token verification (valid/invalid), payload parsing, event mapping |
+| `dispatcher.rs` | Dedup logic (same key skipped, different keys run), semaphore acquisition |
+| `hooks.rs` | `file_not_empty`, `file_contains` (pass/fail cases) |
+| `config.rs` | TOML parsing (valid/invalid), agent resolution, trigger validation |
+
+**Example: Template rendering**
+
+```rust
+#[test]
+fn test_template_render_unknown_variable_panics() {
+    let template = "Hello {{unknown_var}}";
+    let vars = HashMap::from([("known", "value")]);
+    // Should panic with clear error message
+    assert_render_panic(template, &vars, "unknown variable: unknown_var");
+}
+
+#[test]
+fn test_template_render_nested_braces() {
+    let template = "Issue: {{{issue_body}}}";  // {{{var}}} = literal { + {{var}}
+    let vars = HashMap::from([("issue_body", "Fix the bug")]);
+    let result = render(template, &vars);
+    assert_eq!(result, "Issue: {Fix the bug}");
+}
+```
+
+### Integration Tests
+
+**Test harness setup:**
+
+```rust
+// tests/common/mod.rs
+pub struct TestHarness {
+    pub server: ServerHandle,
+    pub mock_hermes: MockHermesServer,
+    pub temp_dir: TempDir,
+    pub config: Config,
+}
+
+pub async fn setup() -> TestHarness {
+    // Start mock Hermes API on random port
+    // Create temp config.toml pointing to mock
+    // Start orchestrator server
+    // Return handles for cleanup
+}
+```
+
+**Test cases:**
+
+| Test | Setup | Assert |
+|---|---|---|
+| `webhook_valid_github_issue` | POST valid GitHub issue payload | 200, workflow started, Hermes called once |
+| `webhook_invalid_signature` | POST with wrong HMAC | 401, no workflow started |
+| `webhook_duplicate_skipped` | POST same issue twice | Second returns 200, no second workflow |
+| `webhook_no_matching_trigger` | POST event type not in workflows | 200 (no-op), no workflow started |
+| `hermes_api_failure` | Mock Hermes returns 500 | Workflow fails, `.error` file written |
+| `concurrent_workflows_respect_limit` | Send N webhooks, max_concurrent=2 | At most 2 run simultaneously |
+
+**Example: Webhook handling**
+
+```rust
+#[tokio::test]
+async fn test_webhook_valid_github_issue() {
+    let harness = setup().await;
+    
+    // Load fixture payload
+    let payload = include_str!("fixtures/github_issue_assigned.json");
+    
+    // Send webhook
+    let response = reqwest::Client::new()
+        .post(format!("{}/webhook", harness.server.url()))
+        .header("X-GitHub-Event", "issues")
+        .header("X-Hub-Signature-256", compute_hmac(payload, harness.config.webhook_secret))
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    
+    assert_eq!(response.status(), 200);
+    
+    // Wait for workflow to complete
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    
+    // Verify Hermes was called
+    assert_eq!(harness.mock_hermes.request_count(), 1);
+    let request = harness.mock_hermes.last_request();
+    assert!(request.input.contains("Issue #42 has been assigned"));
+    
+    // Verify output files exist
+    assert!(harness.temp_dir.path().join("step_00_Plan.log").exists());
+}
+```
+
+### End-to-End Tests
+
+**Fixture-based testing:**
+
+Store real webhook payloads in `tests/fixtures/`:
+
+```
+tests/fixtures/
+  github_issue_assigned.json
+  github_pull_request_review.json
+  gitlab_issue_assigned.json
+  gitlab_merge_request_review.json
+```
+
+These are actual payloads copied from GitHub/GitLab webhook delivery logs (with sensitive data redacted). This ensures the orchestrator handles real-world payload structures, not just idealized test cases.
+
+**Test workflow:**
+
+1. Load fixture payload
+2. Start orchestrator with test config (single repo, mock Hermes)
+3. Send webhook to `/webhook`
+4. Poll for workflow completion (check `completed.json` or file existence)
+5. Assert:
+   - Hermes received correct number of requests
+   - Request bodies match expected templates
+   - Output files exist with expected content
+   - Git operations completed (worktree created/cleaned up)
+
+### Local Development Testing
+
+**Testing with ngrok:**
+
+```bash
+# Start ngrok tunnel
+ngrok http 8644
+
+# Copy the ngrok URL (e.g., https://abc123.ngrok.io)
+
+# Update config.toml
+[server]
+host = "0.0.0.0"
+port = 8644
+webhook_secret = "dev-secret"
+
+# Start orchestrator
+cargo run -- --config config.toml
+
+# In another terminal, configure GitHub webhook:
+# - Payload URL: https://abc123.ngrok.io/webhook
+# - Secret: dev-secret
+# - Events: Issues (assigned), Pull request reviews
+
+# Trigger a test: assign yourself to an issue
+```
+
+**Testing with curl (no platform):**
+
+```bash
+# Load a fixture payload
+curl -X POST http://localhost:8644/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Event: issues" \
+  -H "X-Hub-Signature-256: $(compute_hmac.sh fixture.json dev-secret)" \
+  -d @tests/fixtures/github_issue_assigned.json
+
+# Watch logs for processing
+```
+
+**Test helper script:**
+
+```bash
+#!/bin/bash
+# scripts/test-webhook.sh
+
+FIXTURE="$1"
+SECRET="${2:-dev-secret}"
+URL="${3:-http://localhost:8644/webhook}"
+
+if [ -z "$FIXTURE" ]; then
+  echo "Usage: test-webhook.sh <fixture.json> [secret] [url]"
+  exit 1
+fi
+
+# Compute HMAC (requires openssl)
+SIGNATURE=$(openssl dgst -sha256 -hmac "$SECRET" -binary < "$FIXTURE" | xxd -p -c 256)
+
+curl -X POST "$URL" \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Event: issues" \
+  -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
+  -d "@$FIXTURE" \
+  -v
+```
+
+### Mock Hermes API
+
+The mock Hermes server is a minimal HTTP server that:
+
+1. Accepts `POST /v1/responses` requests
+2. Returns a fixed response with `output_text` content
+3. Records all requests for assertion
+4. Can be configured to fail (return 500) for error handling tests
+
+```rust
+// tests/mock_hermes.rs
+pub struct MockHermesServer {
+    requests: Arc<Mutex<Vec<Request>>>,
+    fail_next: AtomicBool,
+}
+
+impl MockHermesServer {
+    pub fn new() -> Self { ... }
+    
+    pub fn set_fail_next(&self, fail: bool) {
+        self.fail_next.store(fail, Ordering::SeqCst);
+    }
+    
+    pub fn request_count(&self) -> usize {
+        self.requests.lock().len()
+    }
+    
+    pub fn last_request(&self) -> Request {
+        self.requests.lock().last().unwrap().clone()
+    }
+}
+
+// Handler
+async fn handle_response(
+    State(server): State<Arc<MockHermesServer>>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    server.requests.lock().push(Request::from_value(req));
+    
+    if server.fail_next.swap(false, Ordering::SeqCst) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Simulated failure");
+    }
+    
+    Json(serde_json::json!({
+        "output": [{
+            "content": [{
+                "type": "output_text",
+                "text": "Work complete"
+            }]
+        }]
+    }))
+}
+```
+
+### CI Testing
+
+**GitHub Actions workflow:**
+
+```yaml
+# .github/workflows/test.yml
+name: Test
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Run unit tests
+        run: cargo test --lib
+      
+      - name: Run integration tests
+        run: cargo test --test '*'
+      
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+      
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+```
+
+**No external dependencies:**
+
+CI tests should never require:
+- Real GitHub/GitLab API access
+- Real Hermes API
+- Network access (except localhost)
+
+All external dependencies are mocked or use fixture files.
+
+### Performance Testing
+
+**Load test with `oha` or `wrk`:**
+
+```bash
+# Generate 100 concurrent webhooks over 10 seconds
+oha -c 100 -z 10s \
+  -H "X-GitHub-Event: issues" \
+  -H "X-Hub-Signature-256: sha256=abc123" \
+  -d @tests/fixtures/github_issue_assigned.json \
+  http://localhost:8644/webhook
+```
+
+**Metrics to track:**
+
+- Request latency (p50, p95, p99)
+- 503 rate (should be 0 unless intentionally overloaded)
+- Time from webhook received to workflow started
+- Memory usage under load
+
+**Semaphore stress test:**
+
+```rust
+#[tokio::test]
+async fn test_semaphore_overflow() {
+    let harness = setup_with_max_concurrent(2).await;
+    
+    // Send 10 webhooks rapidly
+    let mut handles = vec![];
+    for _ in 0..10 {
+        handles.push(send_webhook(&harness.server).await);
+    }
+    
+    // All should complete (some with 503)
+    let results = futures::future::join_all(handles).await;
+    let status_codes: Vec<_> = results.iter().map(|r| r.status()).collect();
+    
+    // At least some should be 503 (dispatcher overwhelmed)
+    assert!(status_codes.iter().filter(|&&s| s == 503).count() > 0);
+    
+    // But server should not crash
+    assert!(harness.server.is_healthy());
+}
+```
+
+### Test Data Management
+
+**Fixture generation:**
+
+When GitHub/GitLab change webhook payload structures, tests may break silently. Add a cron job or manual process to:
+
+1. Capture real webhook deliveries from production
+2. Redact sensitive data (tokens, emails, internal URLs)
+3. Update fixture files
+4. Run tests against new fixtures
+
+**Fixture validation:**
+
+```rust
+#[test]
+fn test_fixtures_are_valid_json() {
+    for entry in std::fs::read_dir("tests/fixtures").unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().extension() == Some("json".as_ref()) {
+            let content = std::fs::read_to_string(entry.path()).unwrap();
+            serde_json::from_str::<serde_json::Value>(&content)
+                .unwrap_or_else(|e| panic!("Invalid JSON in {:?}: {}", entry.path(), e));
+        }
+    }
+}
+```
