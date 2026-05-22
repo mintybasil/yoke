@@ -4,7 +4,7 @@
 
 The orchestrator is a Rust daemon that receives webhook events from a code platform (GitHub or GitLab) via a built-in HTTP server, deduplicates them, and runs multi-step agent workflows through the Hermes Agent REST API.
 
-The code platform delivers webhook events to the orchestrator's HTTP server. The daemon verifies, parses, and routes each event to a workflow runner, which executes a sequence of agent steps via the Hermes `/v1/responses` endpoint. Each step is a prompt template rendered with event variables and sent as a request to the Hermes API.
+The code platform delivers webhook events to the orchestrator's HTTP server. The daemon verifies, parses, and routes each event to a workflow runner, which executes a sequence of agent steps. Each step is a prompt template rendered with event variables and sent as a request to the Hermes API.
 
 ### Design Goals
 
@@ -68,17 +68,6 @@ The code platform delivers webhook events to the orchestrator's HTTP server. The
 
 The architecture is a three-layer split: event ingestion (HTTP server with platform handler) → dispatch (dedup + concurrency) → workflow execution (steps + harness).
 
-### Dedup Responsibility
-
-The webhook handler does a lightweight check against the `completed` set to avoid enqueueing events that are already done — this is an optimization, not the authoritative dedup. The dispatcher is the source of truth: it checks all three sets (completed, permanently_failed, in_flight) and makes the final decision on whether to run a workflow.
-
-### Repo Routing
-
-The webhook handler identifies the repo the event belongs to and matches it against the `repos` list in `config.toml`. If no repo matches, the handler returns `200` (no-op).
-
-- **GitHub**: extracts `repository.owner.login` and `repository.name` from the payload.
-- **GitLab**: extracts `project.path_with_namespace` from the payload (maps directly to `owner/repo`).
-
 ## 3. Configuration Layout
 
 Configuration is split into two files with distinct responsibilities:
@@ -96,18 +85,18 @@ platform = "github"
 
 # Repos to monitor — shared across all workflows
 repos = [
-    { owner = "mintybasil", repo = "agent-orchestrator" },
-    { owner = "mintybasil", repo = "enginedj-overlay" },
+    { owner = "example-corp", repo = "backend-service" },
+    { owner = "example-corp", repo = "frontend-app" },
 ]
 
 # Named agent instances (Hermes API configs)
 [[agents]]
-name = "local"
+name = "pm"
 base_url = "http://localhost:8000"
 
 [[agents]]
-name = "remote"
-base_url = "https://hermes.mycompany.com"
+name = "swe"
+base_url = "http://localhost:8001"
 
 # Runtime settings
 [runtime]
@@ -133,7 +122,7 @@ Workflow files live in the `--workflows` directory (default: `.`). Each file is 
 # What events trigger this workflow
 [trigger]
 type = "github_issue_assigned"
-assigned_to = "zeroklaw"
+assigned_to = "alice"
 
 # Git configuration
 [git]
@@ -143,7 +132,7 @@ worktree = true
 # Steps to execute (in order)
 [[steps]]
 name = "Plan"
-agent = "local"
+agent = "pm"
 prompt_template = """
 You are an expert software engineer. Issue {{owner}}/{{repo}}#{{issue_number}} has been assigned to you.
 Read the issue and create an implementation plan.
@@ -154,7 +143,7 @@ Issue details: {{{issue_body}}}
 
 [[steps]]
 name = "Implement"
-agent = "local"
+agent = "swe"
 prompt_template = """
 You are an expert software engineer working on {{owner}}/{{repo}}#{{issue_number}}.
 Read the plan at {{output_dir}}/plan.md and implement it.
@@ -452,8 +441,12 @@ Agents are named Hermes API instances defined in `config.toml`. Workflow files r
 
 ```toml
 [[agents]]
-name = "local"
-base_url = "http://localhost:8000"  # Host-only (e.g. http://localhost:8000)
+name = "pm"
+base_url = "http://localhost:8000"
+
+[[agents]]
+name = "swe"
+base_url = "http://localhost:8001"
 ```
 
 ### Request Format
@@ -480,7 +473,6 @@ At startup, every step's `agent` field is resolved against the `[[agents]]` arra
 - `instructions` carries workspace path with explicit `cd` directive, plus the `platform` identifier
 - Response parsing extracts `output[].content[].type == "output_text"` blocks
 - `HarnessConfig` is a single struct (not an enum)
-- Harness implements a `Harness` trait for extensibility
 
 ## 9. Git & Worktree Management
 
@@ -536,15 +528,13 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
     repo/                     # git clone
     {workspace_id}/           # per-event workspace
       worktree-{N}/           # per-event worktree (if git.worktree = true)
-      00_Plan.log        # Full Hermes API request + response, with final message rendered
-      00_Plan.error      # Error details (if step failed)
-      00_Plan.prompt     # Rendered prompt for auditing
-      01_Implement.log
-      01_Implement.error
-      01_Implement.prompt
+      step_00_Plan.log        # Full Hermes API request + response, with final message rendered
+      step_00_Plan.prompt     # Rendered prompt for auditing
+      step_01_Implement.log
+      step_01_Implement.prompt
 ```
 
-`XX_<name>.log` contains the full HTTP exchange: the request body sent to Hermes API, the response received, and the extracted final message (from `output[].content[].type == "output_text"`) rendered in a human-readable format at the end of the file.
+`step_XX_<name>.log` contains the full HTTP exchange: the request body sent to Hermes API, the response received, and the extracted final message (from `output[].content[].type == "output_text"`) rendered in a human-readable format at the end of the file.
 
 ## 12. Error Handling
 
@@ -586,7 +576,7 @@ Two-tier model: startup errors are hard exits, runtime errors are per-event soft
 | `src/webhook/gitlab.rs` | GitLab webhook handler: token verify, payload parse, event mapping |
 | `src/dispatcher.rs` | Concurrency control: dedup sets, semaphore, mpsc consumer, persistence |
 | `src/runner.rs` | Per-event workflow execution: git ops, step loop, template rendering |
-| `src/harness.rs` | Harness trait + single HermesApiHarness implementation |
+| `src/harness.rs` | Hermes API client: request building, response parsing |
 | `src/git.rs` | Git repo/worktree management: clone/pull, worktree create/remove, auth |
 | `src/hooks.rs` | Hook enum + run_hook() dispatcher |
 | `src/template.rs` | `{{key}}` placeholder renderer |
@@ -625,17 +615,17 @@ Options:
 platform = "github"
 
 repos = [
-    { owner = "mintybasil", repo = "agent-orchestrator" },
-    { owner = "mintybasil", repo = "enginedj-overlay" },
+    { owner = "example-corp", repo = "backend-service" },
+    { owner = "example-corp", repo = "frontend-app" },
 ]
 
 [[agents]]
-name = "local"
+name = "pm"
 base_url = "http://localhost:8000"
 
 [[agents]]
-name = "remote"
-base_url = "https://hermes.mycompany.com"
+name = "swe"
+base_url = "http://localhost:8001"
 
 [runtime]
 max_concurrent = 2
@@ -659,8 +649,12 @@ repos = [
 ]
 
 [[agents]]
-name = "local"
+name = "pm"
 base_url = "http://localhost:8000"
+
+[[agents]]
+name = "swe"
+base_url = "http://localhost:8001"
 
 [runtime]
 max_concurrent = 2
@@ -677,7 +671,7 @@ webhook_secret = "your-gitlab-webhook-token"
 ```toml
 [trigger]
 type = "github_issue_assigned"
-assigned_to = "zeroklaw"
+assigned_to = "alice"
 
 [git]
 clone = true
@@ -685,7 +679,7 @@ worktree = true
 
 [[steps]]
 name = "Plan"
-agent = "local"
+agent = "pm"
 prompt_template = """
 Plan the implementation for {{owner}}/{{repo}}#{{issue_number}}.
 Save the plan to {{output_dir}}/plan.md
@@ -693,7 +687,7 @@ Save the plan to {{output_dir}}/plan.md
 
 [[steps]]
 name = "Implement"
-agent = "local"
+agent = "swe"
 prompt_template = """
 Read the plan at {{output_dir}}/plan.md and implement it for {{owner}}/{{repo}}#{{issue_number}}.
 Create a PR with your changes.
@@ -705,7 +699,7 @@ Create a PR with your changes.
 ```toml
 [trigger]
 type = "github_pull_request_review"
-allowed_users = ["zeroklaw"]
+allowed_users = ["alice"]
 
 [git]
 clone = true
@@ -713,7 +707,7 @@ worktree = true
 
 [[steps]]
 name = "Address Review"
-agent = "remote"
+agent = "pm"
 prompt_template = """
 Address the review feedback on {{owner}}/{{repo}}#{{pr_number}}.
 Review ID: {{review_id}}
@@ -732,7 +726,7 @@ worktree = true
 
 [[steps]]
 name = "Plan"
-agent = "local"
+agent = "pm"
 prompt_template = """
 Plan the implementation for {{owner}}/{{repo}}#!{{issue_iid}}.
 Save the plan to {{output_dir}}/plan.md
@@ -740,7 +734,7 @@ Save the plan to {{output_dir}}/plan.md
 
 [[steps]]
 name = "Implement"
-agent = "local"
+agent = "swe"
 prompt_template = """
 Read the plan at {{output_dir}}/plan.md and implement it for {{owner}}/{{repo}}#!{{issue_iid}}.
 Create an MR with your changes.
@@ -759,7 +753,7 @@ worktree = true
 
 [[steps]]
 name = "Address Review"
-agent = "remote"
+agent = "pm"
 prompt_template = """
 Address the review feedback on {{owner}}/{{repo}}#!{{mr_iid}}.
 Review ID: {{review_id}}
@@ -786,19 +780,17 @@ Review ID: {{review_id}}
 
 9. **Config separation**: Global user settings (`platform`, `repos`, `agents`, `[runtime]`, `[server]`) live in `config.toml`. Workflow definitions (`[trigger]`, `[git]`, `[[steps]]`) live in separate `.toml` files. Each step carries its own `agent` reference, keeping deployment-specific connection details out of workflow definitions while allowing steps to target different agents.
 
-10. **Named agents**: `[[agents]]` in `config.toml` defines named Hermes API instances. Each step in a workflow references an agent by name (`agent = "local"`), keeping `base_url` out of workflow files and making it easy to retarget a step by changing the config.
+10. **Named agents**: `[[agents]]` in `config.toml` defines named Hermes API instances. Each step in a workflow references an agent by name (`agent = "pm"`), keeping `base_url` out of workflow files and making it easy to retarget a step by changing the config.
 
 11. **Shared repos**: All repos in `config.toml` share the same workflow files. This simplifies the mental model — adding a new repo means one entry in the `repos` array, and every existing workflow automatically applies. Trigger filters (`assigned_to`, `allowed_users`) scope which events each workflow responds to.
 
-12. **Repos as a flat array**: `repos = [{owner, repo}]` instead of `[[repos]]` (TOML array-of-tables). Repos are small, uniform entries — a flat array reads more compactly and avoids the visual noise of `[[repos]]` repeated headers for a two-field struct.
+12. **Step-level agent assignment**: Each step declares its own `agent` field rather than a single workflow-level agent. This allows a workflow to use different Hermes API instances for different steps (e.g., a planning step on the pm agent, an implementation step on the swe agent).
 
-13. **Step-level agent assignment**: Each step declares its own `agent` field rather than a single workflow-level agent. This allows a workflow to use different Hermes API instances for different steps (e.g., a planning step on a local agent, an implementation step on a remote agent).
+13. **Hermes-only agent config**: The `[[agents]]` config contains only `name` and `base_url`. Provider and model selection are Hermes Agent internals — the orchestrator sends `instructions` and `input` to `/v1/responses`, and Hermes handles provider routing and model selection.
 
-14. **Hermes-only agent config**: The `[[agents]]` config contains only `name` and `base_url`. Provider and model selection are Hermes Agent internals — the orchestrator sends `instructions` and `input` to `/v1/responses`, and Hermes handles provider routing and model selection. Exposing `provider` or `model` in the orchestrator config would leak Hermes internals and create a maintenance burden whenever the Hermes API changes.
+14. **Assignment-only issue triggers**: The `github_issue_assigned` and `gitlab_issue_assigned` trigger types fire on the assignment event only, not on issue open. "Issue opened" is a semantically distinct event (the issue exists but no one is responsible for acting on it yet) and warrants its own trigger type if needed in the future. Conflating the two would require workflows to handle two different contexts (newly filed vs. explicitly assigned) in the same template logic.
 
-15. **Assignment-only issue triggers**: The `github_issue_assigned` and `gitlab_issue_assigned` trigger types fire on the assignment event only, not on issue open. "Issue opened" is a semantically distinct event (the issue exists but no one is responsible for acting on it yet) and warrants its own trigger type if needed in the future. Conflating the two would require workflows to handle two different contexts (newly filed vs. explicitly assigned) in the same template logic.
-
-16. **GitLab review triggers mirror GitHub**: GitLab does not have separate webhook events for "review submitted" vs. "inline review comment" — both arrive as `Note Hook` events. The orchestrator splits them into `gitlab_merge_request_review` (any Note on a MergeRequest) and `gitlab_merge_request_review_comment` (DiffNote on a MergeRequest) to maintain naming parity with GitHub's `github_pull_request_review` and `github_pull_request_review_comment`. The split is implemented by inspecting the `noteable_type` and `type` fields in the Note Hook payload. This gives workflow authors a consistent trigger vocabulary across platforms, even though the underlying webhook mechanism differs.
+15. **GitLab review triggers mirror GitHub**: GitLab does not have separate webhook events for "review submitted" vs. "inline review comment" — both arrive as `Note Hook` events. The orchestrator splits them into `gitlab_merge_request_review` (any Note on a MergeRequest) and `gitlab_merge_request_review_comment` (DiffNote on a MergeRequest) to maintain naming parity with GitHub's `github_pull_request_review` and `github_pull_request_review_comment`. The split is implemented by inspecting the `noteable_type` and `type` fields in the Note Hook payload. This gives workflow authors a consistent trigger vocabulary across platforms, even though the underlying webhook mechanism differs.
 
 ## 18. Operations
 
