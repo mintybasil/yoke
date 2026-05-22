@@ -1,10 +1,12 @@
-# Agent Orchestrator — Architecture Design
+# Yoke — Architecture Design
 
 ## 1. Overview
 
-The orchestrator is a Rust daemon that receives webhook events from a code platform (GitHub or GitLab) via a built-in HTTP server, deduplicates them, and runs multi-step agent workflows through the Hermes Agent REST API.
+Yoke is a Rust daemon that receives webhook events from a code platform (GitHub or GitLab) via a built-in HTTP server, deduplicates them, and runs multi-step agent workflows through the Hermes Agent REST API.
 
-The code platform delivers webhook events to the orchestrator's HTTP server. The daemon verifies, parses, and routes each event to a workflow runner, which executes a sequence of agent steps. Each step is a prompt template rendered with event variables and sent as a request to the Hermes API.
+A single Yoke instance handles one platform. To support both GitHub and GitLab, run two instances with separate configs.
+
+The code platform delivers webhook events to Yoke's HTTP server. The daemon verifies, parses, and routes each event to a workflow runner, which executes a sequence of agent steps. Each step is a prompt template rendered with event variables and sent as a request to the Hermes API.
 
 ### Design Goals
 
@@ -101,7 +103,7 @@ base_url = "http://localhost:8001"
 # Runtime settings
 [runtime]
 max_concurrent = 2                     # max concurrent workflows (0 = unlimited)
-workdir = "~/.agent-orchestrator"       # runtime data directory
+workdir = "~/.yoke"       # runtime data directory
 
 # Server settings
 [server]
@@ -151,7 +153,7 @@ Create a PR with your changes.
 """
 ```
 
-Each step specifies which agent to use via the `agent` field — a string reference to an entry in `config.toml`'s `[[agents]]` array. At startup, the orchestrator resolves every step's `agent` name to the agent's `base_url`. If any step references an agent name that doesn't match a configured agent, startup fails with a hard exit.
+Each step specifies which agent to use via the `agent` field — a string reference to an entry in `config.toml`'s `[[agents]]` array. At startup, Yoke resolves every step's `agent` name to the agent's `base_url`. If any step references an agent name that doesn't match a configured agent, startup fails with a hard exit.
 
 ### Trigger Type Naming
 
@@ -198,7 +200,7 @@ If different repos need different workflows, use `[trigger]` filters (e.g., `ass
 | `agents[].name` | Unique name for referencing in workflows | required |
 | `agents[].base_url` | Hermes API host (no path) | required |
 | `[runtime].max_concurrent` | Max concurrent workflow runs | `0` (unlimited) |
-| `[runtime].workdir` | Runtime data directory | `~/.agent-orchestrator` |
+| `[runtime].workdir` | Runtime data directory | `~/.yoke` |
 | `[server].host` | Bind address | `0.0.0.0` |
 | `[server].port` | Listen port | `8644` |
 | `[server].webhook_secret` | Webhook auth key (HMAC for GitHub, token for GitLab) | required |
@@ -222,7 +224,7 @@ If different repos need different workflows, use `[trigger]` filters (e.g., `ass
 
 ## 4. Event Sources (Webhooks)
 
-The orchestrator runs a single webhook handler, determined by the `platform` setting in `config.toml`. The handler is registered at `POST /webhook`.
+Yoke runs a single webhook handler, determined by the `platform` setting in `config.toml`. The handler is registered at `POST /webhook`.
 
 ### GitHub Webhooks
 
@@ -405,7 +407,7 @@ Additional variables are extracted from the event JSON and merged into the templ
 
 ### Prompt Template Validation
 
-At startup, the orchestrator validates all prompt templates:
+At startup, Yoke validates all prompt templates:
 
 - **Variable existence**: Each `{{variable}}` placeholder is checked against the known set of global and trigger-specific variables. Unknown variables cause a hard exit.
 - **Syntax errors**: Malformed placeholders (e.g., `{{variable`, `{{ }}`) are rejected.
@@ -463,7 +465,7 @@ When the harness executes a step, it builds a request to the agent's `base_url`:
 
 ### Agent Resolution
 
-At startup, every step's `agent` field is resolved against the `[[agents]]` array in `config.toml`. If any step references an agent name that doesn't match a configured agent, the orchestrator exits with a hard error. This ensures misconfigured workflows fail immediately.
+At startup, every step's `agent` field is resolved against the `[[agents]]` array in `config.toml`. If any step references an agent name that doesn't match a configured agent, Yoke exits with a hard error. This ensures misconfigured workflows fail immediately.
 
 ### Conventions
 
@@ -476,7 +478,7 @@ At startup, every step's `agent` field is resolved against the `[[agents]]` arra
 
 ## 9. Git & Worktree Management
 
-The orchestrator manages the git lifecycle for each configured repo:
+Yoke manages the git lifecycle for each configured repo:
 
 1. **Clone** — `git clone` (via git2 crate) on first event, `git pull` on subsequent events
 2. **Worktree** — optional per-event worktree using `git worktree add`
@@ -587,7 +589,7 @@ Two-tier model: startup errors are hard exits, runtime errors are per-event soft
 ## 14. CLI
 
 ```bash
-agent-orchestrator [OPTIONS]
+yoke [OPTIONS]
 
 Options:
   --config <FILE>              Path to config.toml (default: ./config.toml)
@@ -629,7 +631,7 @@ base_url = "http://localhost:8001"
 
 [runtime]
 max_concurrent = 2
-workdir = "~/.agent-orchestrator"
+workdir = "~/.yoke"
 
 [server]
 host = "0.0.0.0"
@@ -658,7 +660,7 @@ base_url = "http://localhost:8001"
 
 [runtime]
 max_concurrent = 2
-workdir = "~/.agent-orchestrator"
+workdir = "~/.yoke"
 
 [server]
 host = "0.0.0.0"
@@ -762,15 +764,15 @@ Review ID: {{review_id}}
 
 ## 17. Design Decisions (Resolved)
 
-1. **Single platform per instance with unified webhook path**: The orchestrator handles one platform (GitHub or GitLab) per instance, set globally in `config.toml`. A single `POST /webhook` endpoint serves that platform — only one handler is active at a time, selected by the `platform` setting. There is no ambiguity about which verification and parsing logic to apply. Supporting both platforms in a single instance adds complexity across config, routing, dedup, authentication, and data layout for a marginal use case. Running two instances with separate configs is simpler to operate and reason about.
+1. **Single platform per instance with unified webhook path**: Yoke handles one platform (GitHub or GitLab) per instance, set globally in `config.toml`. A single `POST /webhook` endpoint serves that platform — only one handler is active at a time, selected by the `platform` setting. There is no ambiguity about which verification and parsing logic to apply. Supporting both platforms in a single instance adds complexity across config, routing, dedup, authentication, and data layout for a marginal use case. Running two instances with separate configs is simpler to operate and reason about.
 
 3. **Platform-specific trigger types**: Trigger types carry the platform prefix (e.g., `github_issue_assigned`, `gitlab_merge_request_review`). GitHub and GitLab have different event models, payload shapes, and action semantics — unified names paper over real differences and create ambiguous mappings. Prefixed types make workflows explicit about which platform they target. At startup, any workflow containing a trigger type that doesn't match the configured platform is rejected with a hard exit, catching misconfigured workflows immediately.
 
 4. **Payload size limit**: Configurable via `[server].max_body_size`. Default 1MB. GitHub and GitLab payloads are typically <100KB, but large diffs can exceed that. Users who hit the limit can increase it.
 
-5. **HTTPS/TLS**: Reverse proxy is the expected pattern. The HTTP server listens on plain HTTP. For production, put it behind Caddy, nginx, or a cloudflare tunnel. TLS termination is not the orchestrator's job — it's infrastructure.
+5. **HTTPS/TLS**: Reverse proxy is the expected pattern. The HTTP server listens on plain HTTP. For production, put it behind Caddy, nginx, or a cloudflare tunnel. TLS termination is not Yoke's job — it's infrastructure.
 
-6. **Webhook secret rotation**: Restart required. Changing the secret in the platform's webhook settings and then restarting the orchestrator is a simple, reliable workflow. Hot-reloading secrets adds complexity (race conditions between the old and new secret during rotation) for marginal benefit.
+6. **Webhook secret rotation**: Restart required. Changing the secret in the platform's webhook settings and then restarting Yoke is a simple, reliable workflow. Hot-reloading secrets adds complexity (race conditions between the old and new secret during rotation) for marginal benefit.
 
 7. **Multi-workflow dedup**: Shared dedup sets. If two workflows match the same event (e.g., both `github_issue_assigned` for overlapping repos), the first workflow loaded runs. Per-workflow dedup would require tracking completed events per-workflow-file, which doubles the persistence complexity for a marginal use case. If this becomes a problem, the user should scope triggers more tightly.
 
@@ -784,33 +786,33 @@ Review ID: {{review_id}}
 
 12. **Step-level agent assignment**: Each step declares its own `agent` field rather than a single workflow-level agent. This allows a workflow to use different Hermes API instances for different steps (e.g., a planning step on the pm agent, an implementation step on the swe agent).
 
-13. **Hermes-only agent config**: The `[[agents]]` config contains only `name` and `base_url`. Provider and model selection are Hermes Agent internals — the orchestrator sends `instructions` and `input` to `/v1/responses`, and Hermes handles provider routing and model selection.
+13. **Hermes-only agent config**: The `[[agents]]` config contains only `name` and `base_url`. Provider and model selection are Hermes Agent internals — Yoke sends `instructions` and `input` to `/v1/responses`, and Hermes handles provider routing and model selection.
 
 14. **Assignment-only issue triggers**: The `github_issue_assigned` and `gitlab_issue_assigned` trigger types fire on the assignment event only, not on issue open. "Issue opened" is a semantically distinct event (the issue exists but no one is responsible for acting on it yet) and warrants its own trigger type if needed in the future. Conflating the two would require workflows to handle two different contexts (newly filed vs. explicitly assigned) in the same template logic.
 
-15. **GitLab review triggers mirror GitHub**: GitLab does not have separate webhook events for "review submitted" vs. "inline review comment" — both arrive as `Note Hook` events. The orchestrator splits them into `gitlab_merge_request_review` (any Note on a MergeRequest) and `gitlab_merge_request_review_comment` (DiffNote on a MergeRequest) to maintain naming parity with GitHub's `github_pull_request_review` and `github_pull_request_review_comment`. The split is implemented by inspecting the `noteable_type` and `type` fields in the Note Hook payload. This gives workflow authors a consistent trigger vocabulary across platforms, even though the underlying webhook mechanism differs.
+15. **GitLab review triggers mirror GitHub**: GitLab does not have separate webhook events for "review submitted" vs. "inline review comment" — both arrive as `Note Hook` events. Yoke splits them into `gitlab_merge_request_review` (any Note on a MergeRequest) and `gitlab_merge_request_review_comment` (DiffNote on a MergeRequest) to maintain naming parity with GitHub's `github_pull_request_review` and `github_pull_request_review_comment`. The split is implemented by inspecting the `noteable_type` and `type` fields in the Note Hook payload. This gives workflow authors a consistent trigger vocabulary across platforms, even though the underlying webhook mechanism differs.
 
 ## 18. Operations
 
 ### Webhook Management CLI
 
-The orchestrator provides CLI subcommands to configure and remove webhooks on the platform. These commands are idempotent and safe to run multiple times.
+Yoke provides CLI subcommands to configure and remove webhooks on the platform. These commands are idempotent and safe to run multiple times.
 
 ```bash
 # Configure webhooks for all repos in config.toml
-agent-orchestrator webhooks add --config config.toml
+yoke webhooks add --config config.toml
 
 # Remove webhooks (e.g., before decommissioning)
-agent-orchestrator webhooks remove --config config.toml
+yoke webhooks remove --config config.toml
 
 # List configured webhooks (idempotency check)
-agent-orchestrator webhooks list --config config.toml
+yoke webhooks list --config config.toml
 ```
 
 **`webhooks add` behavior:**
 
 For each repo in `config.toml`:
-1. Check if a webhook exists with matching URL (`https://your-orchestrator-host/webhook`)
+1. Check if a webhook exists with matching URL (`https://your-yoke-host/webhook`)
 2. If yes: update the webhook secret and event subscriptions
 3. If no: create a new webhook with the configured secret
 4. Report summary: created/updated/skipped count
@@ -818,7 +820,7 @@ For each repo in `config.toml`:
 **`webhooks remove` behavior:**
 
 For each repo in `config.toml`:
-1. Find webhooks matching the orchestrator's URL
+1. Find webhooks matching Yoke's URL
 2. Delete matching webhooks
 3. Report summary: deleted count
 
@@ -827,17 +829,17 @@ For each repo in `config.toml`:
 For each repo in `config.toml`:
 1. Fetch all webhooks
 2. Display: URL, secret (last 4 chars only), events subscribed, active status
-3. Highlight which webhooks match the orchestrator's configuration
+3. Highlight which webhooks match Yoke's configuration
 
 ### Initial Setup
 
-1. Deploy the orchestrator and note its public URL (e.g., `https://orchestrator.example.com`)
+1. Deploy Yoke and note its public URL (e.g., `https://yoke.example.com`)
 2. Set `webhook_secret` in `config.toml`
-3. Run `agent-orchestrator webhooks add --config config.toml`
-4. Verify with `agent-orchestrator webhooks list --config config.toml`
-5. Start the orchestrator daemon
+3. Run `yoke webhooks add --config config.toml`
+4. Verify with `yoke webhooks list --config config.toml`
+5. Start Yoke daemon
 
-The `webhooks add` command configures the platform to send events for the specific event types the orchestrator handles:
+The `webhooks add` command configures the platform to send events for the specific event types Yoke handles:
 
 **GitHub events:**
 - `issues` (action: `assigned`)
@@ -855,18 +857,18 @@ To rotate the webhook secret:
 
 1. Generate a new secret (e.g., `openssl rand -hex 32`)
 2. Update `webhook_secret` in `config.toml`
-3. Run `agent-orchestrator webhooks add --config config.toml` — this updates the secret on all platform webhooks
-4. Restart the orchestrator to load the new secret
+3. Run `yoke webhooks add --config config.toml` — this updates the secret on all platform webhooks
+4. Restart Yoke to load the new secret
 
-There is no grace period — the secret changes atomically. If the restart fails, the platform will be sending webhooks with the new secret but the orchestrator will reject them (logged as 401). Roll back by reverting `config.toml` and running `webhooks add` again.
+There is no grace period — the secret changes atomically. If the restart fails, the platform will be sending webhooks with the new secret but Yoke will reject them (logged as 401). Roll back by reverting `config.toml` and running `webhooks add` again.
 
 ### Decommissioning
 
-Before shutting down an orchestrator instance permanently:
+Before shutting down a Yoke instance permanently:
 
-1. Run `agent-orchestrator webhooks remove --config config.toml`
+1. Run `yoke webhooks remove --config config.toml`
 2. Verify with `webhooks list` that webhooks are deleted
-3. Stop the orchestrator daemon
+3. Stop Yoke daemon
 
 This prevents the platform from continuing to send webhooks to a dead endpoint, which would fill up delivery failure logs.
 
@@ -877,9 +879,9 @@ This prevents the platform from continuing to send webhooks to a dead endpoint, 
 1. Run `webhooks list` to verify webhooks exist and are active
 2. Check platform delivery logs (GitHub: repo Settings → Webhooks → Recent Deliveries; GitLab: Settings → Webhooks → Recent Events)
 3. Look for non-2xx responses or timeouts
-4. Verify the orchestrator's public URL is reachable (test with `curl -X POST https://your-host/webhook`)
+4. Verify Yoke's public URL is reachable (test with `curl -X POST https://your-host/webhook`)
 
-**401 errors in orchestrator logs:**
+**401 errors in Yoke logs:**
 
 - Secret mismatch between `config.toml` and platform webhook configuration
 - Run `webhooks add` to sync the secret, then restart
@@ -899,7 +901,7 @@ This prevents the platform from continuing to send webhooks to a dead endpoint, 
 
 ### Testing Strategy
 
-The orchestrator is tested at three levels:
+Yoke is tested at three levels:
 
 1. **Unit tests** — Individual components (template rendering, webhook parsing, dedup logic)
 2. **Integration tests** — HTTP server, webhook handling, workflow execution with mocked Hermes API
@@ -954,7 +956,7 @@ pub struct TestHarness {
 pub async fn setup() -> TestHarness {
     // Start mock Hermes API on random port
     // Create temp config.toml pointing to mock
-    // Start orchestrator server
+    // Start Yoke server
     // Return handles for cleanup
 }
 ```
@@ -1019,12 +1021,12 @@ tests/fixtures/
   gitlab_merge_request_review.json
 ```
 
-These are actual payloads copied from GitHub/GitLab webhook delivery logs (with sensitive data redacted). This ensures the orchestrator handles real-world payload structures, not just idealized test cases.
+These are actual payloads copied from GitHub/GitLab webhook delivery logs (with sensitive data redacted). This ensures Yoke handles real-world payload structures, not just idealized test cases.
 
 **Test workflow:**
 
 1. Load fixture payload
-2. Start orchestrator with test config (single repo, mock Hermes)
+2. Start Yoke with test config (single repo, mock Hermes)
 3. Send webhook to `/webhook`
 4. Poll for workflow completion (check `completed.json` or file existence)
 5. Assert:
@@ -1049,7 +1051,7 @@ host = "0.0.0.0"
 port = 8644
 webhook_secret = "dev-secret"
 
-# Start orchestrator
+# Start Yoke
 cargo run -- --config config.toml
 
 # In another terminal, configure GitHub webhook:
