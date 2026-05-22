@@ -155,30 +155,6 @@ Create a PR with your changes.
 
 Each step specifies which agent to use via the `agent` field — a string reference to an entry in `config.toml`'s `[[agents]]` array. At startup, Yoke resolves every step's `agent` name to the agent's `base_url`. If any step references an agent name that doesn't match a configured agent, startup fails with a hard exit.
 
-### Trigger Type Naming
-
-Trigger types are prefixed with the platform name — `github_` or `gitlab_` — matching the event semantics of that platform. A workflow with a trigger type that doesn't match the configured platform is rejected at startup with a hard exit.
-
-**GitHub trigger types:**
-
-| Type                                 | GitHub Event                  | Action      |
-| ------------------------------------ | ----------------------------- | ----------- |
-| `github_issue_assigned`              | `issues`                      | `assigned`  |
-| `github_issue_comment`               | `issue_comment`               | `created`   |
-| `github_pull_request_review`         | `pull_request_review`         | `submitted` |
-| `github_pull_request_review_comment` | `pull_request_review_comment` | `created`   |
-
-**GitLab trigger types:**
-
-| Type                                  | GitLab Event | Action/Object Kind                                     |
-| ------------------------------------- | ------------ | ------------------------------------------------------ |
-| `gitlab_issue_assigned`               | `Issue Hook` | `issue` (action: `update`)                             |
-| `gitlab_note`                         | `Note Hook`  | `note`                                                 |
-| `gitlab_merge_request_review`         | `Note Hook`  | `note` (noteable_type = MergeRequest)                  |
-| `gitlab_merge_request_review_comment` | `Note Hook`  | `note` (noteable_type = MergeRequest, type = DiffNote) |
-
-The mapping from trigger type to platform event headers and payload fields is handled internally by the webhook handler.
-
 ### How Repos Connect to Workflows
 
 All repos listed in `config.toml` share the same set of loaded workflows. When a webhook arrives for a repo, the dispatcher finds all workflows whose `[trigger]` matches the event, then runs them. This means a single workflow file automatically applies to every configured repo.
@@ -253,29 +229,7 @@ When `platform = "gitlab"`, the handler at `POST /webhook` receives GitLab webho
 
 Unverified payloads receive a `401` response and are logged as a warning. This prevents forgery and ensures the daemon only processes legitimate events.
 
-### Event Mapping
-
-The handler maps platform-native webhook events to internal `TriggerEvent` types based on workflow configuration. Trigger types carry the platform prefix, so the handler matches them directly against the platform's event headers and payload fields.
-
-**GitHub mapping:**
-
-| Trigger Type | GitHub Event | Action | Variables |
-|---|---|---|---|
-| `github_issue_assigned` | `issues` | `assigned` | `issue_number`, `action`, `assignee`, `issue_title`, `issue_body` |
-| `github_issue_comment` | `issue_comment` | `created` | `issue_number`, `comment_id` |
-| `github_pull_request_review` | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body` |
-| `github_pull_request_review_comment` | `pull_request_review_comment` | `created` | `pr_number`, `review_id`, `comment_id` |
-
-**GitLab mapping:**
-
-| Trigger Type                          | GitLab Event | Object Kind                                            | Variables                                                               |
-| ------------------------------------- | ------------ | ------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `gitlab_issue_assigned`               | `Issue Hook` | `issue`                                                | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` |
-| `gitlab_note`                         | `Note Hook`  | `note`                                                 | `issue_iid` or `mr_iid`, `note_id`                                      |
-| `gitlab_merge_request_review`         | `Note Hook`  | `note` (noteable_type = MergeRequest)                  | `mr_iid`, `review_id`, `review_body`                                    |
-| `gitlab_merge_request_review_comment` | `Note Hook`  | `note` (noteable_type = MergeRequest, type = DiffNote) | `mr_iid`, `review_id`, `comment_id`                                     |
-
-The mapping is configured per-workflow via the `[trigger]` TOML section. Triggers specify which **event + action combinations** to respond to, along with optional filters (e.g., only fire when a specific user is assigned, or when a review is submitted by specific users).
+See **Appendix A: Trigger Reference** for the complete mapping of trigger types to platform events and available template variables.
 
 ### Webhook Reliability
 
@@ -375,37 +329,10 @@ The `agent` field on each step allows different steps in the same workflow to ta
 
 ### Template Variables
 
-Global variables provided by the runner:
+Prompt templates have access to:
 
-| Variable         | Value |
-|------------------|---|
-| `owner`          | Repository owner (namespace) |
-| `repo`           | Repository name |
-| `default_branch` | From `[git].default_branch` |
-| `output_dir`       | Per-event workspace directory |
-
-Additional variables are extracted from the event JSON and merged into the template variable map.
-
-**GitHub:**
-
-| Trigger Type                         | Variables                                                         |
-| ------------------------------------ | ----------------------------------------------------------------- |
-| `github_issue_assigned`              | `issue_number`, `action`, `assignee`, `issue_title`, `issue_body` |
-| `github_issue_comment`               | `issue_number`, `comment_id`                                      |
-| `github_pull_request_review`         | `pr_number`, `review_id`, `review_body`                           |
-| `github_pull_request_review_comment` | `pr_number`, `review_id`, `comment_id`                            |
-
-**GitLab:**
-
-| Trigger Type                          | Variables                                                               |
-| ------------------------------------- | ----------------------------------------------------------------------- |
-| `gitlab_issue_assigned`               | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` |
-| `gitlab_note`                         | `issue_iid` or `mr_iid`, `note_id`                                      |
-| `gitlab_merge_request_review`         | `mr_iid`, `review_id`, `review_body`                                    |
-| `gitlab_merge_request_review_comment` | `mr_iid`, `review_id`, `comment_id`                                     |
-
-
-### Prompt Template Validation
+1. **Global variables** — available in all triggers (see **Appendix A: Trigger Reference**)
+2. **Trigger-specific variables** — extracted from the event payload (see **Appendix A: Trigger Reference**)
 
 At startup, Yoke validates all prompt templates:
 
@@ -1270,3 +1197,36 @@ fn test_fixtures_are_valid_json() {
     }
 }
 ```
+
+## Appendix A: Trigger Reference
+
+This appendix consolidates all trigger types, event mappings, and template variables for both platforms.
+
+### GitHub Triggers
+
+| Trigger Type                         | Event Header          | Action      | Variables                                                         |
+| ------------------------------------ | --------------------- | ----------- | ----------------------------------------------------------------- |
+| `github_issue_assigned`              | `issues`              | `assigned`  | `issue_number`, `action`, `assignee`, `issue_title`, `issue_body` |
+| `github_issue_comment`               | `issue_comment`       | `created`   | `issue_number`, `comment_id`                                      |
+| `github_pull_request_review`         | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body`                           |
+| `github_pull_request_review_comment` | `pull_request_review_comment` | `created`   | `pr_number`, `review_id`, `comment_id`                            |
+
+### GitLab Triggers
+
+| Trigger Type                          | Event Header   | Object Kind                                            | Variables                                                               |
+| ------------------------------------- | -------------- | ------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `gitlab_issue_assigned`               | `Issue Hook`   | `issue` (action: `update`)                             | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` |
+| `gitlab_note`                         | `Note Hook`    | `note`                                                 | `issue_iid` or `mr_iid`, `note_id`                                      |
+| `gitlab_merge_request_review`         | `Note Hook`    | `note` (noteable_type = MergeRequest)                  | `mr_iid`, `review_id`, `review_body`                                    |
+| `gitlab_merge_request_review_comment` | `Note Hook`    | `note` (noteable_type = MergeRequest, type = DiffNote) | `mr_iid`, `review_id`, `comment_id`                                     |
+
+### Global Template Variables
+
+These variables are available in all prompt templates, regardless of trigger type:
+
+| Variable         | Value |
+| ---------------- | ----- |
+| `owner`          | Repository owner (namespace) |
+| `repo`           | Repository name |
+| `default_branch` | From `[git].default_branch` config |
+| `output_dir`     | Per-event workspace directory |
