@@ -4,6 +4,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::workflow::Workflow;
+
 /// Supported code platforms.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -181,6 +183,8 @@ pub enum ConfigError {
     Validation(String),
     /// Shell expansion error (e.g. unresolvable tilde).
     ShellExpand(String),
+    /// Agent resolution error (workflow references unknown agent).
+    AgentResolution(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -190,6 +194,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Parse(e) => write!(f, "config parse error: {e}"),
             ConfigError::Validation(msg) => write!(f, "config validation error: {msg}"),
             ConfigError::ShellExpand(msg) => write!(f, "shell expansion error: {msg}"),
+            ConfigError::AgentResolution(msg) => write!(f, "agent resolution error: {msg}"),
         }
     }
 }
@@ -202,6 +207,28 @@ impl std::error::Error for ConfigError {
             _ => None,
         }
     }
+}
+
+/// Verify that every agent referenced in workflow steps exists in the global configuration.
+///
+/// Returns `Ok(())` if all agent references are valid, or `Err(ConfigError::AgentResolution)`
+/// with a descriptive message naming the step, workflow file, and missing agent.
+pub fn resolve_agents(config: &Config, workflows: &[Workflow]) -> Result<(), ConfigError> {
+    use std::collections::HashSet;
+
+    let agent_names: HashSet<&str> = config.agents.iter().map(|a| a.name.as_str()).collect();
+
+    for wf in workflows {
+        for step in &wf.steps {
+            if !agent_names.contains(step.agent.as_str()) {
+                return Err(ConfigError::AgentResolution(format!(
+                    "Step '{}' in workflow '{}' references unknown agent '{}'",
+                    step.name, wf.path, step.agent
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -567,5 +594,118 @@ webhook_secret = "secret"
 
         let err = ConfigError::ShellExpand("bad tilde".to_string());
         assert_eq!(err.to_string(), "shell expansion error: bad tilde");
+
+        let err = ConfigError::AgentResolution("missing agent".to_string());
+        assert_eq!(err.to_string(), "agent resolution error: missing agent");
+    }
+
+    // --- Agent resolution tests ---
+
+    fn make_config(agent_names: &[&str]) -> Config {
+        Config {
+            platform: Platform::Github,
+            repos: vec![],
+            agents: agent_names
+                .iter()
+                .map(|name| AgentConfig {
+                    name: name.to_string(),
+                    base_url: Url::parse("http://localhost:8000").unwrap(),
+                })
+                .collect(),
+            runtime: RuntimeConfig::default(),
+            server: ServerConfig {
+                host: "0.0.0.0".to_string(),
+                port: 8644,
+                webhook_secret: "secret".to_string(),
+                max_body_size: 1_048_576,
+            },
+            github: None,
+            gitlab: None,
+            gitlab_url: None,
+        }
+    }
+
+    fn make_workflow(path: &str, steps: Vec<(&str, &str)>) -> Workflow {
+        Workflow {
+            path: path.to_string(),
+            trigger: crate::workflow::Trigger {
+                r#type: "github_issue_assigned".to_string(),
+                assigned_to: None,
+                allowed_users: None,
+            },
+            git: crate::workflow::GitConfig::default(),
+            steps: steps
+                .into_iter()
+                .map(|(name, agent)| crate::workflow::Step {
+                    name: name.to_string(),
+                    agent: agent.to_string(),
+                    prompt_template: "Do something".to_string(),
+                    pre_hooks: vec![],
+                    post_hooks: vec![],
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_resolve_agents_success() {
+        let config = make_config(&["pm", "swe"]);
+        let workflows = vec![make_workflow(
+            "flows/plan.toml",
+            vec![("Plan", "pm"), ("Implement", "swe")],
+        )];
+        assert!(resolve_agents(&config, &workflows).is_ok());
+    }
+
+    #[test]
+    fn test_resolve_agents_empty_workflows() {
+        let config = make_config(&["pm"]);
+        let workflows: Vec<Workflow> = vec![];
+        assert!(resolve_agents(&config, &workflows).is_ok());
+    }
+
+    #[test]
+    fn test_resolve_agents_missing_agent() {
+        let config = make_config(&["pm"]);
+        let workflows = vec![make_workflow("flows/dev.toml", vec![("Code", "swe")])];
+        let result = resolve_agents(&config, &workflows);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains(
+                "Step 'Code' in workflow 'flows/dev.toml' references unknown agent 'swe'"
+            ),
+            "unexpected error message: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_agents_multiple_workflows_first_error() {
+        let config = make_config(&["pm"]);
+        let workflows = vec![
+            make_workflow("flows/plan.toml", vec![("Plan", "pm")]),
+            make_workflow("flows/dev.toml", vec![("Code", "swe")]),
+        ];
+        let result = resolve_agents(&config, &workflows);
+        assert!(result.is_err());
+        // Should fail on the second workflow's unknown agent
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("unknown agent 'swe'"),
+            "unexpected error message: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_agents_all_agents_known_across_workflows() {
+        let config = make_config(&["pm", "swe", "reviewer"]);
+        let workflows = vec![
+            make_workflow("flows/plan.toml", vec![("Plan", "pm")]),
+            make_workflow(
+                "flows/dev.toml",
+                vec![("Code", "swe"), ("Review", "reviewer")],
+            ),
+        ];
+        assert!(resolve_agents(&config, &workflows).is_ok());
     }
 }

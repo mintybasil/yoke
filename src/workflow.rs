@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 /// A complete workflow definition loaded from a `.toml` file.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Workflow {
+    /// File path this workflow was loaded from (set by `load_workflows`).
+    #[serde(default)]
+    pub path: String,
     pub trigger: Trigger,
     #[serde(default)]
     pub git: GitConfig,
@@ -113,12 +116,14 @@ pub fn load_workflows<P: AsRef<Path>>(dir: P) -> Result<Vec<Workflow>, WorkflowE
         let entry = entry.map_err(WorkflowError::Io)?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+            let path_str = path.display().to_string();
             let content = fs::read_to_string(&path).map_err(WorkflowError::Io)?;
-            let workflow: Workflow =
+            let mut workflow: Workflow =
                 toml::from_str(&content).map_err(|e| WorkflowError::Parse {
-                    path: path.display().to_string(),
+                    path: path_str.clone(),
                     source: e,
                 })?;
+            workflow.path = path_str;
             workflow
                 .validate()
                 .map_err(|msg| WorkflowError::Validation {
