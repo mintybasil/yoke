@@ -88,6 +88,7 @@ The application fails fast on configuration errors:
 - Invalid URL in `agents[].base_url` is rejected
 - Duplicate agent names are rejected
 - Tilde (`~`) in `workdir` is expanded to the home directory
+- Agent resolution: every `step.agent` in workflow files must match a configured `[[agents]]` name — unknown agents produce a clear error with the step name, workflow file, and missing agent name
 
 ## Workflow Files
 
