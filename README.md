@@ -89,6 +89,66 @@ The application fails fast on configuration errors:
 - Duplicate agent names are rejected
 - Tilde (`~`) in `workdir` is expanded to the home directory
 
+## Workflow Files
+
+Yoke can load workflow definitions from `.toml` files in a directory (passed via `--workflows`, default: current directory). Each file defines a trigger, git configuration, and a sequence of steps.
+
+### workflow.toml example
+
+```toml
+[trigger]
+type = "github_issue_assigned"
+assigned_to = "alice"
+
+[git]
+clone = true
+worktree = true
+default_branch = "main"
+
+[[steps]]
+name = "Plan"
+agent = "pm"
+prompt_template = """You are an expert software engineer. Issue {{owner}}/{{repo}}#{{issue_number}} has been assigned to you.
+Save the plan to {{output_dir}}/plan.md"""
+
+[[steps]]
+name = "Implement"
+agent = "swe"
+prompt_template = """Read the plan and implement it."""
+```
+
+### Workflow fields
+
+| Field | Purpose | Default |
+|---|---|---|
+| `[trigger].type` | Event type (e.g. `github_issue_assigned`, `manual`) | required |
+| `[trigger].assigned_to` | Filter by assignee | optional |
+| `[trigger].allowed_users` | Filter by user list | optional |
+| `[git].clone` | Whether to git clone the repo | `true` |
+| `[git].worktree` | Whether to create a per-event worktree | `true` |
+| `[git].default_branch` | Branch for clone/worktree base | `"main"` |
+| `[[steps]].name` | Human-readable step label | required |
+| `[[steps]].agent` | Agent name from `config.toml` | required |
+| `[[steps]].prompt_template` | `{{variable}}` template | required |
+| `[[steps]].pre_hooks` | Hooks to check before step | none |
+| `[[steps]].post_hooks` | Hooks to check after step | none |
+
+### Hook types
+
+| Hook | Description |
+|---|---|
+| `file_not_empty` | Checks that a file has non-zero content |
+| `file_contains` | Checks that a file contains a specific string |
+
+### Workflow validation
+
+Workflow files are validated at load time:
+
+- `trigger.type` must be non-empty and one of the known trigger types
+- At least one step is required
+- Every step must have a non-empty `prompt_template`
+- Parse errors include the file path for easy debugging
+
 ## Architecture
 
 See [docs/Architecture Design.md](docs/Architecture%20Design.md) for the full system design.
