@@ -29,7 +29,14 @@ fn main() {
     };
 
     // Validate that all agents referenced in workflow steps exist in config
-    if let Err(e) = config::resolve_agents(&config, &workflows) {
+    let workflow_refs: Vec<workflow::Workflow> = workflows.iter().map(|(_, w)| w.clone()).collect();
+    if let Err(e) = config::resolve_agents(&config, &workflow_refs) {
+        eprintln!("Configuration error: {e}");
+        std::process::exit(1);
+    }
+
+    // Validate that all trigger types match the configured platform
+    if let Err(e) = workflow::validate_triggers(&config.platform, &workflows) {
         eprintln!("Configuration error: {e}");
         std::process::exit(1);
     }
