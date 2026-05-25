@@ -386,11 +386,18 @@ When the harness executes a step, it builds a request to the agent's `base_url`:
 
 ```json
 {
-  "instructions": "All work is in: /path/to/workspace. Always run `cd /path/to/workspace` as your first action. Platform: github",
+  "instructions": "All work is in: /path/to/workspace. Always run `cd /path/to/workspace` as your first action before any file or terminal operations. Reference all file paths relative to this directory.",
   "input": "<rendered prompt>",
   "store": true
 }
 ```
+
+**Instructions field construction:**
+
+- When `git.clone = true` or `git.worktree = true`: The `instructions` field includes the workspace directory path with an explicit `cd` directive
+- When both are `false`: The `instructions` field omits the workspace path (agent operates without local file access)
+
+The workspace directory is `{workdir}/{owner}/{repo}/{event_id}/` (or `{workdir}/{owner}/{repo}/{event_id}/worktree-{N}/` if worktrees are enabled).
 
 ### Agent Resolution
 
@@ -401,7 +408,7 @@ At startup, every step's `agent` field is resolved against the `[[agents]]` arra
 - Uses `/v1/responses` endpoint
 - `base_url` is host-only — the internal path `/v1/responses` is a constant in code
 - Auth via `HERMES_API_KEY` env var (checked per invocation, never in config)
-- `instructions` carries workspace path with explicit `cd` directive, plus the `platform` identifier
+- `instructions` carries workspace path with explicit `cd` directive when git is enabled
 - Response parsing extracts `output[].content[].type == "output_text"` blocks
 - `HarnessConfig` is a single struct (not an enum)
 
