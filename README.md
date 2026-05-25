@@ -122,8 +122,9 @@ prompt_template = """Read the plan and implement it."""
 
 | Field | Purpose | Default |
 |---|---|---|
-| `[trigger].type` | Event type (e.g. `github_issue_assigned`, `manual`) | required |
+| `[trigger].type` | Event type (e.g. `github_issue_assigned`) | required |
 | `[trigger].assigned_to` | Filter by assignee | optional |
+| `[trigger].mentioned_user` | Filter by mentioned user | optional |
 | `[trigger].allowed_users` | Filter by user list | optional |
 | `[git].clone` | Whether to git clone the repo | `true` |
 | `[git].worktree` | Whether to create a per-event worktree | `true` |
@@ -163,12 +164,6 @@ Trigger types are platform-specific. Their prefix must match the `platform` sett
 | `gitlab_merge_request_review` | Note on a merge request |
 | `gitlab_merge_request_review_comment` | DiffNote on a merge request |
 
-**Platform-independent triggers** (work with either platform):
-
-| Trigger Type | Description |
-|---|---|
-| `manual` | Manual trigger (not driven by webhooks) |
-
 ### Workflow validation
 
 Workflow files are validated at load time:
@@ -184,7 +179,6 @@ At startup, Yoke verifies that every workflow's trigger type matches the configu
 
 - GitHub triggers (prefixed with `github_`) are only valid when `platform = "github"`
 - GitLab triggers (prefixed with `gitlab_`) are only valid when `platform = "gitlab"`
-- The `manual` trigger is platform-independent and works with either platform
 - A mismatch causes a hard exit with a clear error message, e.g.: `Workflow 'gitlab-plan.toml' has trigger 'gitlab_issue_assigned' but platform is 'github'`
 
 ### Template rendering

@@ -1,4 +1,3 @@
-#![allow(dead_code)] // Module will be wired into main in a follow-up task
 use std::fs;
 use std::path::Path;
 
@@ -117,8 +116,6 @@ pub enum TriggerType {
         mentioned_user: Option<String>,
         allowed_users: Option<Vec<String>>,
     },
-    // Platform-independent
-    Manual,
 }
 
 impl TriggerType {
@@ -160,13 +157,15 @@ impl TriggerType {
                     allowed_users: trigger.allowed_users.clone(),
                 })
             }
-            "manual" => Some(TriggerType::Manual),
             _ => None,
         }
     }
 
-    /// Return the platform this trigger type belongs to, or `None` for
-    /// platform-independent triggers.
+    /// Return the platform this trigger type belongs to.
+    ///
+    /// All current trigger types are platform-specific, so this always
+    /// returns `Some`. The `Option` return type is preserved for
+    /// forward-compatibility if platform-independent triggers are added later.
     pub fn platform(&self) -> Option<Platform> {
         match self {
             TriggerType::GithubIssueAssigned { .. }
@@ -177,27 +176,9 @@ impl TriggerType {
             | TriggerType::GitlabIssueMention { .. }
             | TriggerType::GitlabMergeRequestReview { .. }
             | TriggerType::GitlabMergeRequestCommentMention { .. } => Some(Platform::Gitlab),
-            TriggerType::Manual => None,
         }
     }
 }
-
-/// Known trigger type strings for validation.
-const GITHUB_TRIGGERS: &[&str] = &[
-    "github_issue_assigned",
-    "github_issue_comment_mention",
-    "github_pull_request_review",
-    "github_pull_request_review_comment",
-];
-
-const GITLAB_TRIGGERS: &[&str] = &[
-    "gitlab_issue_assigned",
-    "gitlab_issue_mention",
-    "gitlab_merge_request_review",
-    "gitlab_merge_request_review_comment",
-];
-
-const PLATFORM_INDEPENDENT_TRIGGERS: &[&str] = &["manual"];
 
 impl Workflow {
     /// Validate the workflow meets semantic requirements:
@@ -235,7 +216,6 @@ impl Workflow {
 ///
 /// Uses `TriggerType::from_trigger()` to parse each trigger and
 /// `TriggerType::platform()` to check it matches the configured platform.
-/// The `manual` trigger is platform-independent and always passes.
 ///
 /// Returns `Ok(())` if all triggers match the platform, or `Err` with a clear
 /// message identifying the mismatching workflow file and trigger type.
@@ -253,12 +233,8 @@ pub fn validate_triggers(
             ));
         };
 
-        let Some(trigger_platform) = trigger_type.platform() else {
-            // Platform-independent triggers (manual) always pass
-            continue;
-        };
-
-        if trigger_platform != *platform {
+        let trigger_platform = trigger_type.platform();
+        if trigger_platform != Some(platform.clone()) {
             let platform_name = match platform {
                 Platform::Github => "github",
                 Platform::Gitlab => "gitlab",
@@ -343,6 +319,20 @@ impl std::error::Error for WorkflowError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const GITHUB_TRIGGERS: &[&str] = &[
+        "github_issue_assigned",
+        "github_issue_comment_mention",
+        "github_pull_request_review",
+        "github_pull_request_review_comment",
+    ];
+
+    const GITLAB_TRIGGERS: &[&str] = &[
+        "gitlab_issue_assigned",
+        "gitlab_issue_mention",
+        "gitlab_merge_request_review",
+        "gitlab_merge_request_review_comment",
+    ];
 
     #[test]
     fn test_valid_workflow_parse() {
@@ -482,7 +472,7 @@ mod tests {
     fn test_git_defaults() {
         let toml = r#"
             [trigger]
-            type = "manual"
+            type = "github_issue_assigned"
 
             [[steps]]
             name = "Step"
@@ -688,22 +678,6 @@ prompt_template = "Do the thing"
     }
 
     #[test]
-    fn test_validate_triggers_manual_with_github_platform() {
-        let platform = Platform::Github;
-        let wf = make_workflow("manual");
-        let workflows = vec![("workflows/manual.toml".to_string(), wf)];
-        assert!(validate_triggers(&platform, &workflows).is_ok());
-    }
-
-    #[test]
-    fn test_validate_triggers_manual_with_gitlab_platform() {
-        let platform = Platform::Gitlab;
-        let wf = make_workflow("manual");
-        let workflows = vec![("workflows/manual.toml".to_string(), wf)];
-        assert!(validate_triggers(&platform, &workflows).is_ok());
-    }
-
-    #[test]
     fn test_validate_triggers_mismatch_gitlab_trigger_on_github() {
         let platform = Platform::Github;
         let wf = make_workflow("gitlab_issue_assigned");
@@ -834,18 +808,6 @@ prompt_template = "Do the thing"
         };
         let tt = TriggerType::from_trigger(&trigger).unwrap();
         assert_eq!(tt.platform(), Some(Platform::Gitlab));
-    }
-
-    #[test]
-    fn test_trigger_type_from_trigger_manual() {
-        let trigger = Trigger {
-            r#type: "manual".to_string(),
-            assigned_to: None,
-            mentioned_user: None,
-            allowed_users: None,
-        };
-        let tt = TriggerType::from_trigger(&trigger).unwrap();
-        assert_eq!(tt.platform(), None);
     }
 
     #[test]
