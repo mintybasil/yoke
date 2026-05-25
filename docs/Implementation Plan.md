@@ -126,11 +126,13 @@ This document outlines the phased implementation approach for Yoke. It complemen
 
 ---
 
-## Phase 5: Graceful Shutdown
+## Phase 5: Hot-Reload & Graceful Shutdown
 
-**Goal:** Handle SIGINT/SIGTERM, drain active workflows, persist state
+**Goal:** Reload workflow files on change, handle SIGINT/SIGTERM, drain active workflows, persist state
 
 ### Scope
+- Workflow file watcher (notify crate)
+- Hot-reload: re-parse workflows, validate, swap in-memory structs
 - Signal handler task (SIGINT/SIGTERM)
 - watch channel to signal shutdown
 - HTTP server stops accepting new connections
@@ -140,38 +142,36 @@ This document outlines the phased implementation approach for Yoke. It complemen
 - Second signal: immediate `process::exit(1)`
 
 ### Deliverables
+- [ ] File watcher integration
+- [ ] Hot-reload logic with validation
 - [ ] Signal handler in `src/main.rs`
 - [ ] watch channel integration with dispatcher
 - [ ] Drain logic with timeout
 - [ ] Integration test: shutdown during active workflow
 
 ### Exit Criteria
+- Editing a workflow `.toml` file reloads without restart
 - First signal: drains active workflows, persists state, exits cleanly
 - Second signal: immediate exit
 - No data loss on shutdown
 
 ---
 
-## Phase 6: Hot-Reload & Webhooks CLI
+## Phase 6: Webhooks CLI
 
-**Goal:** Reload workflow files on change, manage platform webhooks
+**Goal:** Manage platform webhooks via CLI subcommands
 
 ### Scope
-- Workflow file watcher (notify crate)
-- Hot-reload: re-parse workflows, validate, swap in-memory structs
 - `yoke webhooks add` — configure platform webhooks
 - `yoke webhooks remove` — delete platform webhooks
 - `yoke webhooks list` — verify webhook configuration
 - Minimal event subscriptions based on loaded triggers
 
 ### Deliverables
-- [ ] File watcher integration
-- [ ] Hot-reload logic with validation
 - [ ] CLI subcommands in `src/main.rs`
 - [ ] Platform API clients for webhook management
 
 ### Exit Criteria
-- Editing a workflow `.toml` file reloads without restart
 - `webhooks add` configures platform to send events to Yoke URL
 - `webhooks remove` deletes Yoke webhooks from platform
 - Only subscribed event types are enabled (minimal noise)
@@ -184,8 +184,8 @@ This document outlines the phased implementation approach for Yoke. It complemen
 2. `src/server.rs` + `src/webhook/*` (Phase 2)
 3. `src/dispatcher.rs` (Phase 3)
 4. `src/runner.rs` + `src/git.rs` + `src/hooks.rs` + `src/harness.rs` (Phase 4)
-5. Signal handling in `src/main.rs` (Phase 5)
-6. File watcher + CLI subcommands (Phase 6)
+5. File watcher + Signal handling in `src/main.rs` (Phase 5)
+6. CLI subcommands (Phase 6)
 
 ---
 
