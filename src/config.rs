@@ -185,6 +185,8 @@ pub enum ConfigError {
     ShellExpand(String),
     /// Agent resolution error (workflow references unknown agent).
     AgentResolution(String),
+    /// Missing required environment variable.
+    EnvVar(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -195,6 +197,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Validation(msg) => write!(f, "config validation error: {msg}"),
             ConfigError::ShellExpand(msg) => write!(f, "shell expansion error: {msg}"),
             ConfigError::AgentResolution(msg) => write!(f, "agent resolution error: {msg}"),
+            ConfigError::EnvVar(msg) => write!(f, "environment variable error: {msg}"),
         }
     }
 }
@@ -228,6 +231,42 @@ pub fn resolve_agents(config: &Config, workflows: &[Workflow]) -> Result<(), Con
             }
         }
     }
+    Ok(())
+}
+
+/// Validate that required environment variables are set based on the configured platform.
+///
+/// Checks globally required variables (`HERMES_API_KEY`, `WEBHOOK_SECRET`) and
+/// platform-specific variables (`GITHUB_TOKEN` for GitHub, `GITLAB_TOKEN` for GitLab).
+/// Returns `Ok(())` if all required variables are present, or `Err(ConfigError::EnvVar)`
+/// with a descriptive message naming the first missing variable.
+pub fn validate_env_vars(platform: &Platform) -> Result<(), ConfigError> {
+    let required_globals = ["HERMES_API_KEY", "WEBHOOK_SECRET"];
+    for var in required_globals {
+        if std::env::var(var).is_err() {
+            return Err(ConfigError::EnvVar(format!(
+                "Missing required env var: {var}"
+            )));
+        }
+    }
+
+    match platform {
+        Platform::Github => {
+            if std::env::var("GITHUB_TOKEN").is_err() {
+                return Err(ConfigError::EnvVar(
+                    "Missing required env var: GITHUB_TOKEN".to_string(),
+                ));
+            }
+        }
+        Platform::Gitlab => {
+            if std::env::var("GITLAB_TOKEN").is_err() {
+                return Err(ConfigError::EnvVar(
+                    "Missing required env var: GITLAB_TOKEN".to_string(),
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -597,6 +636,12 @@ webhook_secret = "secret"
 
         let err = ConfigError::AgentResolution("missing agent".to_string());
         assert_eq!(err.to_string(), "agent resolution error: missing agent");
+
+        let err = ConfigError::EnvVar("Missing required env var: GITHUB_TOKEN".to_string());
+        assert_eq!(
+            err.to_string(),
+            "environment variable error: Missing required env var: GITHUB_TOKEN"
+        );
     }
 
     // --- Agent resolution tests ---
@@ -708,5 +753,97 @@ webhook_secret = "secret"
             ),
         ];
         assert!(resolve_agents(&config, &workflows).is_ok());
+    }
+
+    // --- Environment variable validation tests ---
+
+    #[test]
+    fn test_validate_env_vars_missing_hermes_api_key() {
+        unsafe {
+            std::env::remove_var("HERMES_API_KEY");
+            std::env::remove_var("WEBHOOK_SECRET");
+        }
+
+        let result = validate_env_vars(&Platform::Github);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("HERMES_API_KEY"),
+            "error should mention HERMES_API_KEY, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_env_vars_missing_webhook_secret() {
+        unsafe {
+            std::env::set_var("HERMES_API_KEY", "test-key");
+            std::env::remove_var("WEBHOOK_SECRET");
+        }
+
+        let result = validate_env_vars(&Platform::Github);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("WEBHOOK_SECRET"),
+            "error should mention WEBHOOK_SECRET, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_env_vars_github_token_missing() {
+        unsafe {
+            std::env::set_var("HERMES_API_KEY", "valid");
+            std::env::set_var("WEBHOOK_SECRET", "valid");
+            std::env::remove_var("GITHUB_TOKEN");
+        }
+
+        let result = validate_env_vars(&Platform::Github);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("GITHUB_TOKEN"),
+            "error should mention GITHUB_TOKEN, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_env_vars_gitlab_token_missing() {
+        unsafe {
+            std::env::set_var("HERMES_API_KEY", "valid");
+            std::env::set_var("WEBHOOK_SECRET", "valid");
+            std::env::remove_var("GITLAB_TOKEN");
+        }
+
+        let result = validate_env_vars(&Platform::Gitlab);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("GITLAB_TOKEN"),
+            "error should mention GITLAB_TOKEN, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_env_vars_github_all_present() {
+        unsafe {
+            std::env::set_var("HERMES_API_KEY", "valid");
+            std::env::set_var("WEBHOOK_SECRET", "valid");
+            std::env::set_var("GITHUB_TOKEN", "gh-token");
+        }
+
+        let result = validate_env_vars(&Platform::Github);
+        assert!(result.is_ok(), "should succeed with all vars set");
+    }
+
+    #[test]
+    fn test_validate_env_vars_gitlab_all_present() {
+        unsafe {
+            std::env::set_var("HERMES_API_KEY", "valid");
+            std::env::set_var("WEBHOOK_SECRET", "valid");
+            std::env::set_var("GITLAB_TOKEN", "gl-token");
+        }
+
+        let result = validate_env_vars(&Platform::Gitlab);
+        assert!(result.is_ok(), "should succeed with all vars set");
     }
 }

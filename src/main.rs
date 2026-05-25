@@ -25,6 +25,17 @@ fn main() {
         config.server.port = port;
     }
 
+    // Allow WEBHOOK_SECRET env var to override config.toml value
+    if let Ok(secret) = std::env::var("WEBHOOK_SECRET") {
+        config.server.webhook_secret = secret;
+    }
+
+    // Validate required environment variables before starting
+    if let Err(e) = config::validate_env_vars(&config.platform) {
+        eprintln!("Configuration error: {e}");
+        std::process::exit(1);
+    }
+
     let workflows = match workflow::load_workflows(&args.workflows) {
         Ok(w) => w,
         Err(e) => {

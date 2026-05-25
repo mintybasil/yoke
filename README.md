@@ -112,6 +112,17 @@ The application fails fast on configuration errors:
 - Tilde (`~`) in `workdir` is expanded to the home directory
 - Agent resolution: every `step.agent` in workflow files must match a configured `[[agents]]` name — unknown agents produce a clear error with the step name, workflow file, and missing agent name
 
+### Environment variables
+
+Yoke validates required environment variables at startup. Missing variables cause an immediate exit with a clear error message.
+
+| Variable | Purpose | Required |
+|---|---|---|
+| `HERMES_API_KEY` | Bearer token for Hermes REST API | Always |
+| `WEBHOOK_SECRET` | Webhook authentication key (overrides `config.toml` `server.webhook_secret`) | Always |
+| `GITHUB_TOKEN` | GitHub auth for git clone/pull | When `platform = "github"` |
+| `GITLAB_TOKEN` | GitLab auth for git clone/pull | When `platform = "gitlab"` |
+
 ## Workflow Files
 
 Yoke loads workflow definitions from `.toml` files in a directory (default: current directory; override with `--workflows`). Each file defines a trigger, git configuration, and a sequence of steps.
