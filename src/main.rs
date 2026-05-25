@@ -1,4 +1,5 @@
 mod config;
+mod workflow;
 
 use config::Config;
 
