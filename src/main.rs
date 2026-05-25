@@ -1,29 +1,37 @@
+mod cli;
 mod config;
 mod template;
 mod workflow;
 
+use clap::Parser;
 use config::Config;
 
 fn main() {
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "config.toml".to_string());
+    let args = cli::Cli::parse();
 
-    let config = match Config::load(&config_path) {
+    let mut config = match Config::load(&args.config) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Error loading config from {config_path}: {e}");
+            eprintln!("Error loading config from {}: {e}", args.config.display());
             std::process::exit(1);
         }
     };
 
-    let workflows_dir = std::env::args()
-        .nth(2)
-        .unwrap_or_else(|| "workflows".to_string());
-    let workflows = match workflow::load_workflows(&workflows_dir) {
+    // Apply CLI overrides for server settings
+    if let Some(host) = args.host {
+        config.server.host = host;
+    }
+    if let Some(port) = args.port {
+        config.server.port = port;
+    }
+
+    let workflows = match workflow::load_workflows(&args.workflows) {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("Error loading workflows from {workflows_dir}: {e}");
+            eprintln!(
+                "Error loading workflows from {}: {e}",
+                args.workflows.display()
+            );
             std::process::exit(1);
         }
     };

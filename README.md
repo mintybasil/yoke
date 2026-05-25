@@ -15,13 +15,35 @@ cargo test
 cargo fmt --check
 cargo clippy -- -D warnings
 
-# Run with a config file
-cargo run -- config.toml
+# Run with defaults (loads config.toml from current directory)
+cargo run
+
+# Run with custom config and workflows directory
+cargo run -- --config /path/to/config.toml --workflows /path/to/workflows
+
+# Override server host and port
+cargo run -- --host 127.0.0.1 --port 9000
 ```
+
+## CLI Arguments
+
+```
+yoke [OPTIONS]
+
+Options:
+  --config <PATH>       Path to config.toml (default: config.toml)
+  --workflows <DIR>      Directory containing workflow TOML files (default: .)
+  --host <ADDR>          Server bind address (overrides config.toml)
+  --port <PORT>          Server listen port (overrides config.toml)
+  -h, --help             Print help
+  -V, --version          Print version
+```
+
+CLI `--host` and `--port` flags override the corresponding values in `config.toml`. The `[runtime].max_concurrent`, `[runtime].workdir`, and `platform` settings are configured in `config.toml` only and cannot be overridden from the command line.
 
 ## Configuration
 
-Yoke reads configuration from a `config.toml` file. The path is passed as the first CLI argument (defaults to `config.toml` in the current directory).
+Yoke reads configuration from a `config.toml` file. The default path is `config.toml` in the current directory; override with `--config`.
 
 ### config.toml
 
@@ -92,7 +114,7 @@ The application fails fast on configuration errors:
 
 ## Workflow Files
 
-Yoke can load workflow definitions from `.toml` files in a directory (passed via `--workflows`, default: current directory). Each file defines a trigger, git configuration, and a sequence of steps.
+Yoke loads workflow definitions from `.toml` files in a directory (default: current directory; override with `--workflows`). Each file defines a trigger, git configuration, and a sequence of steps.
 
 ### workflow.toml example
 
@@ -109,13 +131,12 @@ default_branch = "main"
 [[steps]]
 name = "Plan"
 agent = "pm"
-prompt_template = """You are an expert software engineer. Issue {{owner}}/{{repo}}#{{issue_number}} has been assigned to you.
-Save the plan to {{output_dir}}/plan.md"""
+prompt_template = "Plan the issue"
 
 [[steps]]
 name = "Implement"
 agent = "swe"
-prompt_template = """Read the plan and implement it."""
+prompt_template = "Read the plan and implement it."
 ```
 
 ### Workflow fields
