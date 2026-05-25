@@ -631,6 +631,7 @@ webhook_secret = "secret"
             trigger: crate::workflow::Trigger {
                 r#type: "github_issue_assigned".to_string(),
                 assigned_to: None,
+                mentioned_user: None,
                 allowed_users: None,
             },
             git: crate::workflow::GitConfig::default(),

@@ -141,6 +141,34 @@ prompt_template = """Read the plan and implement it."""
 | `file_not_empty` | Checks that a file has non-zero content |
 | `file_contains` | Checks that a file contains a specific string |
 
+### Known trigger types
+
+Trigger types are platform-specific. Their prefix must match the `platform` setting in `config.toml`:
+
+**GitHub triggers** (require `platform = "github"`):
+
+| Trigger Type | Event |
+|---|---|
+| `github_issue_assigned` | Issue assigned to a user |
+| `github_issue_comment_mention` | Comment on an issue mentions a user |
+| `github_pull_request_review` | Pull request review submitted |
+| `github_pull_request_review_comment` | Pull request review comment |
+
+**GitLab triggers** (require `platform = "gitlab"`):
+
+| Trigger Type | Event |
+|---|---|
+| `gitlab_issue_assigned` | Issue assigned to a user |
+| `gitlab_issue_mention` | Note on an issue mentions a user |
+| `gitlab_merge_request_review` | Note on a merge request |
+| `gitlab_merge_request_review_comment` | DiffNote on a merge request |
+
+**Platform-independent triggers** (work with either platform):
+
+| Trigger Type | Description |
+|---|---|
+| `manual` | Manual trigger (not driven by webhooks) |
+
 ### Workflow validation
 
 Workflow files are validated at load time:
@@ -149,6 +177,15 @@ Workflow files are validated at load time:
 - At least one step is required
 - Every step must have a non-empty `prompt_template`
 - Parse errors include the file path for easy debugging
+
+### Trigger platform validation
+
+At startup, Yoke verifies that every workflow's trigger type matches the configured platform:
+
+- GitHub triggers (prefixed with `github_`) are only valid when `platform = "github"`
+- GitLab triggers (prefixed with `gitlab_`) are only valid when `platform = "gitlab"`
+- The `manual` trigger is platform-independent and works with either platform
+- A mismatch causes a hard exit with a clear error message, e.g.: `Workflow 'gitlab-plan.toml' has trigger 'gitlab_issue_assigned' but platform is 'github'`
 
 ### Template rendering
 
