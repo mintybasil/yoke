@@ -149,6 +149,21 @@ Workflow files are validated at load time:
 - Every step must have a non-empty `prompt_template`
 - Parse errors include the file path for easy debugging
 
+### Template rendering
+
+Step `prompt_template` fields use `{{variable}}` placeholder syntax:
+
+| Syntax | Behavior |
+|---|---|
+| `{{key}}` | Substitute with the value of `key` |
+| `{{{key}}}` | Substitute with `{value}` — value wrapped in literal braces |
+
+Templates are validated at render time:
+
+- **Unknown variable**: `{{unknown}}` panics with `unknown variable: unknown`
+- **Malformed syntax**: unclosed `{{var` or empty `{{}}` panics with a syntax error
+- **Empty template**: whitespace-only results panic with `empty template`
+
 ## Architecture
 
 See [docs/Architecture Design.md](docs/Architecture%20Design.md) for the full system design.
