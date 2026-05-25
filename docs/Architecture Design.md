@@ -2,9 +2,7 @@
 
 ## 1. Overview
 
-Yoke is a Rust daemon that receives webhook events from a code platform (GitHub or GitLab) via a built-in HTTP server, deduplicates them, and runs multi-step agent workflows through the Hermes Agent REST API.
-
-A single Yoke instance handles one platform. To support both GitHub and GitLab, run two instances with separate configs.
+Yoke is a Rust daemon that receives webhook events from a code platform (GitHub or GitLab) via a built-in HTTP server and runs multi-step agent workflows through the Hermes Agent REST API.
 
 The code platform delivers webhook events to Yoke's HTTP server. The daemon verifies, parses, and routes each event to a workflow runner, which executes a sequence of agent steps. Each step is a prompt template rendered with event variables and sent as a request to the Hermes API.
 
@@ -77,7 +75,7 @@ Configuration is split into two files with distinct responsibilities:
 1. **`config.toml`** — global settings, including platform choice, repos, named agent instances, runtime settings, and server settings.
 2. **Workflow `.toml` files** — reusable workflow definitions that can be shared across deployments. Contain triggers, steps, git options, and a reference to an agent by name.
 
-This separation means a workflow definition (e.g., "plan-then-implement") can be applied to any repo and any agent instance by wiring it in `config.toml`, without duplicating the step templates or prompt logic.
+This separation means a workflow definition can be applied to any repo and any agent instance by wiring it in `config.toml`, without duplicating the step templates or prompt logic.
 
 ### config.toml
 
@@ -155,50 +153,57 @@ Create a PR with your changes.
 
 Each step specifies which agent to use via the `agent` field — a string reference to an entry in `config.toml`'s `[[agents]]` array. At startup, Yoke resolves every step's `agent` name to the agent's `base_url`. If any step references an agent name that doesn't match a configured agent, startup fails with a hard exit.
 
+### Prompt Template Variables
+
+These variables are available in all prompt templates, regardless of trigger type:
+
+| Variable         | Value                              |
+|------------------|------------------------------------|
+| `owner`          | Repository owner (namespace)       |
+| `repo`           | Repository name                    |
+| `output_dir`     | Per-event workspace directory      |
+
+Additional trigger-specific variables are also available. See Appendix A for details.
+
 ### How Repos Connect to Workflows
 
 All repos listed in `config.toml` share the same set of loaded workflows. When a webhook arrives for a repo, the dispatcher finds all workflows whose `[trigger]` matches the event, then runs them. This means a single workflow file automatically applies to every configured repo.
-
-If different repos need different workflows, use `[trigger]` filters (e.g., `assigned_to`, `allowed_users`) to scope which events each workflow responds to.
 
 ### Field Reference
 
 **config.toml fields:**
 
-| Field | Purpose | Default |
-|---|---|---|
-| `platform` | `"github"` or `"gitlab"` | required |
-| `repos` | Array of `{owner, repo}` entries | required |
-| `repos[].owner` | Repository owner / namespace | required |
-| `repos[].repo` | Repository name | required |
-| `gitlab_url` | Self-hosted GitLab base URL (GitLab only) | `https://gitlab.com` |
-| `[[agents]]` | Named Hermes API instances | required (at least one) |
-| `agents[].name` | Unique name for referencing in workflows | required |
-| `agents[].base_url` | Hermes API host (no path) | required |
-| `[runtime].max_concurrent` | Max concurrent workflow runs | `0` (unlimited) |
-| `[runtime].workdir` | Runtime data directory | `~/.yoke` |
-| `[server].host` | Bind address | `0.0.0.0` |
-| `[server].port` | Listen port | `8644` |
-| `[server].webhook_secret` | Webhook auth key (HMAC for GitHub, token for GitLab) | required |
-| `[server].max_body_size` | Request body limit (bytes) | `1048576` |
+| Field                      | Purpose                                              | Default                 |
+|----------------------------|------------------------------------------------------|-------------------------|
+| `platform`                 | `"github"` or `"gitlab"`                             | required                |
+| `repos`                    | Array of `{owner, repo}` entries                     | required                |
+| `repos[].owner`            | Repository owner / namespace                         | required                |
+| `repos[].repo`             | Repository name                                      | required                |
+| `gitlab_url`               | Self-hosted GitLab base URL (GitLab only)            | `https://gitlab.com`    |
+| `[[agents]]`               | Named Hermes API instances                           | required (at least one) |
+| `agents[].name`            | Unique name for referencing in workflows             | required                |
+| `agents[].base_url`        | Hermes API host (no path)                            | required                |
+| `[runtime].max_concurrent` | Max concurrent workflow runs                         | `0` (unlimited)         |
+| `[runtime].workdir`        | Runtime data directory                               | `~/.yoke`               |
+| `[server].host`            | Bind address                                         | `0.0.0.0`               |
+| `[server].port`            | Listen port                                          | `8644`                  |
+| `[server].webhook_secret`  | Webhook auth key (HMAC for GitHub, token for GitLab) | required                |
+| `[server].max_body_size`   | Request body limit (bytes)                           | `1048576`               |
 
 **Workflow file fields:**
 
-| Field | Purpose | Default |
-|---|---|---|
-| `[trigger].type` | Event type (e.g. `github_issue_assigned`, `gitlab_merge_request_review`) | required |
-| `[trigger].assigned_to` | Filter: only fire for this assignee (trigger-specific) | none (any) |
-| `[trigger].allowed_users` | Filter: only fire for these users (trigger-specific) | none (any) |
-| `[git].clone` | Whether to git clone the repo | `true` |
-| `[git].worktree` | Whether to create a per-event worktree | `true` |
-| `[git].default_branch` | Branch for clone/worktree base | `"main"` |
-| `[[steps]].name` | Human-readable step label | required |
-| `[[steps]].agent` | Name of agent from `config.toml` | required |
-| `[[steps]].prompt_template` | `{{variable}}` template | required |
-| `[[steps]].pre_hooks` | Hooks to check before step | none |
-| `[[steps]].post_hooks` | Hooks to check after step | none |
-
-**Note:** `assigned_to` and `allowed_users` are only valid for specific trigger types. See **Appendix A: Trigger Reference** for which filters apply to each trigger.
+| Field                       | Purpose                                                                  | Default  |
+|-----------------------------|--------------------------------------------------------------------------|----------|
+| `[trigger].type`            | Event type (e.g. `github_issue_assigned`, `gitlab_merge_request_review`) | required |
+| `[trigger].<filter>`        | Trigger-specific filter (see Appendix A)                                 |          |
+| `[git].clone`               | Whether to git clone the repo                                            | `true`   |
+| `[git].worktree`            | Whether to create a per-event worktree                                   | `true`   |
+| `[git].default_branch`      | Branch for clone/worktree base                                           | `"main"` |
+| `[[steps]].name`            | Human-readable step label                                                | required |
+| `[[steps]].agent`           | Name of agent from `config.toml`                                         | required |
+| `[[steps]].prompt_template` | `{{variable}}` template                                                  | required |
+| `[[steps]].pre_hooks`       | Hooks to check before step                                               | none     |
+| `[[steps]].post_hooks`      | Hooks to check after step                                                | none     |
 
 ## 4. Event Sources (Webhooks)
 
@@ -224,10 +229,10 @@ When `platform = "gitlab"`, the handler at `POST /webhook` receives GitLab webho
 
 ### Verification
 
-| Platform | Header | Mechanism |
-|---|---|---|
-| GitHub | `X-Hub-Signature-256` | HMAC-SHA256 of the request body with `webhook_secret` |
-| GitLab | `X-Gitlab-Token` | Constant-time comparison of the header value against `webhook_secret` |
+| Platform | Header                | Mechanism                                                             |
+|----------|-----------------------|-----------------------------------------------------------------------|
+| GitHub   | `X-Hub-Signature-256` | HMAC-SHA256 of the request body with `webhook_secret`                 |
+| GitLab   | `X-Gitlab-Token`      | Constant-time comparison of the header value against `webhook_secret` |
 
 Unverified payloads receive a `401` response and are logged as a warning. This prevents forgery and ensures the daemon only processes legitimate events.
 
@@ -252,11 +257,11 @@ For longer outages, the platform marks the delivery as failed and stops retrying
 
 ### Endpoints
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/webhook` | Receive platform webhook deliveries |
-| GET | `/health` | Health check (returns `{"status": "ok"}`) |
-| GET | `/ready` | Readiness check (returns 200 when dispatcher is accepting events) |
+| Method | Path       | Purpose                                                           |
+|--------|------------|-------------------------------------------------------------------|
+| POST   | `/webhook` | Receive platform webhook deliveries                               |
+| GET    | `/health`  | Health check (returns `{"status": "ok"}`)                         |
+| GET    | `/ready`   | Readiness check (returns 200 when dispatcher is accepting events) |
 
 ### Request Flow
 
@@ -278,7 +283,7 @@ The dispatcher consumes `DispatchMessage`s from the mpsc channel, manages dedup 
 
 ### Dedup Logic
 
-- `{owner}/{repo}/{workspace_id}` as the dedup key
+- `{owner}/{repo}/{event_id}` as the dedup key
 - Completed events are skipped
 - In-flight events are skipped
 - Permanently-failed events are skipped
@@ -348,21 +353,19 @@ This catches user error early, before any webhook is received.
 
 Pre/post step hooks:
 
-| Hook | Checks |
-|---|---|
-| `file_not_empty` | A file has non-zero content |
-| `file_contains` | A file contains a specific string |
+| Hook             | Checks                            |
+|------------------|-----------------------------------|
+| `file_not_empty` | A file has non-zero content       |
+| `file_contains`  | A file contains a specific string |
 
 Hooks are configured per-step.
 
 ### Dedup & Persistence
 
-- **completed.json** — set of `{owner}/{repo}/{workspace_id}` strings for events that completed successfully
+- **completed.json** — set of `{owner}/{repo}/{event_id}` strings for events that completed successfully
 - **failed.json** — array of `{key, timestamp, error}` entries for events that failed
 - Atomic file writes (write to `.tmp`, rename)
 - Loaded on startup, appended to on completion/failure
-
-The dedup key format: `{owner}/{repo}/{workspace_id}`. For issue events, `workspace_id` is the issue number (GitHub) or IID (GitLab). For PR/MR reviews, it's `{pr_number}_review-{review_id}` (GitHub) or `{mr_iid}_review-{note_id}` (GitLab).
 
 ## 8. Agents (Hermes API Harness)
 
@@ -423,10 +426,10 @@ Yoke manages the git lifecycle for each configured repo:
 
 Authentication via git2 `RemoteCallbacks` with token-based credentials. The token env var is determined by the `platform` setting:
 
-| Platform | Env Var | Clone URL Pattern |
-|---|---|---|
-| GitHub | `GITHUB_TOKEN` | `https://x-access-token:{token}@github.com/{owner}/{repo}.git` |
-| GitLab | `GITLAB_TOKEN` | `https://oauth2:{token}@{gitlab_host}/{owner}/{repo}.git` |
+| Platform | Env Var        | Clone URL Pattern                                              |
+|----------|----------------|----------------------------------------------------------------|
+| GitHub   | `GITHUB_TOKEN` | `https://x-access-token:{token}@github.com/{owner}/{repo}.git` |
+| GitLab   | `GITLAB_TOKEN` | `https://oauth2:{token}@{gitlab_host}/{owner}/{repo}.git`      |
 
 Where `gitlab_host` is `gitlab.com` by default, or the value of `gitlab_url` for self-hosted instances.
 
@@ -464,7 +467,7 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
   failed.json                 # Array of failure entries
   {owner}/{repo}/
     repo/                     # git clone
-    {workspace_id}/           # per-event workspace
+    {event_id}/           # per-event workspace
       worktree-{N}/           # per-event worktree (if git.worktree = true)
       00_Plan.log             # Full Hermes API request + response, with final message rendered
       00_Plan.prompt          # Rendered prompt for auditing
@@ -504,23 +507,23 @@ Two-tier model: startup errors are hard exits, runtime errors are per-event soft
 
 ## 13. Module Map
 
-| File | Responsibility |
-|---|---|
-| `src/main.rs` | Entry point: startup validation, tracing init, server + dispatcher + signal handler |
-| `src/config.rs` | Config struct (TOML): config.toml + workflow files, clap CLI |
-| `src/server.rs` | axum HTTP server: router, middleware, health endpoint |
-| `src/webhook/mod.rs` | Webhook handler dispatch: selects GitHub or GitLab handler based on `platform` |
-| `src/webhook/github.rs` | GitHub webhook handler: HMAC-SHA256 verify, payload parse, event mapping |
-| `src/webhook/gitlab.rs` | GitLab webhook handler: token verify, payload parse, event mapping |
-| `src/dispatcher.rs` | Concurrency control: dedup sets, semaphore, mpsc consumer, persistence |
-| `src/runner.rs` | Per-event workflow execution: git ops, step loop, template rendering |
-| `src/harness.rs` | Hermes API client: request building, response parsing |
-| `src/git.rs` | Git repo/worktree management: clone/pull, worktree create/remove, auth |
-| `src/hooks.rs` | Hook enum + run_hook() dispatcher |
-| `src/template.rs` | `{{key}}` placeholder renderer |
-| `src/workflow.rs` | Step type definition |
-| `src/webhooks/github.rs` | GitHub webhook payload types (event structs) |
-| `src/webhooks/gitlab.rs` | GitLab webhook payload types (event structs) |
+| File                     | Responsibility                                                                      |
+|--------------------------|-------------------------------------------------------------------------------------|
+| `src/main.rs`            | Entry point: startup validation, tracing init, server + dispatcher + signal handler |
+| `src/config.rs`          | Config struct (TOML): config.toml + workflow files, clap CLI                        |
+| `src/server.rs`          | axum HTTP server: router, middleware, health endpoint                               |
+| `src/webhook/mod.rs`     | Webhook handler dispatch: selects GitHub or GitLab handler based on `platform`      |
+| `src/webhook/github.rs`  | GitHub webhook handler: HMAC-SHA256 verify, payload parse, event mapping            |
+| `src/webhook/gitlab.rs`  | GitLab webhook handler: token verify, payload parse, event mapping                  |
+| `src/dispatcher.rs`      | Concurrency control: dedup sets, semaphore, mpsc consumer, persistence              |
+| `src/runner.rs`          | Per-event workflow execution: git ops, step loop, template rendering                |
+| `src/harness.rs`         | Hermes API client: request building, response parsing                               |
+| `src/git.rs`             | Git repo/worktree management: clone/pull, worktree create/remove, auth              |
+| `src/hooks.rs`           | Hook enum + run_hook() dispatcher                                                   |
+| `src/template.rs`        | `{{key}}` placeholder renderer                                                      |
+| `src/workflow.rs`        | Step type definition                                                                |
+| `src/webhooks/github.rs` | GitHub webhook payload types (event structs)                                        |
+| `src/webhooks/gitlab.rs` | GitLab webhook payload types (event structs)                                        |
 
 ## 14. CLI
 
@@ -538,12 +541,12 @@ Options:
 
 ## 15. Environment Variables
 
-| Variable | Purpose | Required |
-|---|---|---|
-| `GITHUB_TOKEN` | GitHub authentication for git clone/pull | When `platform = "github"` |
-| `GITLAB_TOKEN` | GitLab authentication for git clone/pull | When `platform = "gitlab"` |
-| `HERMES_API_KEY` | Bearer token for Hermes REST API | Yes |
-| `WEBHOOK_SECRET` | Webhook auth key (overrides config.toml `webhook_secret`) | Yes |
+| Variable         | Purpose                                                   | Required                   |
+|------------------|-----------------------------------------------------------|----------------------------|
+| `GITHUB_TOKEN`   | GitHub authentication for git clone/pull                  | When `platform = "github"` |
+| `GITLAB_TOKEN`   | GitLab authentication for git clone/pull                  | When `platform = "gitlab"` |
+| `HERMES_API_KEY` | Bearer token for Hermes REST API                          | Yes                        |
+| `WEBHOOK_SECRET` | Webhook auth key (overrides config.toml `webhook_secret`) | Yes                        |
 
 ## 16. Example Configs
 
@@ -610,6 +613,7 @@ webhook_secret = "your-gitlab-webhook-token"
 [trigger]
 type = "github_issue_assigned"
 assigned_to = "alice"
+allowed_users = ["bob"]
 
 [git]
 clone = true
@@ -657,6 +661,8 @@ Review ID: {{review_id}}
 ```toml
 [trigger]
 type = "gitlab_issue_assigned"
+assigned_to = "alice"
+allowed_users = ["bob"]
 
 [git]
 clone = true
@@ -683,7 +689,9 @@ Create an MR with your changes.
 
 ```toml
 [trigger]
-type = "gitlab_merge_request_review"
+type = "gitlab_merge_request_comment_mention"
+mentioned_user = "alice"
+allowed_users = ["bob"]
 
 [git]
 clone = true
@@ -702,31 +710,31 @@ Review ID: {{review_id}}
 
 1. **Single platform per instance with unified webhook path**: Yoke handles one platform (GitHub or GitLab) per instance, set globally in `config.toml`. A single `POST /webhook` endpoint serves that platform — only one handler is active at a time, selected by the `platform` setting. There is no ambiguity about which verification and parsing logic to apply. Supporting both platforms in a single instance adds complexity across config, routing, dedup, authentication, and data layout for a marginal use case. Running two instances with separate configs is simpler to operate and reason about.
 
-3. **Platform-specific trigger types**: Trigger types carry the platform prefix (e.g., `github_issue_assigned`, `gitlab_merge_request_review`). GitHub and GitLab have different event models, payload shapes, and action semantics — unified names paper over real differences and create ambiguous mappings. Prefixed types make workflows explicit about which platform they target. At startup, any workflow containing a trigger type that doesn't match the configured platform is rejected with a hard exit, catching misconfigured workflows immediately.
+2. **Platform-specific trigger types**: Trigger types carry the platform prefix (e.g., `github_issue_assigned`, `gitlab_merge_request_review`). GitHub and GitLab have different event models, payload shapes, and action semantics — unified names paper over real differences and create ambiguous mappings. Prefixed types make workflows explicit about which platform they target. At startup, any workflow containing a trigger type that doesn't match the configured platform is rejected with a hard exit, catching misconfigured workflows immediately.
 
-4. **Payload size limit**: Configurable via `[server].max_body_size`. Default 1MB. GitHub and GitLab payloads are typically <100KB, but large diffs can exceed that. Users who hit the limit can increase it.
+3. **Payload size limit**: Configurable via `[server].max_body_size`. Default 1MB. GitHub and GitLab payloads are typically <100KB, but large diffs can exceed that. Users who hit the limit can increase it.
 
-5. **HTTPS/TLS**: Reverse proxy is the expected pattern. The HTTP server listens on plain HTTP. For production, put it behind Caddy, nginx, or a cloudflare tunnel. TLS termination is not Yoke's job — it's infrastructure.
+4. **HTTPS/TLS**: Reverse proxy is the expected pattern. The HTTP server listens on plain HTTP. For production, put it behind Caddy, nginx, or a cloudflare tunnel. TLS termination is not Yoke's job — it's infrastructure.
 
-6. **Webhook secret rotation**: Restart required. Changing the secret in the platform's webhook settings and then restarting Yoke is a simple, reliable workflow. Hot-reloading secrets adds complexity (race conditions between the old and new secret during rotation) for marginal benefit.
+5. **Webhook secret rotation**: Restart required. Changing the secret in the platform's webhook settings and then restarting Yoke is a simple, reliable workflow. Hot-reloading secrets adds complexity (race conditions between the old and new secret during rotation) for marginal benefit.
 
-7. **Multi-workflow dedup**: Shared dedup sets. If two workflows match the same event (e.g., both `github_issue_assigned` for overlapping repos), the first workflow loaded runs. Per-workflow dedup would require tracking completed events per-workflow-file, which doubles the persistence complexity for a marginal use case. If this becomes a problem, the user should scope triggers more tightly.
+6. **Multi-workflow dedup**: Shared dedup sets. If two workflows match the same event (e.g., both `github_issue_assigned` for overlapping repos), the first workflow loaded runs. Per-workflow dedup would require tracking completed events per-workflow-file, which doubles the persistence complexity for a marginal use case. If this becomes a problem, the user should scope triggers more tightly.
 
-8. **GitLab token verification**: GitLab webhook verification uses a static token in the `X-Gitlab-Token` header, not HMAC. This is GitLab's standard mechanism. The comparison is done in constant time to prevent timing attacks.
+7. **GitLab token verification**: GitLab webhook verification uses a static token in the `X-Gitlab-Token` header, not HMAC. This is GitLab's standard mechanism. The comparison is done in constant time to prevent timing attacks.
 
-9. **Config separation**: Global user settings (`platform`, `repos`, `agents`, `[runtime]`, `[server]`) live in `config.toml`. Workflow definitions (`[trigger]`, `[git]`, `[[steps]]`) live in separate `.toml` files. Each step carries its own `agent` reference, keeping deployment-specific connection details out of workflow definitions while allowing steps to target different agents.
+8. **Config separation**: Global user settings (`platform`, `repos`, `agents`, `[runtime]`, `[server]`) live in `config.toml`. Workflow definitions (`[trigger]`, `[git]`, `[[steps]]`) live in separate `.toml` files. Each step carries its own `agent` reference, keeping deployment-specific connection details out of workflow definitions while allowing steps to target different agents.
 
-10. **Named agents**: `[[agents]]` in `config.toml` defines named Hermes API instances. Each step in a workflow references an agent by name (`agent = "pm"`), keeping `base_url` out of workflow files and making it easy to retarget a step by changing the config.
+9. **Named agents**: `[[agents]]` in `config.toml` defines named Hermes API instances. Each step in a workflow references an agent by name (`agent = "pm"`), keeping `base_url` out of workflow files and making it easy to retarget a step by changing the config.
 
-11. **Shared repos**: All repos in `config.toml` share the same workflow files. This simplifies the mental model — adding a new repo means one entry in the `repos` array, and every existing workflow automatically applies. Trigger filters (`assigned_to`, `allowed_users`) scope which events each workflow responds to.
+10. **Shared repos**: All repos in `config.toml` share the same workflow files. This simplifies the mental model — adding a new repo means one entry in the `repos` array, and every existing workflow automatically applies. Trigger filters (`assigned_to`, `allowed_users`) scope which events each workflow responds to.
 
-12. **Step-level agent assignment**: Each step declares its own `agent` field rather than a single workflow-level agent. This allows a workflow to use different Hermes API instances for different steps (e.g., a planning step on the pm agent, an implementation step on the swe agent).
+11. **Step-level agent assignment**: Each step declares its own `agent` field rather than a single workflow-level agent. This allows a workflow to use different Hermes API instances for different steps (e.g., a planning step on the pm agent, an implementation step on the swe agent).
 
-13. **Hermes-only agent config**: The `[[agents]]` config contains only `name` and `base_url`. Provider and model selection are Hermes Agent internals — Yoke sends `instructions` and `input` to `/v1/responses`, and Hermes handles provider routing and model selection.
+12. **Hermes-only agent config**: The `[[agents]]` config contains only `name` and `base_url`. Provider and model selection are Hermes Agent internals — Yoke sends `instructions` and `input` to `/v1/responses`, and Hermes handles provider routing and model selection.
 
-14. **Assignment-only issue triggers**: The `github_issue_assigned` and `gitlab_issue_assigned` trigger types fire on the assignment event only, not on issue open. "Issue opened" is a semantically distinct event (the issue exists but no one is responsible for acting on it yet) and warrants its own trigger type if needed in the future. Conflating the two would require workflows to handle two different contexts (newly filed vs. explicitly assigned) in the same template logic.
+13. **Assignment-only issue triggers**: The `github_issue_assigned` and `gitlab_issue_assigned` trigger types fire on the assignment event only, not on issue open. "Issue opened" is a semantically distinct event (the issue exists but no one is responsible for acting on it yet) and warrants its own trigger type if needed in the future. Conflating the two would require workflows to handle two different contexts (newly filed vs. explicitly assigned) in the same template logic.
 
-15. **GitLab review triggers mirror GitHub**: GitLab does not have separate webhook events for "review submitted" vs. "inline review comment" — both arrive as `Note Hook` events. Yoke splits them into `gitlab_merge_request_review` (any Note on a MergeRequest) and `gitlab_merge_request_review_comment` (DiffNote on a MergeRequest) to maintain naming parity with GitHub's `github_pull_request_review` and `github_pull_request_review_comment`. The split is implemented by inspecting the `noteable_type` and `type` fields in the Note Hook payload. This gives workflow authors a consistent trigger vocabulary across platforms, even though the underlying webhook mechanism differs.
+14. **GitLab review triggers mirror GitHub**: GitLab does not have separate webhook events for "review submitted" vs. "inline review comment" — both arrive as `Note Hook` events. Yoke splits them into `gitlab_merge_request_review` (any Note on a MergeRequest) and `gitlab_merge_request_review_comment` (DiffNote on a MergeRequest) to maintain naming parity with GitHub's `github_pull_request_review` and `github_pull_request_review_comment`. The split is implemented by inspecting the `noteable_type` and `type` fields in the Note Hook payload. This gives workflow authors a consistent trigger vocabulary across platforms, even though the underlying webhook mechanism differs.
 
 ## 18. Operations
 
@@ -734,11 +742,12 @@ Review ID: {{review_id}}
 
 Yoke provides CLI subcommands to configure and remove webhooks on the platform. These commands are idempotent and safe to run multiple times.
 
-**Minimal event subscriptions:** The CLI inspects loaded workflows and subscribes only to the event types actually used by configured triggers. This minimizes webhook noise — you won't receive deliveries for events you don't handle. For example, if your workflows only use `github_issue_assigned`, the webhook subscribes only to `issues` events (not `issue_comment`, `pull_request_review`, etc.).
+When setting up webhooks, the CLI inspects the workflows and subscribes only to the event types actually used by 
+configured triggers.
 
 ```bash
 # Configure webhooks for all repos in config.toml
-yoke webhooks add --config config.toml
+yoke webhooks add --config config.toml --workflows ./workflows
 
 # Remove webhooks (e.g., before decommissioning)
 yoke webhooks remove --config config.toml
@@ -773,7 +782,7 @@ For each repo in `config.toml`:
 
 1. Deploy Yoke and note its public URL (e.g., `https://yoke.example.com`)
 2. Set `webhook_secret` in `config.toml`
-3. Run `yoke webhooks add --config config.toml`
+3. Run `yoke webhooks add --config config.toml --workflows ./workflows`
 4. Verify with `yoke webhooks list --config config.toml`
 5. Start Yoke daemon
 
@@ -849,14 +858,14 @@ Yoke is tested at three levels:
 
 **Coverage targets:**
 
-| Module | What to Test |
-|---|---|
-| `template.rs` | Variable substitution, missing variables (panic), nested braces `{{{var}}}` |
-| `webhook/github.rs` | HMAC verification (valid/invalid), payload parsing, event mapping |
-| `webhook/gitlab.rs` | Token verification (valid/invalid), payload parsing, event mapping |
-| `dispatcher.rs` | Dedup logic (same key skipped, different keys run), semaphore acquisition |
-| `hooks.rs` | `file_not_empty`, `file_contains` (pass/fail cases) |
-| `config.rs` | TOML parsing (valid/invalid), agent resolution, trigger validation |
+| Module              | What to Test                                                                |
+|---------------------|-----------------------------------------------------------------------------|
+| `template.rs`       | Variable substitution, missing variables (panic), nested braces `{{{var}}}` |
+| `webhook/github.rs` | HMAC verification (valid/invalid), payload parsing, event mapping           |
+| `webhook/gitlab.rs` | Token verification (valid/invalid), payload parsing, event mapping          |
+| `dispatcher.rs`     | Dedup logic (same key skipped, different keys run), semaphore acquisition   |
+| `hooks.rs`          | `file_not_empty`, `file_contains` (pass/fail cases)                         |
+| `config.rs`         | TOML parsing (valid/invalid), agent resolution, trigger validation          |
 
 **Example: Template rendering**
 
@@ -901,14 +910,14 @@ pub async fn setup() -> TestHarness {
 
 **Test cases:**
 
-| Test | Setup | Assert |
-|---|---|---|
-| `webhook_valid_github_issue` | POST valid GitHub issue payload | 200, workflow started, Hermes called once |
-| `webhook_invalid_signature` | POST with wrong HMAC | 401, no workflow started |
-| `webhook_duplicate_skipped` | POST same issue twice | Second returns 200, no second workflow |
-| `webhook_no_matching_trigger` | POST event type not in workflows | 200 (no-op), no workflow started |
-| `hermes_api_failure` | Mock Hermes returns 500 | Workflow fails, `.error` file written |
-| `concurrent_workflows_respect_limit` | Send N webhooks, max_concurrent=2 | At most 2 run simultaneously |
+| Test                                 | Setup                             | Assert                                    |
+|--------------------------------------|-----------------------------------|-------------------------------------------|
+| `webhook_valid_github_issue`         | POST valid GitHub issue payload   | 200, workflow started, Hermes called once |
+| `webhook_invalid_signature`          | POST with wrong HMAC              | 401, no workflow started                  |
+| `webhook_duplicate_skipped`          | POST same issue twice             | Second returns 200, no second workflow    |
+| `webhook_no_matching_trigger`        | POST event type not in workflows  | 200 (no-op), no workflow started          |
+| `hermes_api_failure`                 | Mock Hermes returns 500           | Workflow fails, `.error` file written     |
+| `concurrent_workflows_respect_limit` | Send N webhooks, max_concurrent=2 | At most 2 run simultaneously              |
 
 **Example: Webhook handling**
 
@@ -1215,47 +1224,26 @@ This appendix consolidates all trigger types, event mappings, and template varia
 
 ### GitHub Triggers
 
-| Trigger Type                         | Event Header          | Action      | Variables                                                         | Available Filters | Event ID Format |
-| ------------------------------------ | --------------------- | ----------- | ----------------------------------------------------------------- | ----------------- | --------------- |
-| `github_issue_assigned`              | `issues`              | `assigned`  | `issue_number`, `action`, `assignee`, `issue_title`, `issue_body` | `assigned_to`     | `issue-{issue_number}` |
-| `github_issue_comment`               | `issue_comment`       | `created`   | `issue_number`, `comment_id`                                      | `allowed_users`   | `issue-{issue_number}-comment-{comment_id}` |
-| `github_pull_request_review`         | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body`                           | `allowed_users`   | `pr-{pr_number}-review-{review_id}` |
-| `github_pull_request_review_comment` | `pull_request_review_comment` | `created`   | `pr_number`, `review_id`, `comment_id`                            | `allowed_users`   | `pr-{pr_number}-review-{review_id}-comment-{comment_id}` |
+| Trigger Type                          | Event Header          | Action      | Variables                                               | Filters (Required)                | Event ID Format                             |
+|---------------------------------------|-----------------------|-------------|---------------------------------------------------------|-----------------------------------|---------------------------------------------|
+| `github_issue_assigned`               | `issues`              | `assigned`  | `issue_number`, `assignee`, `issue_title`, `issue_body` | `assigned_to`, `allowed_users`    | `issue-{issue_number}`                      |
+| `github_issue_comment_mention`        | `issue_comment`       | `created`   | `issue_number`, `comment_id`, `comment_body`            | `mentioned_user`, `allowed_users` | `issue-{issue_number}-comment-{comment_id}` |
+| `github_pull_request_review`          | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body`                 | `allowed_users`                   | `pr-{pr_number}-review-{review_id}`         |
+| `github_pull_request_comment_mention` | `issue_comment`       | `created`   | `pr_number`, `review_id`, `comment_id`, `comment_body`  | `mentioned_user`, `allowed_users` | `pr-{pr_number}-comment-{comment_id}`       |
+
+_Note: Github considers PRs as a type of issue. `github_issue_comment` should only trigger for comments on issues, not 
+PRs. For comments on PRs, the `github_pull_request_comment` trigger should receive them._
 
 ### GitLab Triggers
 
-| Trigger Type                          | Event Header   | Object Kind                                            | Variables                                                               | Available Filters | Event ID Format |
-| ------------------------------------- | -------------- | ------------------------------------------------------ | ----------------------------------------------------------------------- | ----------------- | --------------- |
-| `gitlab_issue_assigned`               | `Issue Hook`   | `issue` (action: `update`)                             | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` | `assigned_to`     | `issue-{issue_iid}` |
-| `gitlab_note`                         | `Note Hook`    | `note`                                                 | `issue_iid` or `mr_iid`, `note_id`                                      | `allowed_users`   | `issue-{issue_iid}-note-{note_id}` or `mr-{mr_iid}-note-{note_id}` |
-| `gitlab_merge_request_review`         | `Note Hook`    | `note` (noteable_type = MergeRequest)                  | `mr_iid`, `review_id`, `review_body`                                    | `allowed_users`   | `mr-{mr_iid}-review-{note_id}` |
-| `gitlab_merge_request_review_comment` | `Note Hook`    | `note` (noteable_type = MergeRequest, type = DiffNote) | `mr_iid`, `review_id`, `comment_id`                                     | `allowed_users`   | `mr-{mr_iid}-review-{note_id}-comment-{note_id}` |
+| Trigger Type                           | Event Header | Object Kind                           | Variables                                                               | Filters (Required)                | Event ID Format                    |
+|----------------------------------------|--------------|---------------------------------------|-------------------------------------------------------------------------|-----------------------------------|------------------------------------|
+| `gitlab_issue_assigned`                | `Issue Hook` | `issue` (action: `update`)            | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` | `assigned_to`                     | `issue-{issue_iid}`                |
+| `gitlab_issue_mention`                 | `Note Hook`  | `note` (noteable_type = Issue)        | `issue_iid` `note_id`, `comment_body`                                   | `mentioned_user`, `allowed_users` | `issue-{issue_iid}-note-{note_id}` |
+| `gitlab_merge_request_review`          | `Note Hook`  | `note` (noteable_type = MergeRequest) | `mr_iid`, `review_id`, `review_body`                                    | `allowed_users`                   | `mr-{mr_iid}-review-{note_id}`     |
+| `gitlab_merge_request_comment_mention` | `Note Hook`  | `note` (noteable_type = MergeRequest) | `mr_iid`, `note_id`, `comment_body`                                     | `mentioned_user`, `allowed_users` | `mr-{mr_iid}-comment-{note_id}`    |
 
-### Filter Options
+### Known Limitations
 
-Filters are optional `[trigger]` fields that scope when a workflow fires. Only filters listed for a trigger type are valid; unknown filters cause a startup error.
-
-| Filter | Type | Description | Valid For |\n| ------ | ---- | ----------- | --------- |\n| `assigned_to` | string | Only fire when the issue is assigned to this username | `*_issue_assigned` triggers |\n| `allowed_users` | array of strings | Only fire when the event is from one of these usernames | `*_comment`, `*_review` triggers |
-
-**Example:**
-
-```toml
-[trigger]
-type = "github_issue_assigned"
-assigned_to = "alice"  # Only fires when alice is assigned
-
-[trigger]
-type = "github_pull_request_review"
-allowed_users = ["alice", "bob"]  # Only fires for reviews from alice or bob
-```
-
-### Global Template Variables
-
-These variables are available in all prompt templates, regardless of trigger type:
-
-| Variable         | Value |
-| ---------------- | ----- |
-| `owner`          | Repository owner (namespace) |
-| `repo`           | Repository name |
-| `default_branch` | From `[git].default_branch` config |
-| `output_dir`     | Per-event workspace directory |
+- Inline PR comments are not captured
+- Multiple mentions on a single comment are not currently supported (event IDs will conflict)
