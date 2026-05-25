@@ -1,8 +1,9 @@
-#![allow(dead_code)] // Module will be wired into main in a follow-up task
 use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+use crate::config::Platform;
 
 /// A complete workflow definition loaded from a `.toml` file.
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -23,6 +24,8 @@ pub struct Trigger {
     pub r#type: String,
     #[serde(default)]
     pub assigned_to: Option<String>,
+    #[serde(default)]
+    pub mentioned_user: Option<String>,
     #[serde(default)]
     pub allowed_users: Option<Vec<String>>,
 }
@@ -76,6 +79,107 @@ pub enum Hook {
     FileContains,
 }
 
+/// Typed representation of known trigger types, grouped by platform.
+///
+/// Each variant carries the filter fields required by that trigger type
+/// per Appendix A of the architecture design doc.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TriggerType {
+    // GitHub triggers
+    GithubIssueAssigned {
+        assigned_to: Option<String>,
+        allowed_users: Option<Vec<String>>,
+    },
+    GithubIssueCommentMention {
+        mentioned_user: Option<String>,
+        allowed_users: Option<Vec<String>>,
+    },
+    GithubPullRequestReview {
+        allowed_users: Option<Vec<String>>,
+    },
+    GithubPullRequestCommentMention {
+        mentioned_user: Option<String>,
+        allowed_users: Option<Vec<String>>,
+    },
+    // GitLab triggers
+    GitlabIssueAssigned {
+        assigned_to: Option<String>,
+    },
+    GitlabIssueMention {
+        mentioned_user: Option<String>,
+        allowed_users: Option<Vec<String>>,
+    },
+    GitlabMergeRequestReview {
+        allowed_users: Option<Vec<String>>,
+    },
+    GitlabMergeRequestCommentMention {
+        mentioned_user: Option<String>,
+        allowed_users: Option<Vec<String>>,
+    },
+}
+
+impl TriggerType {
+    /// Convert a `Trigger` struct into a typed `TriggerType` variant.
+    ///
+    /// Returns `None` if the trigger type string is not recognized.
+    pub fn from_trigger(trigger: &Trigger) -> Option<Self> {
+        match trigger.r#type.as_str() {
+            "github_issue_assigned" => Some(TriggerType::GithubIssueAssigned {
+                assigned_to: trigger.assigned_to.clone(),
+                allowed_users: trigger.allowed_users.clone(),
+            }),
+            "github_issue_comment_mention" => Some(TriggerType::GithubIssueCommentMention {
+                mentioned_user: trigger.mentioned_user.clone(),
+                allowed_users: trigger.allowed_users.clone(),
+            }),
+            "github_pull_request_review" => Some(TriggerType::GithubPullRequestReview {
+                allowed_users: trigger.allowed_users.clone(),
+            }),
+            "github_pull_request_review_comment" => {
+                Some(TriggerType::GithubPullRequestCommentMention {
+                    mentioned_user: trigger.mentioned_user.clone(),
+                    allowed_users: trigger.allowed_users.clone(),
+                })
+            }
+            "gitlab_issue_assigned" => Some(TriggerType::GitlabIssueAssigned {
+                assigned_to: trigger.assigned_to.clone(),
+            }),
+            "gitlab_issue_mention" => Some(TriggerType::GitlabIssueMention {
+                mentioned_user: trigger.mentioned_user.clone(),
+                allowed_users: trigger.allowed_users.clone(),
+            }),
+            "gitlab_merge_request_review" => Some(TriggerType::GitlabMergeRequestReview {
+                allowed_users: trigger.allowed_users.clone(),
+            }),
+            "gitlab_merge_request_review_comment" => {
+                Some(TriggerType::GitlabMergeRequestCommentMention {
+                    mentioned_user: trigger.mentioned_user.clone(),
+                    allowed_users: trigger.allowed_users.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Return the platform this trigger type belongs to.
+    ///
+    /// All current trigger types are platform-specific, so this always
+    /// returns `Some`. The `Option` return type is preserved for
+    /// forward-compatibility if platform-independent triggers are added later.
+    pub fn platform(&self) -> Option<Platform> {
+        match self {
+            TriggerType::GithubIssueAssigned { .. }
+            | TriggerType::GithubIssueCommentMention { .. }
+            | TriggerType::GithubPullRequestReview { .. }
+            | TriggerType::GithubPullRequestCommentMention { .. } => Some(Platform::Github),
+            TriggerType::GitlabIssueAssigned { .. }
+            | TriggerType::GitlabIssueMention { .. }
+            | TriggerType::GitlabMergeRequestReview { .. }
+            | TriggerType::GitlabMergeRequestCommentMention { .. } => Some(Platform::Gitlab),
+        }
+    }
+}
+
 impl Workflow {
     /// Validate the workflow meets semantic requirements:
     /// - trigger type must be non-empty and one of the known types
@@ -87,9 +191,8 @@ impl Workflow {
             return Err("trigger.type cannot be empty".to_string());
         }
 
-        // Validate trigger type against known values
-        let valid_triggers = ["github_issue_assigned", "manual"];
-        if !valid_triggers.contains(&self.trigger.r#type.as_str()) {
+        // Validate trigger type is a known value via TriggerType enum
+        if TriggerType::from_trigger(&self.trigger).is_none() {
             return Err(format!("invalid trigger type: {}", self.trigger.r#type));
         }
 
@@ -109,8 +212,47 @@ impl Workflow {
     }
 }
 
+/// Validate that all workflow trigger types match the configured platform.
+///
+/// Uses `TriggerType::from_trigger()` to parse each trigger and
+/// `TriggerType::platform()` to check it matches the configured platform.
+///
+/// Returns `Ok(())` if all triggers match the platform, or `Err` with a clear
+/// message identifying the mismatching workflow file and trigger type.
+pub fn validate_triggers(
+    platform: &Platform,
+    workflows: &[(String, Workflow)],
+) -> Result<(), String> {
+    for (path, wf) in workflows {
+        let Some(trigger_type) = TriggerType::from_trigger(&wf.trigger) else {
+            // Unknown trigger types are caught by Workflow::validate() at load time.
+            // If we reach here, something is very wrong.
+            return Err(format!(
+                "Workflow '{}' has unrecognized trigger type '{}'",
+                path, wf.trigger.r#type
+            ));
+        };
+
+        let trigger_platform = trigger_type.platform();
+        if trigger_platform != Some(platform.clone()) {
+            let platform_name = match platform {
+                Platform::Github => "github",
+                Platform::Gitlab => "gitlab",
+            };
+            return Err(format!(
+                "Workflow '{}' has trigger '{}' but platform is '{}'",
+                path, wf.trigger.r#type, platform_name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Load all `.toml` workflow files from a directory, parsing and validating each.
-pub fn load_workflows<P: AsRef<Path>>(dir: P) -> Result<Vec<Workflow>, WorkflowError> {
+///
+/// Returns a list of `(file_path, Workflow)` pairs. The file path is preserved
+/// for use in error messages during trigger platform validation.
+pub fn load_workflows<P: AsRef<Path>>(dir: P) -> Result<Vec<(String, Workflow)>, WorkflowError> {
     let mut workflows = Vec::new();
     for entry in fs::read_dir(dir).map_err(WorkflowError::Io)? {
         let entry = entry.map_err(WorkflowError::Io)?;
@@ -123,14 +265,14 @@ pub fn load_workflows<P: AsRef<Path>>(dir: P) -> Result<Vec<Workflow>, WorkflowE
                     path: path_str.clone(),
                     source: e,
                 })?;
-            workflow.path = path_str;
+            workflow.path = path_str.clone();
             workflow
                 .validate()
                 .map_err(|msg| WorkflowError::Validation {
-                    path: path.display().to_string(),
+                    path: path_str.clone(),
                     message: msg,
                 })?;
-            workflows.push(workflow);
+            workflows.push((path_str, workflow));
         }
     }
     Ok(workflows)
@@ -178,6 +320,20 @@ impl std::error::Error for WorkflowError {
 mod tests {
     use super::*;
 
+    const GITHUB_TRIGGERS: &[&str] = &[
+        "github_issue_assigned",
+        "github_issue_comment_mention",
+        "github_pull_request_review",
+        "github_pull_request_review_comment",
+    ];
+
+    const GITLAB_TRIGGERS: &[&str] = &[
+        "gitlab_issue_assigned",
+        "gitlab_issue_mention",
+        "gitlab_merge_request_review",
+        "gitlab_merge_request_review_comment",
+    ];
+
     #[test]
     fn test_valid_workflow_parse() {
         let toml = r#"
@@ -201,6 +357,28 @@ mod tests {
         assert_eq!(wf.trigger.assigned_to, Some("alice".to_string()));
         assert_eq!(wf.steps.len(), 1);
         assert_eq!(wf.steps[0].name, "Plan");
+    }
+
+    #[test]
+    fn test_valid_gitlab_workflow_parse() {
+        let toml = r#"
+            [trigger]
+            type = "gitlab_issue_assigned"
+            assigned_to = "alice"
+
+            [git]
+            clone = true
+            worktree = true
+            default_branch = "main"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan the issue"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        assert!(wf.validate().is_ok());
+        assert_eq!(wf.trigger.r#type, "gitlab_issue_assigned");
     }
 
     #[test]
@@ -294,7 +472,7 @@ mod tests {
     fn test_git_defaults() {
         let toml = r#"
             [trigger]
-            type = "manual"
+            type = "github_issue_assigned"
 
             [[steps]]
             name = "Step"
@@ -414,6 +592,7 @@ prompt_template = "Plan it"
 
         let workflows = load_workflows(&dir).unwrap();
         assert_eq!(workflows.len(), 1);
+        assert!(workflows[0].0.contains("valid.toml"));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -462,5 +641,207 @@ prompt_template = "Plan"
         let msg = err.to_string();
         assert!(msg.contains("flows/bad.toml"));
         assert!(msg.contains("invalid trigger type: foo"));
+    }
+
+    // --- Trigger platform validation tests ---
+
+    fn make_workflow(trigger_type: &str) -> Workflow {
+        let toml = format!(
+            r#"
+[trigger]
+type = "{}"
+
+[[steps]]
+name = "Step"
+agent = "swe"
+prompt_template = "Do the thing"
+"#,
+            trigger_type
+        );
+        toml::from_str(&toml).unwrap()
+    }
+
+    #[test]
+    fn test_validate_triggers_github_with_github_platform() {
+        let platform = Platform::Github;
+        let wf = make_workflow("github_issue_assigned");
+        let workflows = vec![("workflows/plan.toml".to_string(), wf)];
+        assert!(validate_triggers(&platform, &workflows).is_ok());
+    }
+
+    #[test]
+    fn test_validate_triggers_gitlab_with_gitlab_platform() {
+        let platform = Platform::Gitlab;
+        let wf = make_workflow("gitlab_issue_assigned");
+        let workflows = vec![("workflows/plan.toml".to_string(), wf)];
+        assert!(validate_triggers(&platform, &workflows).is_ok());
+    }
+
+    #[test]
+    fn test_validate_triggers_mismatch_gitlab_trigger_on_github() {
+        let platform = Platform::Github;
+        let wf = make_workflow("gitlab_issue_assigned");
+        let workflows = vec![("workflows/gitlab-plan.toml".to_string(), wf)];
+        let result = validate_triggers(&platform, &workflows);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("gitlab-plan.toml"),
+            "error should contain workflow path, got: {err}"
+        );
+        assert!(
+            err.contains("gitlab_issue_assigned"),
+            "error should contain trigger type, got: {err}"
+        );
+        assert!(
+            err.contains("platform is 'github'"),
+            "error should contain platform name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_triggers_mismatch_github_trigger_on_gitlab() {
+        let platform = Platform::Gitlab;
+        let wf = make_workflow("github_issue_assigned");
+        let workflows = vec![("workflows/github-plan.toml".to_string(), wf)];
+        let result = validate_triggers(&platform, &workflows);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("github-plan.toml"),
+            "error should contain workflow path, got: {err}"
+        );
+        assert!(
+            err.contains("github_issue_assigned"),
+            "error should contain trigger type, got: {err}"
+        );
+        assert!(
+            err.contains("platform is 'gitlab'"),
+            "error should contain platform name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_triggers_multiple_workflows_all_valid() {
+        let platform = Platform::Github;
+        let wf1 = make_workflow("github_issue_assigned");
+        let wf2 = make_workflow("github_pull_request_review");
+        let workflows = vec![
+            ("workflows/issue.toml".to_string(), wf1),
+            ("workflows/review.toml".to_string(), wf2),
+        ];
+        assert!(validate_triggers(&platform, &workflows).is_ok());
+    }
+
+    #[test]
+    fn test_validate_triggers_mixed_valid_and_invalid() {
+        let platform = Platform::Github;
+        let wf1 = make_workflow("github_issue_assigned");
+        let wf2 = make_workflow("gitlab_issue_assigned");
+        let workflows = vec![
+            ("workflows/issue.toml".to_string(), wf1),
+            ("workflows/gitlab-flow.toml".to_string(), wf2),
+        ];
+        let result = validate_triggers(&platform, &workflows);
+        assert!(result.is_err());
+        // Should fail on the gitlab trigger
+        let err = result.unwrap_err();
+        assert!(err.contains("gitlab-flow.toml"));
+    }
+
+    #[test]
+    fn test_validate_triggers_all_gitlab_types() {
+        let platform = Platform::Gitlab;
+        for trigger_type in GITLAB_TRIGGERS {
+            let wf = make_workflow(trigger_type);
+            let workflows = vec![("workflows/test.toml".to_string(), wf)];
+            assert!(
+                validate_triggers(&platform, &workflows).is_ok(),
+                "expected '{}' to pass validation on gitlab platform",
+                trigger_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_triggers_all_github_types() {
+        let platform = Platform::Github;
+        for trigger_type in GITHUB_TRIGGERS {
+            let wf = make_workflow(trigger_type);
+            let workflows = vec![("workflows/test.toml".to_string(), wf)];
+            assert!(
+                validate_triggers(&platform, &workflows).is_ok(),
+                "expected '{}' to pass validation on github platform",
+                trigger_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_triggers_empty_workflows() {
+        let platform = Platform::Github;
+        let workflows: Vec<(String, Workflow)> = vec![];
+        assert!(validate_triggers(&platform, &workflows).is_ok());
+    }
+
+    // --- TriggerType enum tests ---
+
+    #[test]
+    fn test_trigger_type_from_trigger_github() {
+        let trigger = Trigger {
+            r#type: "github_issue_assigned".to_string(),
+            assigned_to: Some("alice".to_string()),
+            mentioned_user: None,
+            allowed_users: None,
+        };
+        let tt = TriggerType::from_trigger(&trigger).unwrap();
+        assert_eq!(tt.platform(), Some(Platform::Github));
+    }
+
+    #[test]
+    fn test_trigger_type_from_trigger_gitlab() {
+        let trigger = Trigger {
+            r#type: "gitlab_issue_mention".to_string(),
+            assigned_to: None,
+            mentioned_user: Some("bob".to_string()),
+            allowed_users: None,
+        };
+        let tt = TriggerType::from_trigger(&trigger).unwrap();
+        assert_eq!(tt.platform(), Some(Platform::Gitlab));
+    }
+
+    #[test]
+    fn test_trigger_type_from_trigger_unknown() {
+        let trigger = Trigger {
+            r#type: "unknown_event".to_string(),
+            assigned_to: None,
+            mentioned_user: None,
+            allowed_users: None,
+        };
+        assert!(TriggerType::from_trigger(&trigger).is_none());
+    }
+
+    #[test]
+    fn test_trigger_type_carries_filter_fields() {
+        let trigger = Trigger {
+            r#type: "github_issue_comment_mention".to_string(),
+            assigned_to: None,
+            mentioned_user: Some("carol".to_string()),
+            allowed_users: Some(vec!["alice".to_string(), "bob".to_string()]),
+        };
+        let tt = TriggerType::from_trigger(&trigger).unwrap();
+        match tt {
+            TriggerType::GithubIssueCommentMention {
+                mentioned_user,
+                allowed_users,
+            } => {
+                assert_eq!(mentioned_user, Some("carol".to_string()));
+                assert_eq!(
+                    allowed_users,
+                    Some(vec!["alice".to_string(), "bob".to_string()])
+                );
+            }
+            _ => panic!("expected GithubIssueCommentMention variant"),
+        }
     }
 }
