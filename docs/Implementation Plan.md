@@ -1,222 +1,212 @@
 # Implementation Plan
 
-This document outlines the phased approach for implementing the yoke agent orchestrator. It complements the [Architecture Design](./Architecture%20Design.md) by focusing on execution order, milestones, and delivery structure rather than architectural details.
+This document outlines the phased implementation approach for Yoke. It complements the [Architecture Design](./Architecture%20Design.md) by focusing on build order and milestones rather than re-describing architectural components.
 
 ## Guiding Principles
 
-1. **Vertical slices over horizontal layers** — Each phase delivers end-to-end functionality for a subset of features
-2. **Config-driven first** — Hardcoded paths become configuration before becoming dynamic APIs
-3. **Single-platform MVP** — Launch with one platform provider before abstracting
-4. **Observability from day one** — Tracing, metrics, and structured logging in every phase
+1. **Startup validation first** — Hard exits on config errors before any runtime code
+2. **Single platform MVP** — GitHub-only, then add GitLab behind the same `platform` flag
+3. **Config-driven** — `config.toml` + workflow `.toml` files loaded before any HTTP server starts
+4. **Dedup before concurrency** — Get correctness before adding the semaphore
 
 ---
 
-## Phase 0: Foundation
+## Phase 1: Config Loading & Validation
 
-**Goal:** Establish the core runtime skeleton with zero external dependencies
+**Goal:** Parse and validate all configuration at startup with hard exits on errors
 
 ### Scope
-- Project scaffolding (Rust workspace, Cargo.toml structure)
-- Core types: `Job`, `Step`, `Agent`, `Platform`
-- Configuration loading from `config.toml`
-- Basic tracing infrastructure (tracing-subscriber)
-- Unit test harness
+- `config.toml` parsing: `platform`, `repos`, `[[agents]]`, `[runtime]`, `[server]`
+- Workflow `.toml` parsing: `[trigger]`, `[git]`, `[[steps]]`
+- Agent resolution: verify every `step.agent` matches a configured `[[agents]]` entry
+- Trigger validation: verify trigger type prefix matches `platform`
+- Template validation: check `{{variable}}` syntax and known variables
+- CLI args: `--config`, `--workflows`, `--host`, `--port`
+- Environment variable checks: `GITHUB_TOKEN`/`GITLAB_TOKEN`, `HERMES_API_KEY`, `WEBHOOK_SECRET`
 
 ### Deliverables
-- [ ] `cargo init` workspace with `yoke-core`, `yoke-config`, `yoke-runtime` crates
-- [ ] Config parsing with serde + toml
-- [ ] Type definitions matching architecture doc
-- [ ] `tracing` wired to stdout with JSON formatter
-- [ ] CI: `cargo check`, `cargo test` on push
+- [ ] `src/config.rs` — TOML structs with serde
+- [ ] `src/workflow.rs` — Step type definition
+- [ ] `src/template.rs` — Template renderer with validation
+- [ ] `src/main.rs` — Startup sequence with validation
+- [ ] Unit tests: invalid TOML, unknown agent, mismatched platform prefix, unknown template variables
 
 ### Exit Criteria
-- Config file parses successfully
-- All core types compile with zero warnings
-- Tests pass locally and in CI
-
-**Duration:** 1-2 days
+- Invalid `config.toml` exits with clear error message
+- Unknown agent name in workflow exits at startup
+- Trigger type with wrong platform prefix (e.g., `gitlab_*` when `platform = "github"`) exits
+- Unknown `{{variable}}` in template exits
+- Valid config loads successfully
 
 ---
 
-## Phase 1: Single-Platform Execution
+## Phase 2: HTTP Server & Webhook Handler
 
-**Goal:** Run a complete workflow against one platform (GitHub) with hardcoded paths
+**Goal:** Receive and verify webhook events, return 200/401 appropriately
 
 ### Scope
-- GitHub platform provider implementation
-- Workflow parser (`.toml` workflow files)
-- Step executor with sequential execution
-- Webhook receiver (single `/webhook` endpoint)
-- Deduplication layer (in-memory cache)
+- axum server with `/health`, `/ready`, `/webhook` endpoints
+- GitHub webhook handler: HMAC-SHA256 verification via `X-Hub-Signature-256`
+- GitLab webhook handler: token verification via `X-Gitlab-Token`
+- Platform selection via `config.platform`
+- Payload parsing into structured event types
+- Body size limit enforcement (`[server].max_body_size`)
 
 ### Deliverables
-- [ ] `yoke-platform-github` crate with:
-  - PR comment trigger parsing
-  - Status check updates
-  - Commit status API integration
-- [ ] Workflow TOML parser with validation
-- [ ] Step runner: resolve agent → dispatch → poll → complete
-- [ ] Axum-based HTTP server with `/webhook` route
-- [ ] Dedup cache: `{owner}/{repo}/{workflow_id}` → timestamp
-- [ ] Integration test: full workflow execution against test repo
+- [ ] `src/server.rs` — axum router, middleware, health endpoints
+- [ ] `src/webhook/mod.rs` — dispatch to github.rs or gitlab.rs based on platform
+- [ ] `src/webhook/github.rs` — HMAC verification, payload structs
+- [ ] `src/webhook/gitlab.rs` — token verification, payload structs
+- [ ] `src/webhooks/github.rs` — GitHub event payload types
+- [ ] `src/webhooks/gitlab.rs` — GitLab event payload types
+- [ ] Unit tests: valid/invalid signatures, payload parsing
 
 ### Exit Criteria
-- Comment `@yoke run deploy` on a PR triggers workflow
-- Workflow executes all steps sequentially
-- Dedup prevents duplicate runs within 5-minute window
-- All events logged with trace IDs
-
-**Duration:** 3-5 days
+- Valid GitHub webhook with correct HMAC returns 200
+- Invalid HMAC returns 401
+- GitLab token verification works
+- `/health` returns 200 with `{"status": "ok"}`
+- Body size limit enforced
 
 ---
 
-## Phase 2: Configuration & Multi-Platform
+## Phase 3: Dispatcher & Dedup
 
-**Goal:** Abstract platform layer, support multiple providers via config
+**Goal:** Consume webhook events, deduplicate, spawn workflow runners
 
 ### Scope
-- Platform trait abstraction
-- Second platform provider (GitLab or custom HTTP)
-- Config schema evolution (multi-platform support)
-- Agent routing by step configuration
+- mpsc channel: webhook handler → dispatcher
+- Dedup sets: `in_flight`, `completed`, `permanently_failed`
+- Dedup key format: `{owner}/{repo}/{workspace_id}`
+- Persistence: `completed.json`, `failed.json` with atomic writes
+- tokio semaphore for `[runtime].max_concurrent`
+- Single consumer loop (no races on dedup check)
 
 ### Deliverables
-- [ ] `Platform` trait with provider-agnostic interface
-- [ ] Refactor GitHub provider to implement trait
-- [ ] Second provider implementation (choice based on user priority)
-- [ ] Config schema: `[[platforms]]` array
-- [ ] Step-level `platform` field routing
-- [ ] Feature flags for platform providers
+- [ ] `src/dispatcher.rs` — consumer loop, dedup logic, semaphore
+- [ ] Atomic file writes (write to `.tmp`, rename)
+- [ ] Unit tests: duplicate events skipped, different keys run, semaphore limits concurrency
 
 ### Exit Criteria
-- Workflows can specify different platforms per step
-- Adding a new platform requires only config changes
-- No regression in Phase 1 functionality
-
-**Duration:** 2-3 days
+- Same event key received twice: second is skipped
+- `max_concurrent = 2`: at most 2 workflows run simultaneously
+- `completed.json` persists across restarts
+- Dispatcher runs as single tokio task
 
 ---
 
-## Phase 3: Persistence & Reliability
+## Phase 4: Workflow Runner
 
-**Goal:** Production-hardened state management and failure recovery
+**Goal:** Execute multi-step workflows with git ops and Hermes API calls
 
 ### Scope
-- SQLite persistence layer (job state, step results)
-- Retry logic with exponential backoff
-- Dead letter queue for failed steps
-- Graceful shutdown and signal handling
+- Git clone/pull via `git2` crate
+- Worktree creation/removal (`git worktree add/remove`)
+- Branch naming: `ao/<sanitized-label>-<unix-timestamp>`
+- Step loop: render template → call Hermes → extract response
+- Template rendering with event + global variables
+- Pre/post hooks: `file_not_empty`, `file_contains`
+- Log files: `XX_<name>.log`, `XX_<name>.prompt`
 
 ### Deliverables
-- [ ] `yoke-store` crate with SQLite backend (sqlx)
-- [ ] Job state machine: `Pending → Running → Completed/Failed`
-- [ ] Retry policy: configurable attempts + backoff
-- [ ] DLQ: failed steps written for manual inspection
-- [ ] Signal handlers: SIGTERM drains in-flight jobs
-- [ ] Migration system for schema evolution
+- [ ] `src/runner.rs` — workflow execution loop
+- [ ] `src/git.rs` — clone, pull, worktree management, auth via `RemoteCallbacks`
+- [ ] `src/hooks.rs` — hook enum + `run_hook()` dispatcher
+- [ ] `src/harness.rs` — Hermes API client (`POST /v1/responses`)
+- [ ] Response parsing: extract `output[].content[].type == "output_text"`
+- [ ] Integration tests: full workflow with mock Hermes
 
 ### Exit Criteria
-- Restart preserves in-flight job state
-- Failed steps retry 3 times before DLQ
-- Graceful shutdown completes within 30s
-- Schema migrations run on startup
-
-**Duration:** 3-4 days
+- Git clone works with token auth
+- Worktree created per event, cleaned up after
+- Each step renders template and calls Hermes API
+- `.log` files contain full HTTP exchange + extracted message
+- `.prompt` files contain rendered prompt
+- Hooks validate file conditions before/after steps
 
 ---
 
-## Phase 4: Observability & Operations
+## Phase 5: Graceful Shutdown
 
-**Goal:** Production-ready monitoring, debugging, and operational tooling
+**Goal:** Handle SIGINT/SIGTERM, drain active workflows, persist state
 
 ### Scope
-- Metrics export (Prometheus)
-- Distributed tracing (OpenTelemetry)
-- Admin CLI for inspection
-- Health check endpoints
+- Signal handler task (SIGINT/SIGTERM)
+- watch channel to signal shutdown
+- HTTP server stops accepting new connections
+- Dispatcher stops consuming from channel
+- Active workflow runners drain to completion (bounded timeout)
+- State persistence before exit
+- Second signal: immediate `process::exit(1)`
 
 ### Deliverables
-- [ ] Metrics: job duration, step latency, queue depth, error rates
-- [ ] OpenTelemetry traces exported to Jaeger/Tempo
-- [ ] `yoke-cli` with:
-  - `yoke status` — running jobs
-  - `yoke inspect <job-id>` — step details
-  - `yoke retry <job-id>` — manual retry from DLQ
-- [ ] `/health` and `/ready` endpoints
-- [ ] Structured log correlation with trace IDs
+- [ ] Signal handler in `src/main.rs`
+- [ ] watch channel integration with dispatcher
+- [ ] Drain logic with timeout
+- [ ] Integration test: shutdown during active workflow
 
 ### Exit Criteria
-- Grafana dashboard shows real-time job metrics
-- Traces visible in Tempo/Jaeger with full step breakdown
-- CLI can inspect and retry any job
-- Kubernetes-style health checks pass
-
-**Duration:** 2-3 days
+- First signal: drains active workflows, persists state, exits cleanly
+- Second signal: immediate exit
+- No data loss on shutdown
 
 ---
 
-## Phase 5: Advanced Features
+## Phase 6: Hot-Reload & Webhooks CLI
 
-**Goal:** Feature parity with agent-orchestrator vision
+**Goal:** Reload workflow files on change, manage platform webhooks
 
 ### Scope
-- Parallel step execution
-- Conditional branching in workflows
-- Secret management
-- Workflow templates
+- Workflow file watcher (notify crate)
+- Hot-reload: re-parse workflows, validate, swap in-memory structs
+- `yoke webhooks add` — configure platform webhooks
+- `yoke webhooks remove` — delete platform webhooks
+- `yoke webhooks list` — verify webhook configuration
+- Minimal event subscriptions based on loaded triggers
 
 ### Deliverables
-- [ ] Parallel execution: `run_in_parallel` step group
-- [ ] Conditionals: `if` expressions on steps
-- [ ] Secrets: encrypted storage + injection
-- [ ] Template system: parameterized workflows
+- [ ] File watcher integration
+- [ ] Hot-reload logic with validation
+- [ ] CLI subcommands in `src/main.rs`
+- [ ] Platform API clients for webhook management
 
 ### Exit Criteria
-- Workflows can express complex DAGs
-- Secrets never appear in logs
-- Templates reduce workflow duplication
-
-**Duration:** 4-6 days
-
----
-
-## Risk Mitigation
-
-| Risk | Mitigation |
-|------|------------|
-| Platform API rate limits | Implement request queuing + backoff in Phase 1 |
-| State corruption on crash | SQLite WAL mode + transactional writes in Phase 3 |
-| Webhook delivery gaps | Provider-side retry + idempotency keys |
-| Config schema drift | Version field in config + migration path |
+- Editing a workflow `.toml` file reloads without restart
+- `webhooks add` configures platform to send events to Yoke URL
+- `webhooks remove` deletes Yoke webhooks from platform
+- Only subscribed event types are enabled (minimal noise)
 
 ---
 
-## Dependencies & Prerequisites
+## Module Build Order
 
-- Rust 1.75+ (for async trait improvements)
-- SQLite 3.35+ (for JSON functions if needed)
-- Platform API access (GitHub tokens, etc.)
-- Observability stack (Prometheus, Tempo) for Phase 4
+1. `src/config.rs` + `src/workflow.rs` + `src/template.rs` (Phase 1)
+2. `src/server.rs` + `src/webhook/*` (Phase 2)
+3. `src/dispatcher.rs` (Phase 3)
+4. `src/runner.rs` + `src/git.rs` + `src/hooks.rs` + `src/harness.rs` (Phase 4)
+5. Signal handling in `src/main.rs` (Phase 5)
+6. File watcher + CLI subcommands (Phase 6)
 
 ---
 
-## Out of Scope (Future Phases)
+## Test Strategy
+
+See **Section 19: Testing** in the Architecture Design for detailed test cases. Summary:
+
+| Level | Coverage |
+|---|---|
+| Unit | Template rendering, webhook verification, dedup logic, hooks |
+| Integration | Full webhook → workflow → Hermes flow with mock server |
+| E2E | Real fixture payloads from GitHub/GitLab delivery logs |
+
+Fixture files in `tests/fixtures/` with real webhook payloads (redacted).
+
+---
+
+## Out of Scope
 
 - Multi-tenant isolation
-- Custom agent protocols beyond HTTP
+- Custom agent protocols beyond Hermes `/v1/responses`
 - Workflow versioning/rollback
 - UI dashboard (CLI-first approach)
-
----
-
-## Success Metrics
-
-By end of Phase 3:
-- 99% of webhooks processed within 2 seconds
-- Zero data loss on process restart
-- Mean time to recovery < 5 minutes
-
-By end of Phase 5:
-- Support for 2+ platforms with identical workflow syntax
-- < 1% of jobs require manual intervention
-- Full traceability from webhook to final step
+- "Catch-up" mode for missed webhook deliveries
