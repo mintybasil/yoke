@@ -7,7 +7,8 @@ src/
   main.rs      — CLI entrypoint (loads config, loads workflows, validates agents & triggers, starts server)
   cli.rs       — CLI argument parsing (clap derive)
   config.rs    — Configuration parsing, validation, and error types
-  workflow.rs   — Workflow TOML parsing, validation, and error types
+  server.rs    — axum HTTP server with health, readiness, and webhook placeholder endpoints
+  workflow.rs  — Workflow TOML parsing, validation, and error types
   template.rs  — Template rendering with `{{variable}}` substitution and validation
 ```
 
@@ -27,6 +28,7 @@ src/
 - **`WorkflowError` enum**: Typed errors (Io, Parse, Validation) with `Display` and `Error` impls. Parse/Validation errors include the file path for clear diagnostics.
 - **`Workflow.path` field**: Each `Workflow` carries its source file path (populated by `load_workflows`), used for agent resolution error reporting.
 - **Template renderer**: `template::render()` does `{{var}}` substitution, returning `Result<_, TemplateError>` for unknown variables, malformed syntax, and empty templates.
+- **HTTP server**: `src/server.rs` uses axum with `tower-http` middleware. Three endpoints: `/health` (liveness, returns `{"status":"ok"}`), `/ready` (readiness, returns 200 — always ready for now), `/webhook` (POST placeholder). `RequestBodyLimitLayer` enforces `max_body_size` from config. `TraceLayer` provides structured HTTP request logging.
 
 ## CLI Arguments
 
@@ -52,9 +54,16 @@ GitLab triggers: `gitlab_issue_assigned`, `gitlab_issue_mention`, `gitlab_merge_
 
 | Crate | Purpose |
 |---|---|
+| `axum` | HTTP server framework |
 | `clap` | CLI argument parsing with derive macros |
 | `serde` | Deserialize/serialize config and workflow structs |
+| `serde_json` | JSON serialization for health endpoint response |
+| `tokio` | Async runtime (full features) |
 | `toml` | Parse config.toml and workflow .toml files |
+| `tower` | Service abstraction (ServiceExt for tests) |
+| `tower-http` | HTTP middleware (body limit, tracing, CORS) |
+| `tracing` | Structured logging |
+| `tracing-subscriber` | Log subscriber with env-filter support |
 | `url` | Parse and validate URLs in agent config |
 | `shellexpand` | Expand `~` in workdir paths |
 
