@@ -1,12 +1,22 @@
 mod cli;
 mod config;
+mod server;
 mod template;
 mod workflow;
 
 use clap::Parser;
 use config::Config;
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    // Initialize tracing subscriber for structured logging
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let args = cli::Cli::parse();
 
     let mut config = match Config::load(&args.config) {
@@ -49,8 +59,19 @@ fn main() {
         std::process::exit(1);
     }
 
-    println!(
+    tracing::info!(
         "Configuration and {} workflow(s) loaded and validated successfully",
         workflows.len()
     );
+
+    // Start the HTTP server
+    tracing::info!(
+        "Starting server on {}:{}",
+        config.server.host,
+        config.server.port
+    );
+    if let Err(e) = server::run_server(&config.server).await {
+        eprintln!("Server error: {e}");
+        std::process::exit(1);
+    }
 }

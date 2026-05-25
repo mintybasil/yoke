@@ -216,6 +216,20 @@ Templates are validated at render time:
 - **Malformed syntax**: unclosed `{{var` or empty `{{}}` returns `TemplateError::SyntaxError`
 - **Empty template**: whitespace-only results return `TemplateError::EmptyTemplate`
 
+## HTTP Endpoints
+
+Yoke starts an HTTP server on the configured `host:port`. The following endpoints are available:
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Liveness check — returns `{"status":"ok"}` with 200 |
+| GET | `/ready` | Readiness check — returns 200 (always ready; wired to dispatcher in future) |
+| POST | `/webhook` | Webhook receiver — placeholder (200 OK); full handler in separate issue |
+
+Request bodies larger than `[server].max_body_size` (default 1 MB) receive a **413 Payload Too Large** response.
+
+All HTTP requests are logged via `tower-http` tracing middleware.
+
 ## Architecture
 
 See [docs/Architecture Design.md](docs/Architecture%20Design.md) for the full system design.
