@@ -727,6 +727,8 @@ Review ID: {{review_id}}
 
 Yoke provides CLI subcommands to configure and remove webhooks on the platform. These commands are idempotent and safe to run multiple times.
 
+**Minimal event subscriptions:** The CLI inspects loaded workflows and subscribes only to the event types actually used by configured triggers. This minimizes webhook noise — you won't receive deliveries for events you don't handle. For example, if your workflows only use `github_issue_assigned`, the webhook subscribes only to `issues` events (not `issue_comment`, `pull_request_review`, etc.).
+
 ```bash
 # Configure webhooks for all repos in config.toml
 yoke webhooks add --config config.toml
