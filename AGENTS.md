@@ -7,7 +7,7 @@ src/
   main.rs      — CLI entrypoint (loads config, starts server)
   config.rs    — Configuration parsing, validation, and error types
   workflow.rs  — Workflow TOML parsing, validation, and error types
-  template.rs  — Template rendering with `{{variable}}` and `{{{variable}}}` substitution
+  template.rs  — Template rendering with `{{variable}}` substitution and validation
 ```
 
 ## Key Design Decisions
@@ -18,7 +18,7 @@ src/
 - **Serde-driven validation**: Required fields are enforced by serde (missing fields = error). Semantic validation (duplicate agents, URL schemes, trigger types) is done in `Config::validate()` / `Workflow::validate()`.
 - **`ConfigError` enum**: Typed errors (Io, Parse, Validation, ShellExpand) with `Display` and `Error` impls.
 - **`WorkflowError` enum**: Typed errors (Io, Parse, Validation) with `Display` and `Error` impls. Parse/Validation errors include the file path for clear diagnostics.
-- **Template renderer**: `template::render()` does `{{var}}` and `{{{var}}}` substitution with fail-fast validation. Unknown variables, malformed syntax, and empty templates all panic with clear error messages.
+- **Template renderer**: `template::render()` does `{{var}}` substitution, returning `Result<_, TemplateError>` for unknown variables, malformed syntax, and empty templates.
 
 ## Dependencies
 
