@@ -11,6 +11,7 @@ src/
   dispatcher.rs — Concurrency control (Dispatcher + Semaphore), deduplication (DedupSets, SharedDedupSets), and persistence
   server.rs    — axum HTTP server with health, readiness, and unified webhook endpoint
   workflow.rs  — Workflow TOML parsing, validation, and error types
+  git.rs        — Git repository operations (clone, pull, worktree, auth callbacks, dirty-check)
   template.rs  — Template rendering with `{{variable}}` substitution and validation
   webhook/     — Webhook handling modules
     mod.rs       — Shared types (TriggerEvent, WebhookError) and dispatch to platform handler
@@ -18,6 +19,7 @@ src/
     gitlab.rs   — GitLab webhook: token verification, payload parsing, event mapping
 tests/
   dispatcher_tests.rs — Integration tests for dispatcher (full dispatch flow, dedup, concurrency, shutdown, persistence)
+  git_integration_tests.rs — Integration tests for git module (clone, pull, worktree, dirty-check with local repos)
 ```
 
 ## Key Design Decisions
@@ -38,6 +40,8 @@ tests/
 - **Template renderer**: `template::render()` does `{{var}}` substitution, returning `Result<_, TemplateError>` for unknown variables, malformed syntax, and empty templates.
 - **HTTP server**: `src/server.rs` uses axum with `tower-http` middleware. Three endpoints: `/health` (liveness, returns `{"status":"ok"}`), `/ready` (readiness, returns 200 — always ready for now), `/webhook` (POST — dispatches to platform-specific handler based on `platform` config). `RequestBodyLimitLayer` enforces `max_body_size` from config. `TraceLayer` provides structured HTTP request logging.
 - **Webhook dispatch**: The server uses `WebhookHandler` (in `webhook/mod.rs`) which holds the platform config, webhook secret, and an mpsc sender for dispatching verified events. The `AppState` struct contains a `WebhookHandler` instance. The webhook endpoint handler delegates to `WebhookHandler::handle_webhook()`, which authenticates the request, parses the payload, maps it to a `TriggerEvent`, and sends it over the mpsc channel. Returns `Ok(())` on success or a `WebhookError` variant. When the dispatcher channel is closed (receiver dropped), returns `InternalError` → HTTP 503.
+- **Git operations module**: `src/git.rs` provides git repository management for the dispatcher pipeline. Public API: `sanitize_branch_name()`, `build_clone_url()`, `GitAuth` (credential callbacks for GitHub/GitLab tokens), `clone_repo()`, `pull_repo()`, `create_worktree()`, `remove_worktree()`, `has_uncommitted_changes()`. Uses the `git2` crate (libgit2 bindings). Token-based auth is wired through `GitAuth` callbacks — GitHub tokens go in the `x-access-token` header, GitLab tokens in the `PRIVATE-TOKEN` header. Branch names are sanitized to `[a-zA-Z0-9._-]` with whitespace collapsed to `-`. Worktrees use sanitized branch names for the administrative directory and support creating from existing branches or branching off HEAD.
+
 - **GitHub webhook handler**: `src/webhook/github.rs` provides HMAC-SHA256 signature verification (`verify_github_signature`), JSON payload parsing (`parse_github_event`), and event-to-trigger mapping (`map_to_trigger_event`). The `handle_github_webhook` function orchestrates the full flow.
 - **GitLab webhook handler**: `src/webhook/gitlab.rs` provides constant-time token verification (`verify_gitlab_token`), JSON payload parsing (`parse_gitlab_event`), and event-to-trigger mapping (`map_to_trigger_event`). The `handle_gitlab_webhook` function orchestrates the full flow.
 - **Constant-time comparison**: Both handlers use `subtle::ConstantTimeEq` to prevent timing attacks — GitHub for HMAC signatures, GitLab for token comparison.
@@ -89,6 +93,7 @@ GitLab triggers: `gitlab_issue_assigned`, `gitlab_issue_mention`, `gitlab_merge_
 | `sha2` | SHA-256 digest (used with hmac) |
 | `hex` | Hex encoding for HMAC signature comparison |
 | `subtle` | Constant-time comparison to prevent timing attacks on webhook secrets/tokens |
+| `git2` | libgit2 bindings for git repository operations (clone, pull, worktree, auth) |
 | `thiserror` | Derived error types (Display, Error) for PersistenceError and other enums |
 | `tempfile` | Temporary directories for unit tests (dev dependency) |
 
@@ -99,6 +104,8 @@ cargo test
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
+
+Known flaky tests: `config::tests::test_validate_env_vars_github_all_present` and `config::tests::test_validate_env_vars_gitlab_token_missing` fail when env vars leak between parallel tests. Run with `env -u GITLAB_TOKEN -u HERMES_API_KEY` or skip them with `--skip test_validate_env_vars_github_all_present`.
 
 ### Integration tests
 
