@@ -15,13 +15,10 @@ use crate::webhook;
 /// Application state shared across handlers.
 #[derive(Clone)]
 pub struct AppState {
-    pub platform: Platform,
-    pub webhook_secret: String,
+    pub webhook_handler: webhook::WebhookHandler,
 }
 
 /// HTTP server encapsulating an axum Router and bind address.
-///
-/// Will hold dispatcher state in a future issue.
 #[allow(dead_code)]
 pub struct Server {
     router: Router,
@@ -39,23 +36,25 @@ async fn ready() -> &'static str {
     "OK"
 }
 
-/// Webhook handler — dispatches to platform-specific verification and processing.
+/// Webhook handler — routes verified platform events through the `WebhookHandler`
+/// and returns appropriate HTTP status codes.
 ///
 /// Extracts authentication and event-type headers, then delegates to
-/// `webhook::dispatch_webhook` which routes to the GitHub or GitLab handler
-/// based on the configured platform.
+/// `state.webhook_handler.handle_webhook` which verifies, parses, and
+/// sends the resulting `TriggerEvent` to the dispatcher channel.
 ///
 /// Returns:
 /// - `200 OK` if the event was processed or no matching trigger was found (no-op)
 /// - `401 Unauthorized` if signature/token verification fails
 /// - `400 Bad Request` if the payload cannot be parsed
+/// - `503 Service Unavailable` if the dispatcher channel is full
 async fn webhook_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> StatusCode {
     // Extract authentication header based on platform
-    let (token_header, event_header) = match state.platform {
+    let (token_header, event_header) = match state.webhook_handler.platform {
         Platform::Github => {
             // GitHub uses X-Hub-Signature-256 for HMAC and X-GitHub-Event for type
             let sig = match headers.get("X-Hub-Signature-256") {
@@ -102,23 +101,12 @@ async fn webhook_handler(
         }
     };
 
-    match webhook::dispatch_webhook(
-        &state.platform,
-        &token_header,
-        &event_header,
-        &body,
-        &state.webhook_secret,
-    ) {
-        Ok(trigger_event) => {
-            tracing::info!(
-                trigger_type = trigger_event.trigger_type.label(),
-                repo_path = %trigger_event.repo_path,
-                event_id = %trigger_event.event_id,
-                "webhook event processed"
-            );
-            // TODO: Send trigger_event through dispatcher channel (future issue)
-            StatusCode::OK
-        }
+    match state
+        .webhook_handler
+        .handle_webhook(&token_header, &event_header, &body)
+        .await
+    {
+        Ok(_) => StatusCode::OK,
         Err(webhook::WebhookError::Unauthorized(msg)) => {
             tracing::warn!(reason = %msg, "webhook authentication failed");
             StatusCode::UNAUTHORIZED
@@ -128,10 +116,12 @@ async fn webhook_handler(
             StatusCode::BAD_REQUEST
         }
         Err(webhook::WebhookError::NoMatchingTrigger(msg)) => {
-            // No matching trigger — this is a no-op, not an error.
-            // The platform shouldn't retry, so we return 200.
             tracing::debug!(reason = %msg, "no matching trigger for webhook event");
             StatusCode::OK
+        }
+        Err(webhook::WebhookError::InternalError(msg)) => {
+            tracing::error!(reason = %msg, "internal dispatcher error");
+            StatusCode::SERVICE_UNAVAILABLE
         }
     }
 }
@@ -163,9 +153,15 @@ pub async fn run_server(
             )
         })?;
 
+    let (tx, _rx) = tokio::sync::mpsc::channel(100);
+    // TODO: Pass rx to the dispatcher in a future issue
+
     let state = AppState {
-        platform: platform.clone(),
-        webhook_secret: config.webhook_secret.clone(),
+        webhook_handler: webhook::WebhookHandler::new(
+            platform.clone(),
+            config.webhook_secret.clone(),
+            tx,
+        ),
     };
 
     let router = build_router(state, config);
@@ -181,10 +177,13 @@ pub async fn run_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Platform;
+    use crate::webhook::{TriggerEvent, WebhookHandler};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
+    use tokio::sync::mpsc;
     use tower::ServiceExt;
 
     type HmacSha256 = Hmac<Sha256>;
@@ -198,11 +197,20 @@ mod tests {
         }
     }
 
-    fn test_state() -> AppState {
-        AppState {
-            platform: Platform::Gitlab,
-            webhook_secret: "test-secret".to_string(),
-        }
+    fn test_state() -> (AppState, mpsc::Receiver<TriggerEvent>) {
+        let (tx, rx) = mpsc::channel(100);
+        let state = AppState {
+            webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
+        };
+        (state, rx)
+    }
+
+    fn test_state_github() -> (AppState, mpsc::Receiver<TriggerEvent>) {
+        let (tx, rx) = mpsc::channel(100);
+        let state = AppState {
+            webhook_handler: WebhookHandler::new(Platform::Github, "test-secret".to_string(), tx),
+        };
+        (state, rx)
     }
 
     fn compute_signature(payload: &[u8], secret: &str) -> String {
@@ -215,7 +223,7 @@ mod tests {
     #[tokio::test]
     async fn test_health_endpoint() {
         let config = test_config();
-        let state = test_state();
+        let (state, _rx) = test_state();
         let app = build_router(state, &config);
 
         let response = app
@@ -240,7 +248,7 @@ mod tests {
     #[tokio::test]
     async fn test_ready_endpoint() {
         let config = test_config();
-        let state = test_state();
+        let (state, _rx) = test_state();
         let app = build_router(state, &config);
 
         let response = app
@@ -261,7 +269,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_gitlab_valid_token() {
         let config = test_config();
-        let state = test_state();
+        let (state, _rx) = test_state();
         let app = build_router(state, &config);
 
         let issue_payload = serde_json::json!({
@@ -298,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_gitlab_invalid_token() {
         let config = test_config();
-        let state = test_state();
+        let (state, _rx) = test_state();
         let app = build_router(state, &config);
 
         let response = app
@@ -321,7 +329,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_gitlab_no_token_header() {
         let config = test_config();
-        let state = test_state();
+        let (state, _rx) = test_state();
         let app = build_router(state, &config);
 
         let response = app
@@ -343,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_gitlab_no_matching_trigger() {
         let config = test_config();
-        let state = test_state();
+        let (state, _rx) = test_state();
         let app = build_router(state, &config);
 
         // "open" action on an issue doesn't map to any trigger
@@ -382,7 +390,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_gitlab_bad_json() {
         let config = test_config();
-        let state = test_state();
+        let (state, _rx) = test_state();
         let app = build_router(state, &config);
 
         let response = app
@@ -407,10 +415,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_github_missing_signature_returns_401() {
         let config = test_config();
-        let state = AppState {
-            platform: Platform::Github,
-            webhook_secret: "test-secret".to_string(),
-        };
+        let (state, _rx) = test_state_github();
         let app = build_router(state, &config);
 
         let body = r#"{"action": "assigned"}"#;
@@ -433,10 +438,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_github_invalid_signature_returns_401() {
         let config = test_config();
-        let state = AppState {
-            platform: Platform::Github,
-            webhook_secret: "test-secret".to_string(),
-        };
+        let (state, _rx) = test_state_github();
         let app = build_router(state, &config);
 
         let body = r#"{"action": "assigned"}"#;
@@ -460,10 +462,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_github_valid_signature_unknown_event_returns_200() {
         let config = test_config();
-        let state = AppState {
-            platform: Platform::Github,
-            webhook_secret: "test-secret".to_string(),
-        };
+        let (state, _rx) = test_state_github();
         let app = build_router(state, &config);
 
         let body = r#"{}"#;
@@ -490,10 +489,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_github_issues_assigned_returns_200() {
         let config = test_config();
-        let state = AppState {
-            platform: Platform::Github,
-            webhook_secret: "test-secret".to_string(),
-        };
+        let (state, _rx) = test_state_github();
         let app = build_router(state, &config);
 
         let body = r#"{
@@ -529,10 +525,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_github_issue_comment_created_returns_200() {
         let config = test_config();
-        let state = AppState {
-            platform: Platform::Github,
-            webhook_secret: "test-secret".to_string(),
-        };
+        let (state, _rx) = test_state_github();
         let app = build_router(state, &config);
 
         let body = r#"{
@@ -570,10 +563,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_github_pull_request_review_submitted_returns_200() {
         let config = test_config();
-        let state = AppState {
-            platform: Platform::Github,
-            webhook_secret: "test-secret".to_string(),
-        };
+        let (state, _rx) = test_state_github();
         let app = build_router(state, &config);
 
         let body = r#"{
@@ -610,10 +600,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_github_pull_request_review_comment_created_returns_200() {
         let config = test_config();
-        let state = AppState {
-            platform: Platform::Github,
-            webhook_secret: "test-secret".to_string(),
-        };
+        let (state, _rx) = test_state_github();
         let app = build_router(state, &config);
 
         let body = r#"{
@@ -650,10 +637,7 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_github_no_matching_trigger_returns_200() {
         let config = test_config();
-        let state = AppState {
-            platform: Platform::Github,
-            webhook_secret: "test-secret".to_string(),
-        };
+        let (state, _rx) = test_state_github();
         let app = build_router(state, &config);
 
         // "issues" event with action "opened" doesn't match any trigger
@@ -695,7 +679,7 @@ mod tests {
             webhook_secret: "test-secret".to_string(),
             max_body_size: 10,
         };
-        let state = test_state();
+        let (state, _rx) = test_state();
 
         // Build router with DefaultBodyLimit for the rejection test,
         // since RequestBodyLimitLayer only rejects on body consumption.
@@ -727,5 +711,53 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// When the dispatcher channel receiver is dropped (closed channel),
+    /// the server should return 503 Service Unavailable.
+    /// This simulates a dispatcher that has shut down or is unreachable.
+    #[tokio::test]
+    async fn test_webhook_gitlab_returns_503_when_channel_closed() {
+        let config = test_config();
+        // Create a channel, then drop rx to simulate a closed dispatcher channel.
+        let (tx, rx) = mpsc::channel::<TriggerEvent>(1);
+        drop(rx);
+
+        let state = AppState {
+            webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
+        };
+        let app = build_router(state, &config);
+
+        // Use a valid issue payload so dispatch_webhook returns a TriggerEvent,
+        // which then hits the closed channel on send().
+        let issue_payload = serde_json::json!({
+            "object_kind": "issue",
+            "event_type": "Issue Hook",
+            "object_attributes": {
+                "id": 42,
+                "action": "update",
+                "iid": 7
+            },
+            "project": {
+                "id": 1,
+                "path_with_namespace": "owner/repo"
+            }
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhook")
+                    .header("X-Gitlab-Token", "test-secret")
+                    .header("X-Gitlab-Event", "Issue Hook")
+                    .header("content-type", "application/json")
+                    .body(Body::from(issue_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

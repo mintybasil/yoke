@@ -33,12 +33,14 @@ src/
 - **`Workflow.path` field**: Each `Workflow` carries its source file path (populated by `load_workflows`), used for agent resolution error reporting.
 - **Template renderer**: `template::render()` does `{{var}}` substitution, returning `Result<_, TemplateError>` for unknown variables, malformed syntax, and empty templates.
 - **HTTP server**: `src/server.rs` uses axum with `tower-http` middleware. Three endpoints: `/health` (liveness, returns `{"status":"ok"}`), `/ready` (readiness, returns 200 — always ready for now), `/webhook` (POST — dispatches to platform-specific handler based on `platform` config). `RequestBodyLimitLayer` enforces `max_body_size` from config. `TraceLayer` provides structured HTTP request logging.
-- **Webhook dispatch**: The server extracts platform-appropriate headers (`X-Hub-Signature-256`/`X-GitHub-Event` for GitHub, `X-Gitlab-Token`/`X-Gitlab-Event` for GitLab) and delegates to `webhook::dispatch_webhook`, which routes to the correct handler. Both handlers return `Result<TriggerEvent, WebhookError>`.
+- **Webhook dispatch**: The server uses `WebhookHandler` (in `webhook/mod.rs`) which holds the platform config, webhook secret, and an mpsc sender for dispatching verified events. The `AppState` struct contains a `WebhookHandler` instance. The webhook endpoint handler delegates to `WebhookHandler::handle_webhook()`, which authenticates the request, parses the payload, maps it to a `TriggerEvent`, and sends it over the mpsc channel. Returns `Ok(())` on success or a `WebhookError` variant. When the dispatcher channel is closed (receiver dropped), returns `InternalError` → HTTP 503.
 - **GitHub webhook handler**: `src/webhook/github.rs` provides HMAC-SHA256 signature verification (`verify_github_signature`), JSON payload parsing (`parse_github_event`), and event-to-trigger mapping (`map_to_trigger_event`). The `handle_github_webhook` function orchestrates the full flow.
 - **GitLab webhook handler**: `src/webhook/gitlab.rs` provides constant-time token verification (`verify_gitlab_token`), JSON payload parsing (`parse_gitlab_event`), and event-to-trigger mapping (`map_to_trigger_event`). The `handle_gitlab_webhook` function orchestrates the full flow.
 - **Constant-time comparison**: Both handlers use `subtle::ConstantTimeEq` to prevent timing attacks — GitHub for HMAC signatures, GitLab for token comparison.
-- **`WebhookError` enum**: Shared error type (Unauthorized, BadRequest, NoMatchingTrigger) in `webhook/mod.rs`, used by both platform handlers via `dispatch_webhook`.
-- **`TriggerEvent` struct**: Shared webhook result type in `webhook/mod.rs` with `trigger_type: TriggerType`, `repo_path`, and `event_id` fields.
+- **`WebhookError` enum**: Shared error type (Unauthorized, BadRequest, NoMatchingTrigger, InternalError) in `webhook/mod.rs`, used by `WebhookHandler::handle_webhook()`. `InternalError` is returned when the dispatcher channel is closed, mapping to HTTP 503 Service Unavailable.
+- **`TriggerEvent` struct**: Shared webhook result type in `webhook/mod.rs` with `trigger_type: TriggerType`, `repo_path`, and `event_id` fields. Sent to the dispatcher via the mpsc channel in `WebhookHandler`.
+- **`WebhookHandler` struct**: Holds `platform`, `secret`, and `sender: mpsc::Sender<TriggerEvent>`. Created in `run_server()` with a bounded channel and passed to `AppState`. Derives `Clone`.
+- **`AppState` struct**: Contains `webhook_handler: WebhookHandler` (replaces the previous `platform` + `webhook_secret` fields). Derives `Clone` for axum state sharing.
 
 ## CLI Arguments
 

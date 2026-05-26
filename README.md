@@ -235,9 +235,18 @@ Yoke starts an HTTP server on the configured `host:port`. The following endpoint
 |---|---|---|
 | GET | `/health` | Liveness check — returns `{"status":"ok"}` with 200 |
 | GET | `/ready` | Readiness check — returns 200 (always ready; wired to dispatcher in future) |
-| POST | `/webhook` | Platform-specific webhook receiver — GitHub: verifies `X-Hub-Signature-256` HMAC signature; GitLab: verifies `X-Gitlab-Token` header. Parses event payload, maps to internal trigger |
+| POST | `/webhook` | Platform-specific webhook receiver — GitHub: verifies `X-Hub-Signature-256` HMAC signature; GitLab: verifies `X-Gitlab-Token` header. Parses event payload, maps to internal trigger, and dispatches to the poller channel |
 
 Request bodies larger than `[server].max_body_size` (default 1 MB) receive a **413 Payload Too Large** response.
+
+#### Webhook response codes
+
+| Code | Condition |
+|---|---|
+| 200 OK | Event processed successfully or no matching trigger (acknowledged but not processed) |
+| 400 Bad Request | Malformed payload or missing event type header |
+| 401 Unauthorized | Signature/token verification failed |
+| 503 Service Unavailable | Dispatcher channel closed (poller not running or shut down) |
 
 All HTTP requests are logged via `tower-http` tracing middleware.
 
@@ -249,7 +258,7 @@ The `POST /webhook/github` endpoint uses HMAC-SHA256 signature verification:
 2. The hex digest is compared against an HMAC-SHA256 of the raw request body using the `webhook_secret` from config.
 3. The request must include an `X-GitHub-Event` header specifying the event type (e.g. `issues`, `issue_comment`, `pull_request`).
 
-If the signature is missing or fails verification, the server responds with **401 Unauthorized**. If the event type header is missing, the server responds with **400 Bad Request**. Known events that match a trigger type are logged and mapped; unrecognized events respond with **200 OK** (acknowledged but not processed).
+If the signature is missing or fails verification, the server responds with **401 Unauthorized**. If the event type header is missing, the server responds with **400 Bad Request**. Known events that match a trigger type are logged, mapped, and dispatched to the poller channel. Unrecognized events respond with **200 OK** (acknowledged but not processed). If the dispatcher channel is closed, the server responds with **503 Service Unavailable**.
 
 ## Architecture
 
