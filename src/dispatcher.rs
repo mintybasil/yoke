@@ -1274,8 +1274,9 @@ mod tests {
         assert!(result.is_err(), "writing to read-only dir should fail");
 
         // Restore permissions for cleanup
+        use std::os::unix::fs::PermissionsExt;
         let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
-        perms.set_readonly(false);
+        perms.set_mode(0o755);
         std::fs::set_permissions(dir.path(), perms).unwrap();
 
         // Original file should be untouched
