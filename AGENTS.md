@@ -9,6 +9,7 @@ src/
   cli.rs       — CLI argument parsing (clap derive)
   config.rs    — Configuration parsing, validation, and error types
   dispatcher.rs — Concurrency control (Dispatcher + Semaphore), deduplication (DedupSets, SharedDedupSets), and persistence
+  harness.rs   — Hermes API client harness (HermesClient, request/response types, error handling)
   server.rs    — axum HTTP server with health, readiness, and unified webhook endpoint
   workflow.rs  — Workflow TOML parsing, validation, and error types
   git.rs        — Git repository operations (clone, pull, worktree, auth callbacks, dirty-check)
@@ -20,6 +21,7 @@ src/
 tests/
   dispatcher_tests.rs — Integration tests for dispatcher (full dispatch flow, dedup, concurrency, shutdown, persistence)
   git_integration_tests.rs — Integration tests for git module (clone, pull, worktree, dirty-check with local repos)
+  harness_tests.rs   — Integration tests for harness (serialization, response parsing, error file, multi-instance)
 ```
 
 ## Key Design Decisions
@@ -53,6 +55,7 @@ tests/
 - **Dispatcher and concurrency control** (`src/dispatcher.rs`): The `Dispatcher` struct wraps `SharedDedupSets` and an optional `tokio::Semaphore` to coordinate concurrency limiting and deduplication for webhook event processing. When `max_concurrent > 0`, the dispatcher holds a `Semaphore` that caps simultaneous workflow executions; permits are acquired via `acquire_permit()` (returning `Option<OwnedSemaphorePermit>`) or the convenience method `run_with_permit()` which holds the permit for the future's lifetime and releases it on drop (RAII pattern). When `max_concurrent == 0`, the semaphore is `None` and no limiting is applied. An `AtomicUsize` counter tracks active permits for observability. The `Dispatcher` is `Clone` (cheap via `Arc` clones) and is stored in `AppState` for sharing across axum handlers.
 - **Dispatcher deduplication** (`src/dispatcher.rs`): Three-set `DedupSets` tracks event lifecycle states (`in_flight`, `completed`, `permanently_failed`). Events are identified by dedup keys formatted as `{owner}/{repo}/{event_id}`, where `event_id` varies by event type: issue number for issue events, `{pr_number}_review-{review_id}` for PR reviews, `{pr_number}_comment-{comment_id}` for PR review comments, and issue number for issue comment mentions. `SharedDedupSets` (`Arc<RwLock<DedupSets>>`) provides thread-safe async access. An event is considered a duplicate if its key appears in *any* of the three sets. State transitions: `mark_in_flight` → `mark_completed` (success) or `mark_failed` (permanent failure); `remove_in_flight` allows retry on transient failures. The `extract_event_id` function maps `TriggerEvent` fields to dedup key components based on `TriggerType`.
 - **Dedup persistence** (`src/dispatcher.rs`): `FailedEntry` struct records permanently failed events with `{key, timestamp, error}`. `PersistenceError` enum handles IO and JSON errors from file operations. `load_dedup_file` deserializes JSON files (returns `NotFound` for missing, `Json` for corrupted). `save_dedup_file` uses atomic writes — writes to `.json.tmp`, then `rename` to target — to prevent data corruption on crash. `DedupSets::persist_completed` saves the `completed` set to `completed.json`. `DedupSets::persist_failed` appends a `FailedEntry` to `failed.json` (load-append-save pattern; JSON arrays require full rewrite). `load_persistence` reads `completed.json` and `failed.json` from the work directory at startup, treating missing files as empty sets and logging warnings for corrupted ones. `in_flight` is always empty on load (transient state).
+- **Hermes API harness** (`src/harness.rs`): `HermesClient` encapsulates a `reqwest::Client`, `base_url`, and `api_key` for making authenticated POST requests to the Hermes Agent API `/v1/responses` endpoint. `execute_step(instructions, input)` builds a `HermesRequest { instructions, input, store: true }`, sends it via `POST {base_url}/v1/responses` with `Authorization: Bearer {api_key}`, and parses the response into a `HermesResponse`. Response parsing filters `output` content blocks for `type == "output_text"` and joins their text with newlines. Non-2xx responses write the status code and body to a `.error` file and return `HarnessError::Api`. `HarnessError` has three variants: `Http` (network/request errors), `Api` (non-2xx status with status code and body), and `Io` (file write errors for `.error`). `execute_step_with_error_path` accepts an optional `Path` for the error file (used in tests). `HermesRequest`, `HermesResponse`, and `ContentBlock` derive `Serialize`/`Deserialize` for JSON round-tripping; `ContentBlock` uses `#[serde(rename = "type")]` for the `block_type` field.
 
 ## CLI Arguments
 
@@ -96,6 +99,7 @@ GitLab triggers: `gitlab_issue_assigned`, `gitlab_issue_mention`, `gitlab_merge_
 | `subtle` | Constant-time comparison to prevent timing attacks on webhook secrets/tokens |
 | `git2` | libgit2 bindings for git repository operations (clone, pull, worktree, auth) |
 | `thiserror` | Derived error types (Display, Error) for PersistenceError and other enums |
+| `reqwest` | HTTP client for Hermes Agent API requests (with JSON feature) |
 | `tempfile` | Temporary directories for unit tests (dev dependency) |
 
 ## Running Tests
