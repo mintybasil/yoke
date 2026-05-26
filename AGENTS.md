@@ -110,7 +110,7 @@ cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
-Known flaky tests: `config::tests::test_validate_env_vars_github_all_present` and `config::tests::test_validate_env_vars_gitlab_token_missing` fail when env vars leak between parallel tests. Run with `env -u GITLAB_TOKEN -u HERMES_API_KEY` or skip them with `--skip test_validate_env_vars_github_all_present`.
+Environment variable validation tests (`test_validate_env_vars_*`) use a static `ENV_MUTEX` to serialize access to global env state, preventing race conditions when tests run in parallel. No `--test-threads=1` or env var workarounds are needed.
 
 ### Integration tests
 
