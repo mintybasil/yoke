@@ -43,6 +43,7 @@ src/
 - **`WebhookHandler` struct**: Holds `platform`, `secret`, and `sender: mpsc::Sender<TriggerEvent>`. Created in `run_server()` with a bounded channel and passed to `AppState`. Derives `Clone`.
 - **`AppState` struct**: Contains `webhook_handler: WebhookHandler` and `dedup_sets: SharedDedupSets`. Derives `Clone` for axum state sharing. The `dedup_sets` field provides access to the in-memory deduplication state for the dispatcher (wiring into webhook handling is planned for a future issue).
 - **Dispatcher deduplication** (`src/dispatcher.rs`): Three-set `DedupSets` tracks event lifecycle states (`in_flight`, `completed`, `permanently_failed`). Events are identified by dedup keys formatted as `{owner}/{repo}/{event_id}`, where `event_id` varies by event type: issue number for issue events, `{pr_number}_review-{review_id}` for PR reviews, `{pr_number}_comment-{comment_id}` for PR review comments, and issue number for issue comment mentions. `SharedDedupSets` (`Arc<RwLock<DedupSets>>`) provides thread-safe async access. An event is considered a duplicate if its key appears in *any* of the three sets. State transitions: `mark_in_flight` → `mark_completed` (success) or `mark_failed` (permanent failure); `remove_in_flight` allows retry on transient failures. The `extract_event_id` function maps `TriggerEvent` fields to dedup key components based on `TriggerType`.
+- **Dedup persistence** (`src/dispatcher.rs`): `FailedEntry` struct records permanently failed events with `{key, timestamp, error}`. `PersistenceError` enum handles IO and JSON errors from file operations. `load_dedup_file` deserializes JSON files (returns `NotFound` for missing, `Json` for corrupted). `save_dedup_file` uses atomic writes — writes to `.json.tmp`, then `rename` to target — to prevent data corruption on crash. `DedupSets::persist_completed` saves the `completed` set to `completed.json`. `DedupSets::persist_failed` appends a `FailedEntry` to `failed.json` (load-append-save pattern; JSON arrays require full rewrite). `load_persistence` reads `completed.json` and `failed.json` from the work directory at startup, treating missing files as empty sets and logging warnings for corrupted ones. `in_flight` is always empty on load (transient state).
 
 ## CLI Arguments
 
@@ -84,6 +85,8 @@ GitLab triggers: `gitlab_issue_assigned`, `gitlab_issue_mention`, `gitlab_merge_
 | `sha2` | SHA-256 digest (used with hmac) |
 | `hex` | Hex encoding for HMAC signature comparison |
 | `subtle` | Constant-time comparison to prevent timing attacks on webhook secrets/tokens |
+| `thiserror` | Derived error types (Display, Error) for PersistenceError and other enums |
+| `tempfile` | Temporary directories for unit tests (dev dependency) |
 
 ## Running Tests
 
