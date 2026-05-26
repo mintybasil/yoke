@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod server;
 mod template;
+mod webhook;
 mod workflow;
 
 use clap::Parser;

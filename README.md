@@ -235,11 +235,21 @@ Yoke starts an HTTP server on the configured `host:port`. The following endpoint
 |---|---|---|
 | GET | `/health` | Liveness check — returns `{"status":"ok"}` with 200 |
 | GET | `/ready` | Readiness check — returns 200 (always ready; wired to dispatcher in future) |
-| POST | `/webhook` | Webhook receiver — placeholder (200 OK); full handler in separate issue |
+| POST | `/webhook/github` | GitHub webhook receiver — verifies HMAC-SHA256 signature, parses event payload, maps to internal trigger |
 
 Request bodies larger than `[server].max_body_size` (default 1 MB) receive a **413 Payload Too Large** response.
 
 All HTTP requests are logged via `tower-http` tracing middleware.
+
+### GitHub webhook verification
+
+The `POST /webhook/github` endpoint uses HMAC-SHA256 signature verification:
+
+1. The request must include an `X-Hub-Signature-256` header with the format `sha256=<hex-digest>`.
+2. The hex digest is compared against an HMAC-SHA256 of the raw request body using the `webhook_secret` from config.
+3. The request must include an `X-GitHub-Event` header specifying the event type (e.g. `issues`, `issue_comment`, `pull_request`).
+
+If the signature is missing or fails verification, the server responds with **401 Unauthorized**. If the event type header is missing, the server responds with **400 Bad Request**. Known events that match a trigger type are logged and mapped; unrecognized events respond with **200 OK** (acknowledged but not processed).
 
 ## Architecture
 
