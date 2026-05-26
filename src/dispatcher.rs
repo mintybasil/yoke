@@ -1,4 +1,4 @@
-//! Dispatcher deduplication data structures and in-memory logic.
+//! Dispatcher deduplication data structures, in-memory logic, and persistence.
 //!
 //! This module provides the core deduplication mechanism to prevent concurrent
 //! or repeated execution of the same webhook event. Three `HashSet`s track
@@ -13,14 +13,47 @@
 //! - PR review comment events: `{pr_number}_comment-{comment_id}`
 //!
 //! Thread-safe access is provided via `SharedDedupSets` (`Arc<RwLock<DedupSets>>`).
+//!
+//! Persistence uses atomic file writes (write to `.tmp`, then `rename`) to
+//! prevent data corruption on crash. On startup, `load_persistence` reads
+//! `completed.json` and `failed.json` from the work directory, gracefully
+//! handling missing or corrupted files.
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::RwLock;
 
 use crate::webhook::TriggerEvent;
 use crate::workflow::TriggerType;
+
+/// A record of a permanently failed event, persisted to disk.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[allow(dead_code)]
+pub struct FailedEntry {
+    /// The dedup key of the failed event (e.g. `owner/repo/42`).
+    pub key: String,
+    /// When the failure occurred.
+    pub timestamp: SystemTime,
+    /// Description of the error that caused the failure.
+    pub error: String,
+}
+
+/// Errors that can occur during persistence operations.
+#[derive(Debug, Error)]
+#[allow(dead_code)]
+pub enum PersistenceError {
+    /// An I/O error occurred reading or writing a file.
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    /// A JSON serialization/deserialization error occurred.
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+}
 
 /// Three-set deduplication tracker for webhook events.
 ///
@@ -208,6 +241,105 @@ fn extract_gitlab_mr_event_id(event_id: &str) -> String {
 #[allow(dead_code)]
 pub fn new_dedup_sets() -> SharedDedupSets {
     Arc::new(RwLock::new(DedupSets::new()))
+}
+
+// ---------------------------------------------------------------------------
+// Persistence: loading and saving dedup sets to JSON files
+// ---------------------------------------------------------------------------
+
+/// Load and deserialize a JSON dedup file.
+///
+/// Returns `Err(PersistenceError::Io(NotFound))` if the file does not exist.
+/// Returns `Err(PersistenceError::Json(_))` if the file contains invalid JSON.
+fn load_dedup_file<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T, PersistenceError> {
+    if !path.exists() {
+        return Err(PersistenceError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("File not found: {}", path.display()),
+        )));
+    }
+    let content = std::fs::read_to_string(path)?;
+    serde_json::from_str(&content).map_err(PersistenceError::Json)
+}
+
+/// Save data to a JSON file using atomic writes.
+///
+/// Writes the data to a `.tmp` file first, then renames it to the target path.
+/// The rename operation is atomic on most filesystems, preventing partial writes
+/// on crash.
+fn save_dedup_file<T: Serialize>(path: &Path, entries: &T) -> Result<(), PersistenceError> {
+    let tmp_path = path.with_extension("json.tmp");
+    let content = serde_json::to_string_pretty(entries)?;
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+impl DedupSets {
+    /// Persist the `completed` set to `completed.json` in the given directory.
+    ///
+    /// Uses atomic file writes (`.tmp` + `rename`) to prevent data corruption.
+    pub fn persist_completed(&self, workdir: &Path) -> Result<(), PersistenceError> {
+        let path = workdir.join("completed.json");
+        save_dedup_file(&path, &self.completed)
+    }
+
+    /// Append a failed entry to `failed.json` in the given directory.
+    ///
+    /// Loads existing failed entries, appends the new one, and atomically
+    /// rewrites the file. On missing or corrupted `failed.json`, starts
+    /// with an empty list.
+    pub fn persist_failed(
+        &self,
+        workdir: &Path,
+        entry: &FailedEntry,
+    ) -> Result<(), PersistenceError> {
+        let path = workdir.join("failed.json");
+        let mut failed: Vec<FailedEntry> = load_dedup_file(&path).unwrap_or_default();
+        failed.push(entry.clone());
+        save_dedup_file(&path, &failed)
+    }
+}
+
+/// Load dedup persistence state from the work directory.
+///
+/// Reads `completed.json` and `failed.json` from `workdir`. Missing files are
+/// treated as empty sets (no error). Corrupted files produce a warning on
+/// stderr and are treated as empty sets. The `in_flight` set is always empty
+/// on startup (in-flight state is transient).
+#[allow(dead_code)]
+pub fn load_persistence(workdir: &Path) -> DedupSets {
+    let completed_path = workdir.join("completed.json");
+    let failed_path = workdir.join("failed.json");
+
+    let completed = load_dedup_file::<HashSet<String>>(&completed_path).unwrap_or_else(|e| {
+        if !matches!(
+            &e,
+            PersistenceError::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound
+        ) {
+            eprintln!("Warning: Corrupted completed.json: {e}");
+        }
+        HashSet::new()
+    });
+
+    let failed_entries = load_dedup_file::<Vec<FailedEntry>>(&failed_path).unwrap_or_else(|e| {
+        if !matches!(
+            &e,
+            PersistenceError::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound
+        ) {
+            eprintln!("Warning: Corrupted failed.json: {e}");
+        }
+        Vec::new()
+    });
+
+    let permanently_failed = failed_entries.into_iter().map(|e| e.key).collect();
+
+    DedupSets {
+        in_flight: HashSet::new(),
+        completed,
+        permanently_failed,
+    }
 }
 
 #[cfg(test)]
@@ -641,5 +773,222 @@ mod tests {
         let event_id = extract_event_id(&event);
         let key = build_dedup_key("internal-team", "backend-service", &event_id);
         assert_eq!(key, "internal-team/backend-service/12_review-150");
+    }
+
+    // --- Persistence tests ---
+
+    #[test]
+    fn test_load_dedup_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        let result: Result<HashSet<String>, _> = load_dedup_file(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, PersistenceError::Io(e) if e.kind() == std::io::ErrorKind::NotFound),
+            "Expected NotFound error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_load_dedup_file_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("completed.json");
+        let data = serde_json::to_string_pretty(&HashSet::from([
+            "owner/repo/42".to_string(),
+            "owner/repo/43".to_string(),
+        ]))
+        .unwrap();
+        std::fs::write(&path, data).unwrap();
+
+        let loaded: HashSet<String> = load_dedup_file(&path).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.contains("owner/repo/42"));
+        assert!(loaded.contains("owner/repo/43"));
+    }
+
+    #[test]
+    fn test_load_dedup_file_corrupted_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("completed.json");
+        std::fs::write(&path, "not valid json{{{").unwrap();
+
+        let result: Result<HashSet<String>, _> = load_dedup_file(&path);
+        assert!(result.is_err(), "Expected error for corrupted JSON");
+        assert!(
+            matches!(result.unwrap_err(), PersistenceError::Json(_)),
+            "Expected JSON error"
+        );
+    }
+
+    #[test]
+    fn test_save_dedup_file_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("completed.json");
+
+        let set: HashSet<String> =
+            HashSet::from(["owner/repo/42".to_string(), "owner/repo/99".to_string()]);
+        save_dedup_file(&path, &set).unwrap();
+
+        // File should exist
+        assert!(path.exists());
+        // No .tmp file should remain
+        assert!(!path.with_extension("json.tmp").exists());
+
+        // Content should be valid and match
+        let loaded: HashSet<String> = load_dedup_file(&path).unwrap();
+        assert_eq!(loaded, set);
+    }
+
+    #[test]
+    fn test_save_dedup_file_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("completed.json");
+
+        // Save initial set
+        let mut set = HashSet::new();
+        set.insert("owner/repo/42".to_string());
+        save_dedup_file(&path, &set).unwrap();
+
+        // Save updated set
+        set.insert("owner/repo/100".to_string());
+        save_dedup_file(&path, &set).unwrap();
+
+        let loaded: HashSet<String> = load_dedup_file(&path).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.contains("owner/repo/42"));
+        assert!(loaded.contains("owner/repo/100"));
+    }
+
+    #[test]
+    fn test_persist_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sets = DedupSets::new();
+        sets.mark_in_flight("owner/repo/42");
+        sets.mark_completed("owner/repo/42");
+
+        sets.persist_completed(dir.path()).unwrap();
+
+        let loaded: HashSet<String> = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("completed.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(loaded.contains("owner/repo/42"));
+    }
+
+    #[test]
+    fn test_persist_failed_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let sets = DedupSets::new();
+
+        let entry1 = FailedEntry {
+            key: "owner/repo/42".to_string(),
+            timestamp: SystemTime::UNIX_EPOCH,
+            error: "timeout".to_string(),
+        };
+        let entry2 = FailedEntry {
+            key: "owner/repo/43".to_string(),
+            timestamp: SystemTime::UNIX_EPOCH,
+            error: "connection refused".to_string(),
+        };
+
+        sets.persist_failed(dir.path(), &entry1).unwrap();
+        sets.persist_failed(dir.path(), &entry2).unwrap();
+
+        let loaded: Vec<FailedEntry> =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("failed.json")).unwrap())
+                .unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0], entry1);
+        assert_eq!(loaded[1], entry2);
+    }
+
+    #[test]
+    fn test_load_persistence_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let sets = load_persistence(dir.path());
+        assert!(sets.in_flight.is_empty());
+        assert!(sets.completed.is_empty());
+        assert!(sets.permanently_failed.is_empty());
+    }
+
+    #[test]
+    fn test_load_persistence_valid_files() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write completed.json
+        let completed = HashSet::from(["owner/repo/42".to_string(), "owner/repo/99".to_string()]);
+        std::fs::write(
+            dir.path().join("completed.json"),
+            serde_json::to_string_pretty(&completed).unwrap(),
+        )
+        .unwrap();
+
+        // Write failed.json
+        let failed = vec![FailedEntry {
+            key: "owner/repo/7".to_string(),
+            timestamp: SystemTime::UNIX_EPOCH,
+            error: "something went wrong".to_string(),
+        }];
+        std::fs::write(
+            dir.path().join("failed.json"),
+            serde_json::to_string_pretty(&failed).unwrap(),
+        )
+        .unwrap();
+
+        let sets = load_persistence(dir.path());
+        assert!(sets.in_flight.is_empty());
+        assert!(sets.completed.contains("owner/repo/42"));
+        assert!(sets.completed.contains("owner/repo/99"));
+        assert!(sets.permanently_failed.contains("owner/repo/7"));
+        assert_eq!(sets.completed.len(), 2);
+        assert_eq!(sets.permanently_failed.len(), 1);
+    }
+
+    #[test]
+    fn test_load_persistence_corrupted_file_warns() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write valid completed.json
+        let completed: HashSet<String> = HashSet::new();
+        std::fs::write(
+            dir.path().join("completed.json"),
+            serde_json::to_string_pretty(&completed).unwrap(),
+        )
+        .unwrap();
+
+        // Write corrupted failed.json
+        std::fs::write(dir.path().join("failed.json"), "BAD JSON{{").unwrap();
+
+        let sets = load_persistence(dir.path());
+        // Corrupted failed.json → empty permanently_failed
+        assert!(sets.permanently_failed.is_empty());
+        // Valid completed.json → empty but loaded successfully
+        assert!(sets.completed.is_empty());
+    }
+
+    #[test]
+    fn test_roundtrip_persist_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Build dedup sets and persist
+        let mut sets = DedupSets::new();
+        sets.mark_in_flight("owner/repo/42");
+        sets.mark_completed("owner/repo/42");
+        sets.mark_failed("owner/repo/7");
+
+        sets.persist_completed(dir.path()).unwrap();
+        let failed_entry = FailedEntry {
+            key: "owner/repo/7".to_string(),
+            timestamp: SystemTime::UNIX_EPOCH,
+            error: "permanent failure".to_string(),
+        };
+        sets.persist_failed(dir.path(), &failed_entry).unwrap();
+
+        // Load back
+        let loaded = load_persistence(dir.path());
+        assert!(loaded.completed.contains("owner/repo/42"));
+        assert!(loaded.permanently_failed.contains("owner/repo/7"));
+        assert!(loaded.in_flight.is_empty()); // in_flight is always empty on load
     }
 }

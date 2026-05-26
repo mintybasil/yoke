@@ -412,7 +412,7 @@ mod tests {
                 "path_with_namespace": "internal-team/backend-service"
             }
         });
-        let result = parse_gitlab_event(&json.to_string().as_bytes());
+        let result = parse_gitlab_event(json.to_string().as_bytes());
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(event, GitLabEvent::IssueHook(_)));
@@ -436,7 +436,7 @@ mod tests {
             },
             "noteable_type": "Issue"
         });
-        let result = parse_gitlab_event(&json.to_string().as_bytes());
+        let result = parse_gitlab_event(json.to_string().as_bytes());
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(event, GitLabEvent::NoteHook(_)));
@@ -454,7 +454,7 @@ mod tests {
                 "path_with_namespace": "owner/repo"
             }
         });
-        let result = parse_gitlab_event(&json.to_string().as_bytes());
+        let result = parse_gitlab_event(json.to_string().as_bytes());
         assert!(result.is_err());
         assert!(
             result.unwrap_err().contains("Unsupported object_kind"),
