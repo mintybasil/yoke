@@ -274,6 +274,12 @@ pub fn validate_env_vars(platform: &Platform) -> Result<(), ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize env-var tests that mutate global state.
+    /// Without this, parallel test execution causes race conditions
+    /// (e.g., one test removing HERMES_API_KEY while another expects it set).
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     fn valid_toml() -> &'static str {
         r#"
@@ -760,6 +766,7 @@ webhook_secret = "secret"
 
     #[test]
     fn test_validate_env_vars_missing_hermes_api_key() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
             std::env::remove_var("HERMES_API_KEY");
             std::env::remove_var("WEBHOOK_SECRET");
@@ -777,6 +784,7 @@ webhook_secret = "secret"
 
     #[test]
     fn test_validate_env_vars_missing_webhook_secret() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
             std::env::set_var("HERMES_API_KEY", "test-key");
             std::env::remove_var("WEBHOOK_SECRET");
@@ -793,6 +801,7 @@ webhook_secret = "secret"
 
     #[test]
     fn test_validate_env_vars_github_token_missing() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
             std::env::set_var("HERMES_API_KEY", "valid");
             std::env::set_var("WEBHOOK_SECRET", "valid");
@@ -810,6 +819,7 @@ webhook_secret = "secret"
 
     #[test]
     fn test_validate_env_vars_gitlab_token_missing() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
             std::env::set_var("HERMES_API_KEY", "valid");
             std::env::set_var("WEBHOOK_SECRET", "valid");
@@ -827,6 +837,7 @@ webhook_secret = "secret"
 
     #[test]
     fn test_validate_env_vars_github_all_present() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
             std::env::set_var("HERMES_API_KEY", "valid");
             std::env::set_var("WEBHOOK_SECRET", "valid");
@@ -839,6 +850,7 @@ webhook_secret = "secret"
 
     #[test]
     fn test_validate_env_vars_gitlab_all_present() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
             std::env::set_var("HERMES_API_KEY", "valid");
             std::env::set_var("WEBHOOK_SECRET", "valid");
