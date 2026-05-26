@@ -161,6 +161,27 @@ impl TriggerType {
         }
     }
 
+    /// Return the string label for this trigger type (e.g. "github_issue_assigned").
+    ///
+    /// These labels match the `type` field values used in workflow TOML files
+    /// and are the same strings parsed by `TriggerType::from_trigger()`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            TriggerType::GithubIssueAssigned { .. } => "github_issue_assigned",
+            TriggerType::GithubIssueCommentMention { .. } => "github_issue_comment_mention",
+            TriggerType::GithubPullRequestReview { .. } => "github_pull_request_review",
+            TriggerType::GithubPullRequestCommentMention { .. } => {
+                "github_pull_request_review_comment"
+            }
+            TriggerType::GitlabIssueAssigned { .. } => "gitlab_issue_assigned",
+            TriggerType::GitlabIssueMention { .. } => "gitlab_issue_mention",
+            TriggerType::GitlabMergeRequestReview { .. } => "gitlab_merge_request_review",
+            TriggerType::GitlabMergeRequestCommentMention { .. } => {
+                "gitlab_merge_request_review_comment"
+            }
+        }
+    }
+
     /// Return the platform this trigger type belongs to.
     ///
     /// All current trigger types are platform-specific, so this always
