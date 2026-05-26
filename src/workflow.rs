@@ -165,6 +165,7 @@ impl TriggerType {
     ///
     /// These labels match the `type` field values used in workflow TOML files
     /// and are the same strings parsed by `TriggerType::from_trigger()`.
+    #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
             TriggerType::GithubIssueAssigned { .. } => "github_issue_assigned",

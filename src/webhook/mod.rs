@@ -3,10 +3,12 @@ pub mod gitlab;
 
 use crate::config::Platform;
 use crate::workflow::TriggerType;
+use tokio::sync::mpsc;
 
 /// Internal representation of a parsed and verified webhook event,
 /// ready to be sent to the dispatcher channel.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TriggerEvent {
     /// Which trigger type matched.
     pub trigger_type: TriggerType,
@@ -25,6 +27,8 @@ pub enum WebhookError {
     BadRequest(String),
     /// Event type not supported or no matching trigger (HTTP 200, no-op).
     NoMatchingTrigger(String),
+    /// Internal dispatcher error (HTTP 503).
+    InternalError(String),
 }
 
 impl std::fmt::Display for WebhookError {
@@ -33,11 +37,61 @@ impl std::fmt::Display for WebhookError {
             WebhookError::Unauthorized(msg) => write!(f, "Unauthorized: {msg}"),
             WebhookError::BadRequest(msg) => write!(f, "Bad request: {msg}"),
             WebhookError::NoMatchingTrigger(msg) => write!(f, "No matching trigger: {msg}"),
+            WebhookError::InternalError(msg) => write!(f, "Internal error: {msg}"),
         }
     }
 }
 
 impl std::error::Error for WebhookError {}
+
+/// Handler for webhook events that routes verified platform events
+/// to a dispatcher via an mpsc channel.
+#[derive(Clone)]
+pub struct WebhookHandler {
+    pub platform: Platform,
+    pub secret: String,
+    pub sender: mpsc::Sender<TriggerEvent>,
+}
+
+impl WebhookHandler {
+    /// Create a new `WebhookHandler` with the given platform config, secret, and channel sender.
+    pub fn new(platform: Platform, secret: String, sender: mpsc::Sender<TriggerEvent>) -> Self {
+        Self {
+            platform,
+            secret,
+            sender,
+        }
+    }
+
+    /// Process a webhook request: verify, parse, and send the resulting
+    /// `TriggerEvent` to the dispatcher channel.
+    ///
+    /// Returns `Ok(())` on success, or a `WebhookError` on failure.
+    pub async fn handle_webhook(
+        &self,
+        token_or_signature: &str,
+        event_header: &str,
+        body: &[u8],
+    ) -> Result<(), WebhookError> {
+        let trigger_event = dispatch_webhook(
+            &self.platform,
+            token_or_signature,
+            event_header,
+            body,
+            &self.secret,
+        )?;
+
+        // Send to dispatcher without blocking.
+        // If the channel is full, we return a 503 implicitly by allowing
+        // the caller to handle the result of send().
+        self.sender
+            .send(trigger_event)
+            .await
+            .map_err(|_| WebhookError::InternalError("Dispatcher channel full".to_string()))?;
+
+        Ok(())
+    }
+}
 
 /// Dispatch a webhook request to the platform-specific handler.
 ///
