@@ -7,9 +7,12 @@ src/
   main.rs      — CLI entrypoint (loads config, loads workflows, validates agents & triggers, starts server)
   cli.rs       — CLI argument parsing (clap derive)
   config.rs    — Configuration parsing, validation, and error types
-  server.rs    — axum HTTP server with health, readiness, and webhook placeholder endpoints
+  server.rs    — axum HTTP server with health, readiness, and GitHub webhook endpoint
   workflow.rs  — Workflow TOML parsing, validation, and error types
   template.rs  — Template rendering with `{{variable}}` substitution and validation
+  webhook/     — Webhook handling modules
+    mod.rs       — Module root
+    github.rs    — GitHub webhook: HMAC-SHA256 verification, event parsing, trigger mapping
 ```
 
 ## Key Design Decisions
@@ -28,7 +31,9 @@ src/
 - **`WorkflowError` enum**: Typed errors (Io, Parse, Validation) with `Display` and `Error` impls. Parse/Validation errors include the file path for clear diagnostics.
 - **`Workflow.path` field**: Each `Workflow` carries its source file path (populated by `load_workflows`), used for agent resolution error reporting.
 - **Template renderer**: `template::render()` does `{{var}}` substitution, returning `Result<_, TemplateError>` for unknown variables, malformed syntax, and empty templates.
-- **HTTP server**: `src/server.rs` uses axum with `tower-http` middleware. Three endpoints: `/health` (liveness, returns `{"status":"ok"}`), `/ready` (readiness, returns 200 — always ready for now), `/webhook` (POST placeholder). `RequestBodyLimitLayer` enforces `max_body_size` from config. `TraceLayer` provides structured HTTP request logging.
+- **HTTP server**: `src/server.rs` uses axum with `tower-http` middleware. Three endpoints: `/health` (liveness, returns `{"status":"ok"}`), `/ready` (readiness, returns 200 — always ready for now), `/webhook/github` (POST, GitHub webhook handler that verifies HMAC-SHA256 signatures, parses event payloads, and maps events to internal trigger types). `RequestBodyLimitLayer` enforces `max_body_size` from config. `TraceLayer` provides structured HTTP request logging.
+- **GitHub webhook handler**: `src/webhook/github.rs` provides HMAC-SHA256 signature verification (`verify_github_signature`), JSON payload parsing (`parse_github_event`), and event-to-trigger mapping (`map_to_trigger_event`). The handler in `server.rs` extracts the `X-Hub-Signature-256` and `X-GitHub-Event` headers, verifies the signature, parses the event, and maps it to a `TriggerEvent`. Unrecognized events return 200 (acknowledged but not processed); signature failures return 401; missing event type returns 400.
+- **Constant-time comparison**: `subtle::ConstantTimeEq` is used for HMAC signature comparison to prevent timing attacks.
 
 ## CLI Arguments
 
@@ -66,6 +71,10 @@ GitLab triggers: `gitlab_issue_assigned`, `gitlab_issue_mention`, `gitlab_merge_
 | `tracing-subscriber` | Log subscriber with env-filter support |
 | `url` | Parse and validate URLs in agent config |
 | `shellexpand` | Expand `~` in workdir paths |
+| `hmac` | HMAC-SHA256 computation for GitHub webhook signature verification |
+| `sha2` | SHA-256 digest (used with hmac) |
+| `hex` | Hex encoding for HMAC signature comparison |
+| `subtle` | Constant-time comparison to prevent timing attacks on webhook signatures |
 
 ## Running Tests
 
