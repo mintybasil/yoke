@@ -37,6 +37,7 @@ use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::webhook::TriggerEvent;
 use crate::workflow::TriggerType;
+use crate::logging;
 
 /// A record of a permanently failed event, persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -419,6 +420,20 @@ impl Dispatcher {
         let dedup_sets = self.dedup_sets.clone();
         let workdir = self.workdir.clone();
 
+        // Build the per-event workspace directory
+        let owner = parse_owner(&event.repo_path);
+        let repo = parse_repo(&event.repo_path);
+        let event_ws_dir = workspace_dir(&workdir, &owner, &repo, &event_id);
+
+        // Ensure the workspace directory exists before spawning the task
+        if let Err(e) = std::fs::create_dir_all(&event_ws_dir) {
+            tracing::error!(%key, path = %event_ws_dir.display(), error = %e, "failed to create workspace directory");
+            // Remove from in-flight so it can be retried
+            let mut sets = self.dedup_sets.write().await;
+            sets.remove_in_flight(&key);
+            return;
+        }
+
         tokio::spawn(async move {
             // TODO: Replace with actual workflow runner invocation when implemented.
             // For now, log the event type and mark as completed.
@@ -427,8 +442,24 @@ impl Dispatcher {
                     trigger_type = ?event.trigger_type,
                     repo = %event.repo_path,
                     event_id = %event.event_id,
+                    workspace = %event_ws_dir.display(),
                     "processing workflow event"
                 );
+
+                // Log the start of workflow processing to the workspace directory
+                // This demonstrates the logging integration; actual step-by-step
+                // logging will be wired in when the workflow runner is implemented.
+                if let Err(e) = logging::write_log_file(
+                    0,
+                    "Start",
+                    &format!("trigger_type={}", event.trigger_type.label()),
+                    "pending",
+                    &format!("Workflow started for {}/{} event_id={}", owner, repo, event_id),
+                    &event_ws_dir,
+                ) {
+                    tracing::warn!(%key, error = %e, "failed to write start log file");
+                }
+
                 // Simulate minimal processing — the actual WorkflowRunner will
                 // be integrated in a future issue.
                 Ok::<(), String>(())
@@ -630,6 +661,15 @@ pub fn parse_repo(repo_path: &str) -> String {
 #[allow(dead_code)]
 pub fn new_dedup_sets() -> SharedDedupSets {
     Arc::new(RwLock::new(DedupSets::new()))
+}
+
+/// Build the per-event workspace directory path.
+///
+/// The format is `{workdir}/{owner}/{repo}/{event_id}/`, matching the
+/// data directory layout from the architecture design doc (Section 11).
+#[allow(dead_code)]
+pub fn workspace_dir(workdir: &Path, owner: &str, repo: &str, event_id: &str) -> PathBuf {
+    workdir.join(owner).join(repo).join(event_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -1616,5 +1656,21 @@ mod tests {
         assert_eq!(parse_repo("no_slash"), "no_slash");
         // splitn(2, '/') yields ["a", "b/c"], so parse_repo returns "b/c"
         assert_eq!(parse_repo("a/b/c"), "b/c");
+    }
+
+    // --- workspace_dir tests ---
+
+    #[test]
+    fn test_workspace_dir_basic() {
+        let workdir = PathBuf::from("/tmp/yoke");
+        let ws = workspace_dir(&workdir, "mintybasil", "yoke", "42");
+        assert_eq!(ws, PathBuf::from("/tmp/yoke/mintybasil/yoke/42"));
+    }
+
+    #[test]
+    fn test_workspace_dir_with_complex_event_id() {
+        let workdir = PathBuf::from("/tmp/yoke");
+        let ws = workspace_dir(&workdir, "org-name", "project", "7_review-999");
+        assert_eq!(ws, PathBuf::from("/tmp/yoke/org-name/project/7_review-999"));
     }
 }

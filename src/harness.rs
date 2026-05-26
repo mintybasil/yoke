@@ -42,6 +42,20 @@ pub struct HermesResponse {
     pub output: Vec<ContentBlock>,
 }
 
+/// The result of executing a single agent step.
+///
+/// Contains the extracted message text plus the raw HTTP exchange data
+/// for audit logging (`.prompt` and `.log` files).
+#[derive(Debug, Clone)]
+pub struct StepResult {
+    /// The extracted output text from `output_text` content blocks.
+    pub extracted_message: String,
+    /// The raw JSON request body sent to the API.
+    pub raw_request: String,
+    /// The raw JSON response body received from the API.
+    pub raw_response: String,
+}
+
 /// Errors that can occur during harness operations.
 #[derive(Debug, Error)]
 pub enum HarnessError {
@@ -96,14 +110,13 @@ impl HermesClient {
     /// 4. On failure (non-2xx), writes status and body to a `.error` file
     ///    and returns a `HarnessError::Api`.
     ///
-    /// The `error_file_path` parameter specifies where to write error details
-    /// when the API returns a non-2xx response. Defaults to `.error` in the
-    /// current directory if `None`.
+    /// Returns a `StepResult` containing the extracted message, raw request
+    /// body, and raw response body for audit logging.
     pub async fn execute_step(
         &self,
         instructions: &str,
         input: &str,
-    ) -> Result<String, HarnessError> {
+    ) -> Result<StepResult, HarnessError> {
         self.execute_step_with_error_path(instructions, input, None)
             .await
     }
@@ -112,17 +125,23 @@ impl HermesClient {
     ///
     /// This is primarily useful for testing where the error file location
     /// needs to be controlled.
+    ///
+    /// Returns a `StepResult` containing the extracted message, raw request
+    /// body, and raw response body for audit logging.
     pub async fn execute_step_with_error_path(
         &self,
         instructions: &str,
         input: &str,
         error_path: Option<&Path>,
-    ) -> Result<String, HarnessError> {
+    ) -> Result<StepResult, HarnessError> {
         let request = HermesRequest {
             instructions: instructions.to_string(),
             input: input.to_string(),
             store: true,
         };
+
+        let raw_request = serde_json::to_string_pretty(&request)
+            .unwrap_or_else(|_| serde_json::to_string(&request).unwrap_or_default());
 
         let url = format!("{}/v1/responses", self.base_url.trim_end_matches('/'));
 
@@ -135,26 +154,26 @@ impl HermesClient {
             .await?;
 
         let status = response.status();
-        let body = response.text().await?;
+        let raw_response = response.text().await?;
 
         if !status.is_success() {
             let error_path = error_path.unwrap_or(Path::new(".error"));
-            let error_content = format!("status: {}\nbody: {}", status.as_u16(), body);
+            let error_content = format!("status: {}\nbody: {}", status.as_u16(), raw_response);
             fs::write(error_path, &error_content)?;
 
             return Err(HarnessError::Api {
                 status: status.as_u16(),
-                body,
+                body: raw_response,
             });
         }
 
         let hermes_response: HermesResponse =
-            serde_json::from_str(&body).map_err(|e| HarnessError::Api {
+            serde_json::from_str(&raw_response).map_err(|e| HarnessError::Api {
                 status: 200,
                 body: format!("Failed to parse response JSON: {e}"),
             })?;
 
-        let output_text: String = hermes_response
+        let extracted_message: String = hermes_response
             .output
             .iter()
             .filter(|block| block.block_type == "output_text")
@@ -162,7 +181,11 @@ impl HermesClient {
             .collect::<Vec<&str>>()
             .join("\n");
 
-        Ok(output_text)
+        Ok(StepResult {
+            extracted_message,
+            raw_request,
+            raw_response,
+        })
     }
 }
 
@@ -220,6 +243,18 @@ mod tests {
             .join("\n");
 
         assert_eq!(output_text, "First message\nSecond message");
+    }
+
+    #[test]
+    fn test_step_result_fields() {
+        let result = StepResult {
+            extracted_message: "Hello".to_string(),
+            raw_request: "{\"instructions\":\"test\"}".to_string(),
+            raw_response: "{\"output\":[]}".to_string(),
+        };
+        assert_eq!(result.extracted_message, "Hello");
+        assert_eq!(result.raw_request, "{\"instructions\":\"test\"}");
+        assert_eq!(result.raw_response, "{\"output\":[]}");
     }
 
     #[test]

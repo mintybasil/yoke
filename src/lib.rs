@@ -4,6 +4,7 @@ pub mod dispatcher;
 pub mod git;
 pub mod hooks;
 pub mod harness;
+pub mod logging;
 pub mod server;
 pub mod template;
 pub mod webhook;
