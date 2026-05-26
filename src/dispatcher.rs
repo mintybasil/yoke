@@ -35,9 +35,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
+use crate::logging;
 use crate::webhook::TriggerEvent;
 use crate::workflow::TriggerType;
-use crate::logging;
 
 /// A record of a permanently failed event, persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -454,7 +454,10 @@ impl Dispatcher {
                     "Start",
                     &format!("trigger_type={}", event.trigger_type.label()),
                     "pending",
-                    &format!("Workflow started for {}/{} event_id={}", owner, repo, event_id),
+                    &format!(
+                        "Workflow started for {}/{} event_id={}",
+                        owner, repo, event_id
+                    ),
                     &event_ws_dir,
                 ) {
                     tracing::warn!(%key, error = %e, "failed to write start log file");

@@ -154,9 +154,25 @@ mod tests {
         let path = dir.path();
 
         write_prompt_file(0, "Plan", "plan prompt", path).unwrap();
-        write_log_file(0, "Plan", "plan request", "plan response", "plan message", path).unwrap();
+        write_log_file(
+            0,
+            "Plan",
+            "plan request",
+            "plan response",
+            "plan message",
+            path,
+        )
+        .unwrap();
         write_prompt_file(1, "Implement", "impl prompt", path).unwrap();
-        write_log_file(1, "Implement", "impl request", "impl response", "impl message", path).unwrap();
+        write_log_file(
+            1,
+            "Implement",
+            "impl request",
+            "impl response",
+            "impl message",
+            path,
+        )
+        .unwrap();
 
         assert!(path.join("00_Plan.prompt").exists());
         assert!(path.join("00_Plan.log").exists());
