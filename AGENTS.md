@@ -7,12 +7,13 @@ src/
   main.rs      — CLI entrypoint (loads config, loads workflows, validates agents & triggers, starts server)
   cli.rs       — CLI argument parsing (clap derive)
   config.rs    — Configuration parsing, validation, and error types
-  server.rs    — axum HTTP server with health, readiness, and GitHub webhook endpoint
+  server.rs    — axum HTTP server with health, readiness, and unified webhook endpoint
   workflow.rs  — Workflow TOML parsing, validation, and error types
   template.rs  — Template rendering with `{{variable}}` substitution and validation
   webhook/     — Webhook handling modules
-    mod.rs       — Module root
-    github.rs    — GitHub webhook: HMAC-SHA256 verification, event parsing, trigger mapping
+    mod.rs       — Shared types (TriggerEvent, WebhookError) and dispatch to platform handler
+    github.rs   — GitHub webhook: HMAC-SHA256 verification, event parsing, trigger mapping
+    gitlab.rs   — GitLab webhook: token verification, payload parsing, event mapping
 ```
 
 ## Key Design Decisions
@@ -27,13 +28,17 @@ src/
 - **Environment variable validation**: `validate_env_vars(platform)` checks required env vars at startup. `HERMES_API_KEY` and `WEBHOOK_SECRET` are always required; `GITHUB_TOKEN` is required when `platform = "github"`, `GITLAB_TOKEN` when `platform = "gitlab"`. Returns `ConfigError::EnvVar` with a descriptive message.
 - **`WEBHOOK_SECRET` env override**: The `WEBHOOK_SECRET` env var overrides the `config.toml` `server.webhook_secret` value at startup.
 - **Trigger platform validation**: After loading config and workflows, `validate_triggers()` checks that each workflow's trigger type prefix matches the configured platform. GitLab triggers (`gitlab_*`) on a GitHub platform (and vice versa) cause a hard exit with a clear error.
-- **`TriggerType` enum**: Typed representation of known trigger types (4 GitHub, 4 GitLab). Each variant carries its required filter fields per Appendix A. `TriggerType::from_trigger()` converts a `Trigger` struct; `TriggerType::platform()` returns the owning platform. Replaces a hardcoded string list for compile-time safety.
+- **`TriggerType` enum**: Typed representation of known trigger types (4 GitHub, 4 GitLab). Each variant carries its required filter fields per Appendix A. `TriggerType::from_trigger()` converts a `Trigger` struct; `TriggerType::platform()` returns the owning platform; `TriggerType::label()` returns the string identifier used in workflow TOML files.
 - **`WorkflowError` enum**: Typed errors (Io, Parse, Validation) with `Display` and `Error` impls. Parse/Validation errors include the file path for clear diagnostics.
 - **`Workflow.path` field**: Each `Workflow` carries its source file path (populated by `load_workflows`), used for agent resolution error reporting.
 - **Template renderer**: `template::render()` does `{{var}}` substitution, returning `Result<_, TemplateError>` for unknown variables, malformed syntax, and empty templates.
-- **HTTP server**: `src/server.rs` uses axum with `tower-http` middleware. Three endpoints: `/health` (liveness, returns `{"status":"ok"}`), `/ready` (readiness, returns 200 — always ready for now), `/webhook/github` (POST, GitHub webhook handler that verifies HMAC-SHA256 signatures, parses event payloads, and maps events to internal trigger types). `RequestBodyLimitLayer` enforces `max_body_size` from config. `TraceLayer` provides structured HTTP request logging.
-- **GitHub webhook handler**: `src/webhook/github.rs` provides HMAC-SHA256 signature verification (`verify_github_signature`), JSON payload parsing (`parse_github_event`), and event-to-trigger mapping (`map_to_trigger_event`). The handler in `server.rs` extracts the `X-Hub-Signature-256` and `X-GitHub-Event` headers, verifies the signature, parses the event, and maps it to a `TriggerEvent`. Unrecognized events return 200 (acknowledged but not processed); signature failures return 401; missing event type returns 400.
-- **Constant-time comparison**: `subtle::ConstantTimeEq` is used for HMAC signature comparison to prevent timing attacks.
+- **HTTP server**: `src/server.rs` uses axum with `tower-http` middleware. Three endpoints: `/health` (liveness, returns `{"status":"ok"}`), `/ready` (readiness, returns 200 — always ready for now), `/webhook` (POST — dispatches to platform-specific handler based on `platform` config). `RequestBodyLimitLayer` enforces `max_body_size` from config. `TraceLayer` provides structured HTTP request logging.
+- **Webhook dispatch**: The server extracts platform-appropriate headers (`X-Hub-Signature-256`/`X-GitHub-Event` for GitHub, `X-Gitlab-Token`/`X-Gitlab-Event` for GitLab) and delegates to `webhook::dispatch_webhook`, which routes to the correct handler. Both handlers return `Result<TriggerEvent, WebhookError>`.
+- **GitHub webhook handler**: `src/webhook/github.rs` provides HMAC-SHA256 signature verification (`verify_github_signature`), JSON payload parsing (`parse_github_event`), and event-to-trigger mapping (`map_to_trigger_event`). The `handle_github_webhook` function orchestrates the full flow.
+- **GitLab webhook handler**: `src/webhook/gitlab.rs` provides constant-time token verification (`verify_gitlab_token`), JSON payload parsing (`parse_gitlab_event`), and event-to-trigger mapping (`map_to_trigger_event`). The `handle_gitlab_webhook` function orchestrates the full flow.
+- **Constant-time comparison**: Both handlers use `subtle::ConstantTimeEq` to prevent timing attacks — GitHub for HMAC signatures, GitLab for token comparison.
+- **`WebhookError` enum**: Shared error type (Unauthorized, BadRequest, NoMatchingTrigger) in `webhook/mod.rs`, used by both platform handlers via `dispatch_webhook`.
+- **`TriggerEvent` struct**: Shared webhook result type in `webhook/mod.rs` with `trigger_type: TriggerType`, `repo_path`, and `event_id` fields.
 
 ## CLI Arguments
 
@@ -74,7 +79,7 @@ GitLab triggers: `gitlab_issue_assigned`, `gitlab_issue_mention`, `gitlab_merge_
 | `hmac` | HMAC-SHA256 computation for GitHub webhook signature verification |
 | `sha2` | SHA-256 digest (used with hmac) |
 | `hex` | Hex encoding for HMAC signature comparison |
-| `subtle` | Constant-time comparison to prevent timing attacks on webhook signatures |
+| `subtle` | Constant-time comparison to prevent timing attacks on webhook secrets/tokens |
 
 ## Running Tests
 

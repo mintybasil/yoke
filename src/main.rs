@@ -82,7 +82,7 @@ async fn main() {
         config.server.host,
         config.server.port
     );
-    if let Err(e) = server::run_server(&config.server).await {
+    if let Err(e) = server::run_server(&config.server, &config.platform).await {
         eprintln!("Server error: {e}");
         std::process::exit(1);
     }

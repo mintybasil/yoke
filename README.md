@@ -235,7 +235,7 @@ Yoke starts an HTTP server on the configured `host:port`. The following endpoint
 |---|---|---|
 | GET | `/health` | Liveness check — returns `{"status":"ok"}` with 200 |
 | GET | `/ready` | Readiness check — returns 200 (always ready; wired to dispatcher in future) |
-| POST | `/webhook/github` | GitHub webhook receiver — verifies HMAC-SHA256 signature, parses event payload, maps to internal trigger |
+| POST | `/webhook` | Platform-specific webhook receiver — GitHub: verifies `X-Hub-Signature-256` HMAC signature; GitLab: verifies `X-Gitlab-Token` header. Parses event payload, maps to internal trigger |
 
 Request bodies larger than `[server].max_body_size` (default 1 MB) receive a **413 Payload Too Large** response.
 
