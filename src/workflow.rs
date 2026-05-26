@@ -71,13 +71,7 @@ pub struct Step {
     pub post_hooks: Vec<Hook>,
 }
 
-/// Pre/post step hooks.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum Hook {
-    FileNotEmpty,
-    FileContains,
-}
+pub use crate::hooks::Hook;
 
 /// Typed representation of known trigger types, grouped by platform.
 ///
@@ -523,13 +517,24 @@ mod tests {
             name = "Plan"
             agent = "pm"
             prompt_template = "Plan it"
-            pre_hooks = ["file_not_empty"]
-            post_hooks = ["file_contains"]
+            pre_hooks = [{ type = "file_not_empty", path = "plan.md" }]
+            post_hooks = [{ type = "file_contains", path = "plan.md", text = "implementation" }]
         "#;
         let wf: Workflow = toml::from_str(toml).unwrap();
         assert!(wf.validate().is_ok());
-        assert_eq!(wf.steps[0].pre_hooks, vec![Hook::FileNotEmpty]);
-        assert_eq!(wf.steps[0].post_hooks, vec![Hook::FileContains]);
+        assert_eq!(
+            wf.steps[0].pre_hooks,
+            vec![Hook::FileNotEmpty {
+                path: "plan.md".to_string()
+            }]
+        );
+        assert_eq!(
+            wf.steps[0].post_hooks,
+            vec![Hook::FileContains {
+                path: "plan.md".to_string(),
+                text: "implementation".to_string()
+            }]
+        );
     }
 
     #[test]
