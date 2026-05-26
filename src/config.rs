@@ -762,6 +762,7 @@ webhook_secret = "secret"
         unsafe {
             std::env::remove_var("HERMES_API_KEY");
             std::env::remove_var("WEBHOOK_SECRET");
+            std::env::remove_var("GITHUB_TOKEN");
         }
 
         let result = validate_env_vars(&Platform::Github);
