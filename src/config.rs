@@ -127,6 +127,7 @@ impl Config {
     /// Parse configuration from a TOML string (useful for tests).
     ///
     /// Performs tilde expansion on the `runtime.workdir` path.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(content: &str) -> Result<Self, ConfigError> {
         let mut config: Config = toml::from_str(content).map_err(ConfigError::Parse)?;
         config.validate()?;

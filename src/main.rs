@@ -1,13 +1,11 @@
-mod cli;
-mod config;
-mod dispatcher;
-mod server;
-mod template;
-mod webhook;
-mod workflow;
+use std::path::PathBuf;
 
 use clap::Parser;
-use config::Config;
+use yoke::cli;
+use yoke::config;
+use yoke::config::Config;
+use yoke::server;
+use yoke::workflow;
 
 #[tokio::main]
 async fn main() {
@@ -87,6 +85,7 @@ async fn main() {
         &config.server,
         &config.platform,
         config.runtime.max_concurrent,
+        PathBuf::from(&config.runtime.workdir),
     )
     .await
     {

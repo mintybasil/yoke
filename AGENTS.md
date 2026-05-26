@@ -4,6 +4,7 @@
 
 ```
 src/
+  lib.rs       — Library root (pub mod re-exports for integration tests)
   main.rs      — CLI entrypoint (loads config, loads workflows, validates agents & triggers, starts server)
   cli.rs       — CLI argument parsing (clap derive)
   config.rs    — Configuration parsing, validation, and error types
@@ -15,11 +16,13 @@ src/
     mod.rs       — Shared types (TriggerEvent, WebhookError) and dispatch to platform handler
     github.rs   — GitHub webhook: HMAC-SHA256 verification, event parsing, trigger mapping
     gitlab.rs   — GitLab webhook: token verification, payload parsing, event mapping
+tests/
+  dispatcher_tests.rs — Integration tests for dispatcher (full dispatch flow, dedup, concurrency, shutdown, persistence)
 ```
 
 ## Key Design Decisions
 
-- **Single binary**: Yoke is a single binary daemon. No separate library crate yet.
+- **Library + binary crate**: Yoke is both a library and a binary. `src/lib.rs` re-exports all modules as `pub` so integration tests (`tests/`) can import from `yoke::`. `src/main.rs` uses `use yoke::` imports instead of inline `mod` declarations.
 - **Fail-fast on startup**: Invalid config is a hard exit. Errors produce clear messages.
 - **CLI argument parsing**: Uses `clap` with derive macros. `--config` and `--workflows` have defaults; `--host` and `--port` override values from `config.toml`.
 - **Tilde expansion**: `~` in `workdir` is expanded at load time via `shellexpand`.
@@ -96,3 +99,18 @@ cargo test
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
+
+### Integration tests
+
+The `tests/dispatcher_tests.rs` file contains integration tests that exercise the dispatcher module end-to-end. These tests import from `yoke::dispatcher` (requires the library target in `src/lib.rs`).
+
+Tests cover:
+- Full dispatch flow: message sent via channel → `run()` dispatches → `on_workflow_complete` called
+- Duplicate event rejection: second event with the same dedup key is skipped
+- Concurrency limits: `max_concurrent` semaphore blocks excess events
+- `active_count` tracking: observed in concurrent scenarios
+- Graceful shutdown: dropping the sender closes the channel, `run()` exits cleanly
+- Drain: in-flight events finish before `run()` returns
+- Persistence: completed and failed events are written to `completed.json` / `failed.json`
+- GitLab event dispatched: GitLab trigger events are handled correctly
+- Multiple different events: distinct events process independently

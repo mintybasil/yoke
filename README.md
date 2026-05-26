@@ -8,7 +8,7 @@ A Rust daemon that receives webhook events from GitHub or GitLab and runs multi-
 # Build
 cargo build
 
-# Run tests
+# Run tests (unit + integration)
 cargo test
 
 # Lint
@@ -293,6 +293,27 @@ The `Dispatcher` struct holds both the concurrency semaphore and the deduplicati
 | `Dispatcher::run_with_permit(fut)` | Convenience wrapper: acquires permit, runs future, releases permit (RAII) |
 | `Dispatcher::active_count()` | Returns current number of held permits (lock-free, for observability) |
 | `Dispatcher::max_concurrent()` | Returns the configured limit (0 = unlimited) |
+
+## Testing
+
+### Unit tests
+
+Unit tests live alongside the source code in `src/` using `#[cfg(test)]` modules. They exercise individual functions and methods in isolation.
+
+### Integration tests
+
+Integration tests live in `tests/` and exercise cross-cutting behavior through the public API (`yoke::dispatcher`, etc.). The `tests/dispatcher_tests.rs` file covers:
+
+- Full dispatch flow (send → receive → complete callback)
+- Duplicate event rejection across all dedup sets
+- Concurrency limiting via `max_concurrent` semaphore
+- Active count observability
+- Graceful shutdown and drain of in-flight events
+- Persistence of completed and failed events to disk
+- GitLab and GitHub event dispatch
+- Multiple distinct events processed independently
+
+Running integration tests requires the library target (`src/lib.rs`), which re-exports all modules as `pub`.
 
 ## License
 

@@ -26,10 +26,10 @@
 //! handling missing or corrupted files.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -48,6 +48,31 @@ pub struct FailedEntry {
     pub timestamp: SystemTime,
     /// Description of the error that caused the failure.
     pub error: String,
+}
+
+/// Message sent from the webhook handler to the dispatcher loop.
+///
+/// Each `DispatchMessage` carries a verified `TriggerEvent` that needs
+/// workflow processing. The dispatcher consumes these from an mpsc channel
+/// and spawns a workflow runner for each non-duplicate event.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct DispatchMessage {
+    /// The verified trigger event to process.
+    pub event: TriggerEvent,
+}
+
+/// Result of a completed workflow run, sent back to the dispatcher
+/// for state tracking and persistence.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct WorkflowResult {
+    /// The dedup key of the completed event.
+    pub key: String,
+    /// Whether the workflow completed successfully.
+    pub success: bool,
+    /// Error message if the workflow failed.
+    pub error: Option<String>,
 }
 
 /// Errors that can occur during persistence operations.
@@ -139,16 +164,19 @@ pub type SharedDedupSets = Arc<RwLock<DedupSets>>;
 // Dispatcher: concurrency control via tokio::sync::Semaphore
 // ---------------------------------------------------------------------------
 
-/// Dispatcher coordinates concurrency limiting and deduplication for webhook
-/// event processing.
+/// Dispatcher coordinates concurrency limiting, deduplication, and workflow
+/// spawning for webhook event processing.
 ///
-/// When `max_concurrent > 0`, the dispatcher holds a `tokio::Semaphore` that
-/// caps how many workflows can execute simultaneously. A permit is acquired
-/// before each workflow spawn and automatically released on completion (RAII
-/// guard pattern via `OwnedSemaphorePermit`).
+/// The dispatcher runs as a single-consumer loop in a dedicated tokio task.
+/// It receives `DispatchMessage`s from an mpsc channel, performs dedup checks,
+/// acquires concurrency permits, and spawns workflow runners as independent
+/// tokio tasks. Completed workflows transition through dedup state tracking
+/// and are persisted to disk.
 ///
-/// When `max_concurrent == 0`, the semaphore is `None` and no limiting is
-/// applied — every event starts immediately.
+/// When `max_concurrent > 0`, the dispatcher holds a `Semaphore` that caps
+/// how many workflows can execute simultaneously. When `max_concurrent == 0`,
+/// the semaphore is `None` and no limiting is applied — every event starts
+/// immediately.
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct Dispatcher {
@@ -161,6 +189,8 @@ pub struct Dispatcher {
     /// The maximum concurrent workflows (0 = unlimited). Stores the value
     /// for logging; the actual limiting is done by the semaphore.
     max_concurrent: usize,
+    /// Directory for persisting completed/failed dedup state.
+    workdir: PathBuf,
 }
 
 impl Dispatcher {
@@ -168,9 +198,10 @@ impl Dispatcher {
     ///
     /// If `max_concurrent` is 0, no semaphore is created and concurrency is
     /// unlimited. Otherwise, a semaphore with `max_concurrent` permits is
-    /// allocated.
+    /// allocated. The `workdir` path is used for persisting completed/failed
+    /// dedup state to disk.
     #[allow(dead_code)]
-    pub fn new(dedup_sets: SharedDedupSets, max_concurrent: usize) -> Self {
+    pub fn new(dedup_sets: SharedDedupSets, max_concurrent: usize, workdir: PathBuf) -> Self {
         let semaphore = if max_concurrent > 0 {
             Some(Arc::new(Semaphore::new(max_concurrent)))
         } else {
@@ -192,6 +223,7 @@ impl Dispatcher {
             semaphore,
             active_count: Arc::new(AtomicUsize::new(0)),
             max_concurrent,
+            workdir,
         }
     }
 
@@ -259,6 +291,209 @@ impl Dispatcher {
     #[allow(dead_code)]
     pub fn active_count(&self) -> usize {
         self.active_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns a reference to the workdir path.
+    #[allow(dead_code)]
+    pub fn workdir(&self) -> &Path {
+        &self.workdir
+    }
+
+    /// Run the main dispatcher loop.
+    ///
+    /// Consumes `DispatchMessage`s from the provided `mpsc::Receiver`, performs
+    /// dedup checks, acquires concurrency permits, and spawns workflow runners
+    /// as independent tokio tasks.
+    ///
+    /// When a `shutdown` signal is received (the watch value becomes `true`),
+    /// the loop stops consuming new messages and waits for all in-flight
+    /// tasks to complete before returning.
+    ///
+    /// # Arguments
+    ///
+    /// * `rx` — The receiving end of the mpsc channel for dispatch messages.
+    /// * `shutdown` — A `watch::Receiver<bool>` that signals graceful shutdown
+    ///   when the value becomes `true`.
+    #[allow(dead_code)]
+    pub async fn run(
+        &self,
+        mut rx: tokio::sync::mpsc::Receiver<DispatchMessage>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
+        tracing::info!("dispatcher run loop started");
+
+        loop {
+            tokio::select! {
+                msg = rx.recv() => {
+                    match msg {
+                        Some(dispatch_msg) => {
+                            self.spawn_workflow(dispatch_msg).await;
+                        }
+                        None => {
+                            tracing::info!("dispatcher channel closed, stopping");
+                            break;
+                        }
+                    }
+                }
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        tracing::info!("dispatcher shutting down, draining in-flight tasks...");
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Drain in-flight tasks: wait until active_count reaches 0
+        let drain_timeout = Duration::from_secs(30);
+        let drain_interval = Duration::from_millis(100);
+        let mut elapsed = Duration::ZERO;
+
+        while self.active_count() > 0 && elapsed < drain_timeout {
+            tracing::info!(
+                active = self.active_count(),
+                "waiting for in-flight workflows to complete..."
+            );
+            tokio::time::sleep(drain_interval).await;
+            elapsed += drain_interval;
+        }
+
+        if self.active_count() > 0 {
+            tracing::warn!(
+                active = self.active_count(),
+                "shutdown timed out, some in-flight workflows may not have completed"
+            );
+        } else {
+            tracing::info!("all in-flight workflows completed, dispatcher shut down");
+        }
+    }
+
+    /// Process a single dispatch message: dedup check, permit acquisition,
+    /// and workflow task spawn.
+    ///
+    /// If the event is a duplicate (already in flight, completed, or failed),
+    /// it is skipped with a warning. Otherwise, it is marked in-flight, a
+    /// concurrency permit is acquired (if limiting is enabled), and a tokio
+    /// task is spawned to run the workflow. On completion, the dedup state is
+    /// updated and persisted to disk.
+    #[allow(dead_code)]
+    async fn spawn_workflow(&self, msg: DispatchMessage) {
+        let event = msg.event;
+        let event_id = extract_event_id(&event);
+        let key = build_dedup_key(
+            &parse_owner(&event.repo_path),
+            &parse_repo(&event.repo_path),
+            &event_id,
+        );
+
+        // Dedup check (sequential — single consumer, no races)
+        {
+            let sets = self.dedup_sets.read().await;
+            if sets.is_duplicate(&key) {
+                tracing::warn!(%key, "skipping duplicate event");
+                return;
+            }
+        }
+
+        // Mark in-flight
+        {
+            let mut sets = self.dedup_sets.write().await;
+            sets.mark_in_flight(&key);
+        }
+
+        // Acquire concurrency permit
+        let permit = match self.acquire_permit().await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(%key, error = %e, "failed to acquire concurrency permit");
+                // Remove from in-flight so it can be retried
+                let mut sets = self.dedup_sets.write().await;
+                sets.remove_in_flight(&key);
+                return;
+            }
+        };
+
+        tracing::info!(%key, "spawning workflow");
+
+        // Clone what we need for the spawned task
+        let dedup_sets = self.dedup_sets.clone();
+        let workdir = self.workdir.clone();
+
+        tokio::spawn(async move {
+            // TODO: Replace with actual workflow runner invocation when implemented.
+            // For now, log the event type and mark as completed.
+            let result = async {
+                tracing::info!(
+                    trigger_type = ?event.trigger_type,
+                    repo = %event.repo_path,
+                    event_id = %event.event_id,
+                    "processing workflow event"
+                );
+                // Simulate minimal processing — the actual WorkflowRunner will
+                // be integrated in a future issue.
+                Ok::<(), String>(())
+            }
+            .await;
+
+            // Update dedup state and persist
+            let mut sets = dedup_sets.write().await;
+            match result {
+                Ok(()) => {
+                    sets.mark_completed(&key);
+                    if let Err(e) = sets.persist_completed(&workdir) {
+                        tracing::error!(%key, error = %e, "failed to persist completed set");
+                    }
+                }
+                Err(e) => {
+                    sets.mark_failed(&key);
+                    if let Err(persist_err) = sets.persist_failed(
+                        &workdir,
+                        &FailedEntry {
+                            key: key.clone(),
+                            timestamp: SystemTime::now(),
+                            error: e,
+                        },
+                    ) {
+                        tracing::error!(%key, error = %persist_err, "failed to persist failed set");
+                    }
+                }
+            }
+            // Permit released on drop (RAII)
+            drop(permit);
+        });
+    }
+
+    /// Handle the completion of a workflow by updating dedup state and
+    /// persisting to disk.
+    ///
+    /// This method encapsulates the state transition and persistence logic
+    /// for a completed workflow. On success, the event key moves from
+    /// `in_flight` to `completed`. On failure, it moves to
+    /// `permanently_failed`.
+    #[allow(dead_code)]
+    pub async fn on_workflow_complete(&self, key: &str, result: Result<(), String>) {
+        let mut sets = self.dedup_sets.write().await;
+        match result {
+            Ok(()) => {
+                sets.mark_completed(key);
+                if let Err(e) = sets.persist_completed(&self.workdir) {
+                    tracing::error!(%key, error = %e, "failed to persist completed set");
+                }
+            }
+            Err(e) => {
+                sets.mark_failed(key);
+                if let Err(persist_err) = sets.persist_failed(
+                    &self.workdir,
+                    &FailedEntry {
+                        key: key.to_string(),
+                        timestamp: SystemTime::now(),
+                        error: e,
+                    },
+                ) {
+                    tracing::error!(%key, error = %persist_err, "failed to persist failed set");
+                }
+            }
+        }
     }
 }
 
@@ -369,6 +604,26 @@ fn extract_gitlab_mr_event_id(event_id: &str) -> String {
             }
         })
         .unwrap_or_else(|| event_id.to_string())
+}
+
+/// Parse the owner part from a `repo_path` string (e.g. `"owner/repo"` → `"owner"`).
+///
+/// Returns the full string if no `/` separator is found.
+#[allow(dead_code)]
+pub fn parse_owner(repo_path: &str) -> String {
+    repo_path
+        .split_once('/')
+        .map_or(repo_path.to_string(), |(owner, _)| owner.to_string())
+}
+
+/// Parse the repo part from a `repo_path` string (e.g. `"owner/repo"` → `"repo"`).
+///
+/// Returns the full string if no `/` separator is found.
+#[allow(dead_code)]
+pub fn parse_repo(repo_path: &str) -> String {
+    repo_path
+        .split_once('/')
+        .map_or(repo_path.to_string(), |(_, repo)| repo.to_string())
 }
 
 /// Create a new `SharedDedupSets` (wrapped in `Arc<RwLock<...>>`).
@@ -1131,7 +1386,7 @@ mod tests {
     #[test]
     fn test_dispatcher_new_unlimited() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 0);
+        let dispatcher = Dispatcher::new(dedup, 0, PathBuf::from("/tmp/yoke-test"));
         assert_eq!(dispatcher.max_concurrent(), 0);
         assert_eq!(dispatcher.active_count(), 0);
     }
@@ -1139,7 +1394,7 @@ mod tests {
     #[test]
     fn test_dispatcher_new_limited() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2);
+        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
         assert_eq!(dispatcher.max_concurrent(), 2);
         assert_eq!(dispatcher.active_count(), 0);
     }
@@ -1147,7 +1402,7 @@ mod tests {
     #[tokio::test]
     async fn test_acquire_permit_unlimited_returns_none() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 0);
+        let dispatcher = Dispatcher::new(dedup, 0, PathBuf::from("/tmp/yoke-test"));
         let permit = dispatcher.acquire_permit().await.unwrap();
         assert!(permit.is_none(), "unlimited mode should return None permit");
     }
@@ -1155,7 +1410,7 @@ mod tests {
     #[tokio::test]
     async fn test_acquire_permit_limited_returns_some() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2);
+        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
         let permit = dispatcher.acquire_permit().await.unwrap();
         assert!(permit.is_some(), "limited mode should return Some permit");
         assert_eq!(dispatcher.active_count(), 1);
@@ -1164,7 +1419,7 @@ mod tests {
     #[tokio::test]
     async fn test_permit_released_on_drop() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2);
+        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
 
         // Acquire a permit via run_with_permit and verify active count
         let active = Arc::new(AtomicUsize::new(0));
@@ -1181,7 +1436,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_with_permit_unlimited() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 0);
+        let dispatcher = Dispatcher::new(dedup, 0, PathBuf::from("/tmp/yoke-test"));
 
         let result = dispatcher.run_with_permit(async { 42 }).await;
         assert_eq!(result, 42);
@@ -1191,7 +1446,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_with_permit_limited() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2);
+        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
 
         let result = dispatcher.run_with_permit(async { 42 }).await;
         assert_eq!(result, 42);
@@ -1205,7 +1460,7 @@ mod tests {
     #[tokio::test]
     async fn test_semaphore_limits_concurrency() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2);
+        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
 
         let active_count = Arc::new(AtomicUsize::new(0));
         let max_observed = Arc::new(AtomicUsize::new(0));
@@ -1250,10 +1505,27 @@ mod tests {
     #[test]
     fn test_dispatcher_clone_shares_state() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2);
+        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
         let clone = dispatcher.clone();
 
         // Both should share the same max_concurrent
         assert_eq!(dispatcher.max_concurrent(), clone.max_concurrent());
+    }
+
+    #[test]
+    fn test_parse_owner() {
+        assert_eq!(parse_owner("owner/repo"), "owner");
+        assert_eq!(parse_owner("org-name/project-name"), "org-name");
+        assert_eq!(parse_owner("no_slash"), "no_slash");
+        assert_eq!(parse_owner("a/b/c"), "a");
+    }
+
+    #[test]
+    fn test_parse_repo() {
+        assert_eq!(parse_repo("owner/repo"), "repo");
+        assert_eq!(parse_repo("org-name/project-name"), "project-name");
+        assert_eq!(parse_repo("no_slash"), "no_slash");
+        // splitn(2, '/') yields ["a", "b/c"], so parse_repo returns "b/c"
+        assert_eq!(parse_repo("a/b/c"), "b/c");
     }
 }
