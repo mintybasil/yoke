@@ -264,9 +264,9 @@ If the signature is missing or fails verification, the server responds with **40
 
 ### Event deduplication
 
-Yoke uses in-memory deduplication to prevent concurrent or repeated processing of the same webhook event. Each event is identified by a dedup key formatted as `{owner}/{repo}/{workspace_id}`, where the `workspace_id` component varies by event type:
+Yoke uses in-memory deduplication to prevent concurrent or repeated processing of the same webhook event. Each event is identified by a dedup key formatted as `{owner}/{repo}/{event_id}`, where the `event_id` component varies by event type:
 
-| Trigger type | Workspace ID format |
+| Trigger type | Event ID format |
 |---|---|
 | `github_issue_assigned` | `{issue_number}` |
 | `github_issue_comment_mention` | `{issue_number}` |
