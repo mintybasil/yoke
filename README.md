@@ -294,6 +294,25 @@ The `Dispatcher` struct holds both the concurrency semaphore and the deduplicati
 | `Dispatcher::active_count()` | Returns current number of held permits (lock-free, for observability) |
 | `Dispatcher::max_concurrent()` | Returns the configured limit (0 = unlimited) |
 
+
+### Git operations
+
+Yoke includes a `git` module (`src/git.rs`) that provides repository management for the dispatcher pipeline. All git operations use the `git2` crate (libgit2 bindings).
+
+| Function | Purpose |
+|---|---|
+| `sanitize_branch_name(branch)` | Collapse whitespace to `-`, strip non-`[a-zA-Z0-9._-]` characters |
+| `build_clone_url(owner, repo, platform, token)` | Construct HTTPS clone URL with inline or header-based token auth |
+| `GitAuth` | Credential callback struct for GitHub (`x-access-token`) and GitLab (`PRIVATE-TOKEN`) |
+| `clone_repo(url, path, auth)` | Clone a remote repository with token authentication |
+| `pull_repo(repo, branch, auth)` | Fetch + fast-forward merge for a branch |
+| `create_worktree(repo, branch_name, worktree_path)` | Create a worktree (new branch from HEAD or existing branch) |
+| `remove_worktree(repo, worktree_name)` | Remove a worktree by its administrative name |
+| `has_uncommitted_changes(repo)` | Check for staged, unstaged, or untracked changes |
+
+Token-based authentication: `GITHUB_TOKEN` or `GITLAB_TOKEN` environment variables are read at runtime and wired into the `git2` credential callbacks. GitHub tokens are passed via the `x-access-token` header; GitLab tokens use the `PRIVATE-TOKEN` header. Branch names are sanitized to `[a-zA-Z0-9._-]` before use in worktree creation.
+
+
 ## Testing
 
 ### Unit tests

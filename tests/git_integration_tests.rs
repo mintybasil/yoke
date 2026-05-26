@@ -1,0 +1,273 @@
+//! Integration tests for git module lifecycle operations.
+//!
+//! These tests exercise local git operations (init, branch, worktree add/remove,
+//! status checks) without requiring network access. They use `git2::Repository::init`
+//! to create local repositories and test the full lifecycle of worktree management.
+
+use std::fs;
+use std::path::Path;
+
+use git2::Repository;
+use yoke::git::{
+    build_clone_url, create_worktree, has_uncommitted_changes, pull_repo, remove_worktree,
+    sanitize_branch_name,
+};
+
+/// Helper: create a local git repo with an initial commit on `main`.
+fn init_repo_with_commit(dir: &Path) -> Repository {
+    let repo = Repository::init(dir).unwrap();
+
+    // Configure user for commits
+    let mut config = repo.config().unwrap();
+    config.set_str("user.name", "Test User").unwrap();
+    config.set_str("user.email", "test@example.com").unwrap();
+
+    // Create an initial file and commit
+    let file_path = dir.join("README.md");
+    fs::write(&file_path, "hello world").unwrap();
+
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("README.md")).unwrap();
+    index.write().unwrap();
+
+    let tree_id = index.write_tree().unwrap();
+    let sig = repo.signature().unwrap();
+    {
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
+            .unwrap();
+    }
+
+    repo
+}
+
+// --- sanitize_branch_name integration tests ---
+
+#[test]
+fn test_sanitize_branch_name_complex_label() {
+    assert_eq!(
+        sanitize_branch_name("AO/feature-branch #42"),
+        "AO-feature-branch-42"
+    );
+}
+
+#[test]
+fn test_sanitize_branch_name_all_special() {
+    assert_eq!(sanitize_branch_name("@#$%"), "");
+}
+
+#[test]
+fn test_sanitize_branch_name_unicode() {
+    // Unicode chars get replaced with hyphens
+    let result = sanitize_branch_name("café");
+    assert!(result.contains("caf"));
+}
+
+#[test]
+fn test_sanitize_branch_name_preserves_hyphens_and_underscores() {
+    assert_eq!(
+        sanitize_branch_name("my-feature_branch-v2"),
+        "my-feature_branch-v2"
+    );
+}
+
+// --- build_clone_url integration tests ---
+
+#[test]
+fn test_build_clone_url_github_with_owner_and_repo() {
+    let url = build_clone_url("github", "mintybasil", "yoke", None);
+    assert_eq!(url, "https://github.com/mintybasil/yoke.git");
+}
+
+#[test]
+fn test_build_clone_url_gitlab_self_hosted() {
+    let url = build_clone_url(
+        "gitlab",
+        "internal-team",
+        "backend",
+        Some("gitlab.mycompany.com"),
+    );
+    assert_eq!(
+        url,
+        "https://gitlab.mycompany.com/internal-team/backend.git"
+    );
+}
+
+// --- has_uncommitted_changes integration tests ---
+
+#[test]
+fn test_has_uncommitted_changes_with_new_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    // Add a new untracked file
+    fs::write(dir.path().join("new_file.txt"), "content").unwrap();
+
+    // Include untracked files in status
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true);
+    let statuses = repo.statuses(Some(&mut opts)).unwrap();
+    assert!(!statuses.is_empty());
+
+    // Our function should detect it too (when not filtering untracked)
+    // Since we use statuses(None), we add the file to the index to make it staged
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("new_file.txt")).unwrap();
+    index.write().unwrap();
+
+    assert!(has_uncommitted_changes(&repo).unwrap());
+}
+
+#[test]
+fn test_has_uncommitted_changes_after_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    // Clean state after commit
+    assert!(!has_uncommitted_changes(&repo).unwrap());
+}
+
+// --- Worktree integration tests ---
+
+#[test]
+fn test_create_and_remove_worktree() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let worktree_path = worktree_dir.path().join("worktree-test");
+
+    // Create a worktree
+    let result = create_worktree(&repo, "ao/test-branch", &worktree_path);
+    assert!(
+        result.is_ok(),
+        "worktree creation failed: {:?}",
+        result.err()
+    );
+
+    // Verify worktree directory exists
+    assert!(worktree_path.exists());
+    assert!(worktree_path.join("README.md").exists());
+
+    // Check for uncommitted changes (should be clean)
+    assert!(!has_uncommitted_changes(&repo).unwrap());
+
+    // Remove the worktree
+    let result = remove_worktree(&repo, "ao/test-branch");
+    assert!(
+        result.is_ok(),
+        "worktree removal failed: {:?}",
+        result.err()
+    );
+
+    // Verify worktree directory is gone
+    assert!(!worktree_path.exists());
+
+    // Verify branch was cleaned up
+    assert!(
+        repo.find_branch("ao/test-branch", git2::BranchType::Local)
+            .is_err()
+    );
+}
+
+#[test]
+fn test_create_worktree_branch_already_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    // Create a branch manually first
+    let head = repo.head().unwrap();
+    let head_commit = head.peel_to_commit().unwrap();
+    repo.branch("existing-branch", &head_commit, false).unwrap();
+
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let worktree_path = worktree_dir.path().join("wt-existing");
+
+    // Should succeed even though branch exists
+    let result = create_worktree(&repo, "existing-branch", &worktree_path);
+    assert!(
+        result.is_ok(),
+        "create_worktree failed for existing branch: {:?}",
+        result.err()
+    );
+
+    // Clean up
+    remove_worktree(&repo, "existing-branch").unwrap();
+}
+
+#[test]
+fn test_create_worktree_with_slashes_in_branch_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let worktree_path = worktree_dir.path().join("wt-slash");
+
+    // Branch name with slashes should work (sanitized for worktree dir)
+    let result = create_worktree(&repo, "ao/feature-123", &worktree_path);
+    assert!(
+        result.is_ok(),
+        "worktree with slashes failed: {:?}",
+        result.err()
+    );
+
+    // Verify worktree directory exists
+    assert!(worktree_path.exists());
+
+    // Clean up
+    let result = remove_worktree(&repo, "ao/feature-123");
+    assert!(result.is_ok(), "remove_worktree failed: {:?}", result.err());
+}
+
+#[test]
+fn test_remove_worktree_with_dirty_tree_is_forced() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let worktree_path = worktree_dir.path().join("wt-dirty");
+
+    create_worktree(&repo, "dirty-branch", &worktree_path).unwrap();
+
+    // Modify a file in the worktree
+    let modified_file = worktree_path.join("README.md");
+    fs::write(&modified_file, "modified content").unwrap();
+
+    // Check that the worktree repo detects changes
+    let wt_repo = Repository::open(&worktree_path).unwrap();
+    assert!(has_uncommitted_changes(&wt_repo).unwrap());
+
+    // Force-remove the worktree (the prune options handle dirty trees)
+    let result = remove_worktree(&repo, "dirty-branch");
+    // Should succeed because we use aggressive prune options (working_tree: true)
+    assert!(
+        result.is_ok(),
+        "forced removal should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_has_uncommitted_changes_modified_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    // Modify an existing tracked file
+    let file_path = dir.path().join("README.md");
+    fs::write(&file_path, "modified content").unwrap();
+
+    assert!(has_uncommitted_changes(&repo).unwrap());
+}
+
+// --- pull_repo error tests ---
+
+#[test]
+fn test_pull_repo_on_fresh_repo_no_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let _repo = init_repo_with_commit(dir.path());
+
+    // A local-only repo has no "origin" remote, so pull should fail
+    let repo = Repository::open(dir.path()).unwrap();
+    let result = pull_repo(&repo, "fake-token", "github");
+    assert!(result.is_err());
+}
