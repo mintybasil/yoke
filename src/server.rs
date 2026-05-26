@@ -10,12 +10,15 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::{Platform, ServerConfig};
+use crate::dispatcher::SharedDedupSets;
 use crate::webhook;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub webhook_handler: webhook::WebhookHandler,
+    #[allow(dead_code)]
+    pub dedup_sets: SharedDedupSets,
 }
 
 /// HTTP server encapsulating an axum Router and bind address.
@@ -156,12 +159,15 @@ pub async fn run_server(
     let (tx, _rx) = tokio::sync::mpsc::channel(100);
     // TODO: Pass rx to the dispatcher in a future issue
 
+    let dedup_sets = crate::dispatcher::new_dedup_sets();
+
     let state = AppState {
         webhook_handler: webhook::WebhookHandler::new(
             platform.clone(),
             config.webhook_secret.clone(),
             tx,
         ),
+        dedup_sets,
     };
 
     let router = build_router(state, config);
@@ -201,6 +207,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(100);
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
+            dedup_sets: crate::dispatcher::new_dedup_sets(),
         };
         (state, rx)
     }
@@ -209,6 +216,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(100);
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Github, "test-secret".to_string(), tx),
+            dedup_sets: crate::dispatcher::new_dedup_sets(),
         };
         (state, rx)
     }
@@ -725,6 +733,7 @@ mod tests {
 
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
+            dedup_sets: crate::dispatcher::new_dedup_sets(),
         };
         let app = build_router(state, &config);
 

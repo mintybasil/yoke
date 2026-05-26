@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod dispatcher;
 mod server;
 mod template;
 mod webhook;

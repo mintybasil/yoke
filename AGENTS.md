@@ -7,6 +7,7 @@ src/
   main.rs      — CLI entrypoint (loads config, loads workflows, validates agents & triggers, starts server)
   cli.rs       — CLI argument parsing (clap derive)
   config.rs    — Configuration parsing, validation, and error types
+  dispatcher.rs — Deduplication data structures and in-memory logic (DedupSets, SharedDedupSets)
   server.rs    — axum HTTP server with health, readiness, and unified webhook endpoint
   workflow.rs  — Workflow TOML parsing, validation, and error types
   template.rs  — Template rendering with `{{variable}}` substitution and validation
@@ -40,7 +41,8 @@ src/
 - **`WebhookError` enum**: Shared error type (Unauthorized, BadRequest, NoMatchingTrigger, InternalError) in `webhook/mod.rs`, used by `WebhookHandler::handle_webhook()`. `InternalError` is returned when the dispatcher channel is closed, mapping to HTTP 503 Service Unavailable.
 - **`TriggerEvent` struct**: Shared webhook result type in `webhook/mod.rs` with `trigger_type: TriggerType`, `repo_path`, and `event_id` fields. Sent to the dispatcher via the mpsc channel in `WebhookHandler`.
 - **`WebhookHandler` struct**: Holds `platform`, `secret`, and `sender: mpsc::Sender<TriggerEvent>`. Created in `run_server()` with a bounded channel and passed to `AppState`. Derives `Clone`.
-- **`AppState` struct**: Contains `webhook_handler: WebhookHandler` (replaces the previous `platform` + `webhook_secret` fields). Derives `Clone` for axum state sharing.
+- **`AppState` struct**: Contains `webhook_handler: WebhookHandler` and `dedup_sets: SharedDedupSets`. Derives `Clone` for axum state sharing. The `dedup_sets` field provides access to the in-memory deduplication state for the dispatcher (wiring into webhook handling is planned for a future issue).
+- **Dispatcher deduplication** (`src/dispatcher.rs`): Three-set `DedupSets` tracks event lifecycle states (`in_flight`, `completed`, `permanently_failed`). Events are identified by dedup keys formatted as `{owner}/{repo}/{workspace_id}`, where `workspace_id` varies by event type: issue number for issue events, `{pr_number}_review-{review_id}` for PR reviews, `{pr_number}_comment-{comment_id}` for PR review comments, and issue number for issue comment mentions. `SharedDedupSets` (`Arc<RwLock<DedupSets>>`) provides thread-safe async access. An event is considered a duplicate if its key appears in *any* of the three sets. State transitions: `mark_in_flight` → `mark_completed` (success) or `mark_failed` (permanent failure); `remove_in_flight` allows retry on transient failures. The `extract_workspace_id` function maps `TriggerEvent` fields to dedup key components based on `TriggerType`.
 
 ## CLI Arguments
 

@@ -262,6 +262,23 @@ If the signature is missing or fails verification, the server responds with **40
 
 ## Architecture
 
+### Event deduplication
+
+Yoke uses in-memory deduplication to prevent concurrent or repeated processing of the same webhook event. Each event is identified by a dedup key formatted as `{owner}/{repo}/{workspace_id}`, where the `workspace_id` component varies by event type:
+
+| Trigger type | Workspace ID format |
+|---|---|
+| `github_issue_assigned` | `{issue_number}` |
+| `github_issue_comment_mention` | `{issue_number}` |
+| `github_pull_request_review` | `{pr_number}_review-{review_id}` |
+| `github_pull_request_review_comment` | `{pr_number}_comment-{comment_id}` |
+| `gitlab_issue_assigned` | `{issue_iid}` |
+| `gitlab_issue_mention` | `{issue_iid}` |
+| `gitlab_merge_request_review` | `{mr_iid}_note-{note_id}` |
+| `gitlab_merge_request_review_comment` | `{mr_iid}_note-{note_id}` |
+
+Three hash sets track event lifecycle states: `in_flight` (currently processing), `completed` (finished successfully), and `permanently_failed` (terminal failure). An event key present in any of these sets is considered a duplicate and will not be processed again. Events transition from `in_flight` to `completed` or `permanently_failed`; transient failures can use `remove_in_flight` to allow retries.
+
 See [docs/Architecture Design.md](docs/Architecture%20Design.md) for the full system design.
 
 ## License
