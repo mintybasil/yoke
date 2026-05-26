@@ -510,3 +510,202 @@ async fn test_gitlab_event_dispatched() {
         "GitLab event should be in completed set"
     );
 }
+
+// --- Test: Unlimited concurrency high-throughput stress test ---
+
+#[tokio::test]
+async fn test_unlimited_throughput() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(2000);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    // Send 500 unique events through the dispatcher with max_concurrent=0 (unlimited)
+    let total_events = 500;
+    for i in 0..total_events {
+        let msg = make_message(
+            TriggerType::GithubIssueAssigned {
+                assigned_to: None,
+                allowed_users: None,
+            },
+            &format!("issue-{i}"),
+        );
+        tx.send(msg).await.unwrap();
+    }
+
+    // Give the dispatcher time to process all events
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Close the channel
+    drop(tx);
+    handle.await.unwrap();
+
+    // All events should be in the completed set, none in in_flight
+    let sets = dedup_sets.read().await;
+    assert_eq!(
+        sets.completed.len(),
+        total_events,
+        "all {total_events} events should be in completed set"
+    );
+    assert!(
+        sets.in_flight.is_empty(),
+        "in_flight should be empty after completion"
+    );
+
+    // Verify persistence to disk
+    let loaded = load_persistence(workdir.path());
+    assert_eq!(
+        loaded.completed.len(),
+        total_events,
+        "all events should be persisted to completed.json"
+    );
+}
+
+// --- Test: High-concurrency semaphore stress test ---
+
+#[tokio::test]
+async fn test_concurrency_stress_with_semaphore() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    // Limit to 4 concurrent workflows
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 4, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(200);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    // Send 50 unique events — they should all eventually complete with concurrency limit of 4
+    let total_events = 50;
+    for i in 0..total_events {
+        let msg = make_message(
+            TriggerType::GithubIssueAssigned {
+                assigned_to: None,
+                allowed_users: None,
+            },
+            &format!("issue-{i}"),
+        );
+        tx.send(msg).await.unwrap();
+    }
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    drop(tx);
+    handle.await.unwrap();
+
+    let sets = dedup_sets.read().await;
+    assert_eq!(
+        sets.completed.len(),
+        total_events,
+        "all events should complete even with concurrency limit"
+    );
+    assert!(
+        sets.in_flight.is_empty(),
+        "in_flight should be empty after completion"
+    );
+}
+
+// --- Test: Dispatcher failure path via on_workflow_complete ---
+
+#[tokio::test]
+async fn test_failure_state_transition_via_on_workflow_complete() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    // Mark event as in-flight, then fail it
+    {
+        let mut sets = dedup_sets.write().await;
+        sets.mark_in_flight("owner/repo/100");
+        sets.mark_in_flight("owner/repo/101");
+    }
+
+    // One succeeds, one fails
+    dispatcher
+        .on_workflow_complete("owner/repo/100", Ok(()))
+        .await;
+    dispatcher
+        .on_workflow_complete("owner/repo/101", Err("simulation failure".to_string()))
+        .await;
+
+    let sets = dedup_sets.read().await;
+    assert!(
+        sets.completed.contains("owner/repo/100"),
+        "successful event should be in completed"
+    );
+    assert!(
+        sets.permanently_failed.contains("owner/repo/101"),
+        "failed event should be in permanently_failed"
+    );
+    assert!(
+        sets.in_flight.is_empty(),
+        "in_flight should be empty after transitions"
+    );
+
+    // Verify both persisted states on disk
+    let loaded = load_persistence(workdir.path());
+    assert!(
+        loaded.completed.contains("owner/repo/100"),
+        "completed event should be persisted"
+    );
+    assert!(
+        loaded.permanently_failed.contains("owner/repo/101"),
+        "failed event should be persisted"
+    );
+}
+
+// --- Test: Permits released on task completion (concurrency semaphore) ---
+
+#[tokio::test]
+async fn test_permits_released_after_completion() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    // Send 6 events with concurrency limit of 2
+    // They should all complete because permits are released after each task
+    for i in 0..6 {
+        let msg = make_message(
+            TriggerType::GithubIssueAssigned {
+                assigned_to: None,
+                allowed_users: None,
+            },
+            &format!("issue-{i}"),
+        );
+        tx.send(msg).await.unwrap();
+    }
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    drop(tx);
+    handle.await.unwrap();
+
+    let sets = dedup_sets.read().await;
+    assert_eq!(
+        sets.completed.len(),
+        6,
+        "all 6 events should complete as permits are released"
+    );
+    assert!(
+        sets.in_flight.is_empty(),
+        "no events should be in_flight after completion"
+    );
+    // Note: active_count is not decremented by spawn_workflow's spawned tasks
+    // (only run_with_permit decrements it). This is a known limitation —
+    // the actual cleanup will be handled when the workflow runner is integrated.
+}

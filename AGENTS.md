@@ -114,3 +114,11 @@ Tests cover:
 - Persistence: completed and failed events are written to `completed.json` / `failed.json`
 - GitLab event dispatched: GitLab trigger events are handled correctly
 - Multiple different events: distinct events process independently
+- Unlimited throughput (`max_concurrent = 0`): 500 events processed without throttling
+- Concurrency stress (`max_concurrent = 4`): 50 events complete through semaphore
+- Failure state transitions: `on_workflow_complete(Err)` moves key to `permanently_failed`
+- Permits released: semaphore permits return after task completion
+- Corrupted JSON persistence: `load_persistence` returns empty sets for corrupted `completed.json` and `failed.json`
+- Both files corrupted: both sets are empty, in_flight always empty
+- Atomic write failure: writing to a read-only directory fails without corrupting existing file
+- Semaphore stress: high-concurrency with bounded permits

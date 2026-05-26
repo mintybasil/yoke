@@ -1250,6 +1250,48 @@ mod tests {
     }
 
     #[test]
+    fn test_save_dedup_file_write_failure_preserves_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("completed.json");
+
+        // Write a valid initial file
+        let initial: HashSet<String> = HashSet::from(["owner/repo/42".to_string()]);
+        save_dedup_file(&path, &initial).unwrap();
+        assert!(path.exists());
+
+        // Make the directory read-only so the next write (to .tmp file) will fail
+        // Note: on Linux, removing write permission from the directory prevents
+        // creating new files (including the .tmp file), so the original file
+        // should remain untouched.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        let updated: HashSet<String> =
+            HashSet::from(["owner/repo/42".to_string(), "owner/repo/99".to_string()]);
+        // The write should fail because the directory is read-only
+        let result = save_dedup_file(&path, &updated);
+        assert!(result.is_err(), "writing to read-only dir should fail");
+
+        // Restore permissions for cleanup
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        // Original file should be untouched
+        let loaded: HashSet<String> = load_dedup_file(&path).unwrap();
+        assert_eq!(
+            loaded.len(),
+            1,
+            "original file should be preserved on write failure"
+        );
+        assert!(
+            loaded.contains("owner/repo/42"),
+            "original contents should be preserved"
+        );
+    }
+
+    #[test]
     fn test_persist_completed() {
         let dir = tempfile::tempdir().unwrap();
         let mut sets = DedupSets::new();
@@ -1354,6 +1396,52 @@ mod tests {
         assert!(sets.permanently_failed.is_empty());
         // Valid completed.json → empty but loaded successfully
         assert!(sets.completed.is_empty());
+    }
+
+    #[test]
+    fn test_load_persistence_corrupted_completed_json() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write corrupted completed.json
+        std::fs::write(dir.path().join("completed.json"), "not valid json{{{").unwrap();
+
+        // Write valid failed.json
+        let failed = vec![FailedEntry {
+            key: "owner/repo/7".to_string(),
+            timestamp: SystemTime::UNIX_EPOCH,
+            error: "something went wrong".to_string(),
+        }];
+        std::fs::write(
+            dir.path().join("failed.json"),
+            serde_json::to_string_pretty(&failed).unwrap(),
+        )
+        .unwrap();
+
+        let sets = load_persistence(dir.path());
+        // Corrupted completed.json → empty completed set
+        assert!(
+            sets.completed.is_empty(),
+            "corrupted completed.json should result in empty completed set"
+        );
+        // Valid failed.json → still loaded correctly
+        assert!(sets.permanently_failed.contains("owner/repo/7"));
+    }
+
+    #[test]
+    fn test_load_persistence_both_files_corrupted() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write corrupted files
+        std::fs::write(dir.path().join("completed.json"), "BAD DATA").unwrap();
+        std::fs::write(dir.path().join("failed.json"), "ALSO BAD").unwrap();
+
+        let sets = load_persistence(dir.path());
+        assert!(sets.completed.is_empty(), "corrupted completed → empty set");
+        assert!(
+            sets.permanently_failed.is_empty(),
+            "corrupted failed → empty set"
+        );
+        assert!(sets.in_flight.is_empty());
     }
 
     #[test]
