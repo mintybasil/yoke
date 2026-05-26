@@ -2,6 +2,7 @@ pub mod github;
 pub mod gitlab;
 
 use crate::config::Platform;
+use crate::dispatcher::DispatchMessage;
 use crate::workflow::TriggerType;
 use tokio::sync::mpsc;
 
@@ -50,12 +51,12 @@ impl std::error::Error for WebhookError {}
 pub struct WebhookHandler {
     pub platform: Platform,
     pub secret: String,
-    pub sender: mpsc::Sender<TriggerEvent>,
+    pub sender: mpsc::Sender<DispatchMessage>,
 }
 
 impl WebhookHandler {
     /// Create a new `WebhookHandler` with the given platform config, secret, and channel sender.
-    pub fn new(platform: Platform, secret: String, sender: mpsc::Sender<TriggerEvent>) -> Self {
+    pub fn new(platform: Platform, secret: String, sender: mpsc::Sender<DispatchMessage>) -> Self {
         Self {
             platform,
             secret,
@@ -64,7 +65,7 @@ impl WebhookHandler {
     }
 
     /// Process a webhook request: verify, parse, and send the resulting
-    /// `TriggerEvent` to the dispatcher channel.
+    /// `DispatchMessage` to the dispatcher channel.
     ///
     /// Returns `Ok(())` on success, or a `WebhookError` on failure.
     pub async fn handle_webhook(
@@ -80,12 +81,11 @@ impl WebhookHandler {
             body,
             &self.secret,
         )?;
-
-        // Send to dispatcher without blocking.
-        // If the channel is full, we return a 503 implicitly by allowing
-        // the caller to handle the result of send().
+        // Wrap TriggerEvent in DispatchMessage and send to dispatcher
         self.sender
-            .send(trigger_event)
+            .send(DispatchMessage {
+                event: trigger_event,
+            })
             .await
             .map_err(|_| WebhookError::InternalError("Dispatcher channel full".to_string()))?;
 

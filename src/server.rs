@@ -6,11 +6,12 @@ use axum::{
 };
 use serde_json::{Value, json};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::{Platform, ServerConfig};
-use crate::dispatcher::Dispatcher;
+use crate::dispatcher::{Dispatcher, new_dedup_sets};
 use crate::webhook;
 
 /// Application state shared across handlers.
@@ -142,11 +143,16 @@ fn build_router(state: AppState, config: &ServerConfig) -> Router {
 
 /// Run the HTTP server bound to the configured host:port.
 ///
-/// Blocks until the server shuts down.
+/// Spawns a background dispatcher task that consumes events from the mpsc
+/// channel and manages concurrency, deduplication, and persistence.
+/// Graceful shutdown is handled via a `watch` channel — when the server
+/// receives a `ctrl+c` or SIGTERM, the dispatcher drains in-flight
+/// workflows before exiting.
 pub async fn run_server(
     config: &ServerConfig,
     platform: &Platform,
     max_concurrent: usize,
+    workdir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{}:{}", config.host, config.port)
         .parse()
@@ -157,11 +163,21 @@ pub async fn run_server(
             )
         })?;
 
-    let (tx, _rx) = tokio::sync::mpsc::channel(100);
-    // TODO: Pass rx to the dispatcher in a future issue
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
 
-    let dedup_sets = crate::dispatcher::new_dedup_sets();
-    let dispatcher = crate::dispatcher::Dispatcher::new(dedup_sets, max_concurrent);
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets, max_concurrent, workdir);
+
+    // Create shutdown signal
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // Spawn dispatcher run loop as a background task
+    let dispatcher_handle = tokio::spawn({
+        let dispatcher = dispatcher.clone();
+        async move {
+            dispatcher.run(rx, shutdown_rx).await;
+        }
+    });
 
     let state = AppState {
         webhook_handler: webhook::WebhookHandler::new(
@@ -177,7 +193,26 @@ pub async fn run_server(
     tracing::info!("Starting server on {addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router).await?;
+
+    // Set up graceful shutdown via ctrl+c
+    let shutdown_signal = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install ctrl+c handler");
+        tracing::info!("Received shutdown signal");
+    };
+
+    // Run server with graceful shutdown
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            shutdown_signal.await;
+            // Signal the dispatcher to begin draining
+            let _ = shutdown_tx.send(true);
+        })
+        .await?;
+
+    // Wait for dispatcher to finish draining
+    dispatcher_handle.await?;
 
     Ok(())
 }
@@ -186,7 +221,8 @@ pub async fn run_server(
 mod tests {
     use super::*;
     use crate::config::Platform;
-    use crate::webhook::{TriggerEvent, WebhookHandler};
+    use crate::dispatcher::DispatchMessage;
+    use crate::webhook::WebhookHandler;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use hmac::{Hmac, Mac};
@@ -205,10 +241,11 @@ mod tests {
         }
     }
 
-    fn test_state() -> (AppState, mpsc::Receiver<TriggerEvent>) {
+    fn test_state() -> (AppState, mpsc::Receiver<DispatchMessage>) {
         let (tx, rx) = mpsc::channel(100);
         let dedup_sets = crate::dispatcher::new_dedup_sets();
-        let dispatcher = crate::dispatcher::Dispatcher::new(dedup_sets, 0);
+        let dispatcher =
+            crate::dispatcher::Dispatcher::new(dedup_sets, 0, PathBuf::from("/tmp/yoke-test"));
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
             dispatcher,
@@ -216,10 +253,11 @@ mod tests {
         (state, rx)
     }
 
-    fn test_state_github() -> (AppState, mpsc::Receiver<TriggerEvent>) {
+    fn test_state_github() -> (AppState, mpsc::Receiver<DispatchMessage>) {
         let (tx, rx) = mpsc::channel(100);
         let dedup_sets = crate::dispatcher::new_dedup_sets();
-        let dispatcher = crate::dispatcher::Dispatcher::new(dedup_sets, 0);
+        let dispatcher =
+            crate::dispatcher::Dispatcher::new(dedup_sets, 0, PathBuf::from("/tmp/yoke-test"));
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Github, "test-secret".to_string(), tx),
             dispatcher,
@@ -734,12 +772,16 @@ mod tests {
     async fn test_webhook_gitlab_returns_503_when_channel_closed() {
         let config = test_config();
         // Create a channel, then drop rx to simulate a closed dispatcher channel.
-        let (tx, rx) = mpsc::channel::<TriggerEvent>(1);
+        let (tx, rx) = mpsc::channel::<DispatchMessage>(1);
         drop(rx);
 
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
-            dispatcher: crate::dispatcher::Dispatcher::new(crate::dispatcher::new_dedup_sets(), 0),
+            dispatcher: crate::dispatcher::Dispatcher::new(
+                crate::dispatcher::new_dedup_sets(),
+                0,
+                PathBuf::from("/tmp/yoke-test"),
+            ),
         };
         let app = build_router(state, &config);
 

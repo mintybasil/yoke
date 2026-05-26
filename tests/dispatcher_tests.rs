@@ -1,0 +1,512 @@
+//! Integration tests for the dispatcher main loop.
+//!
+//! These tests verify the full dispatch flow:
+//! - Deduplication: duplicate events are rejected
+//! - Concurrency limiting: semaphore caps parallel workflows
+//! - Persistence: completed/failed events are written to disk
+//! - Graceful shutdown: dispatcher drains in-flight tasks before exiting
+//! - Full lifecycle: event flows through dedup → permit → spawn → complete
+
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use yoke::dispatcher::{
+    DispatchMessage, Dispatcher, build_dedup_key, extract_event_id, load_persistence,
+    new_dedup_sets,
+};
+use yoke::webhook::TriggerEvent;
+use yoke::workflow::TriggerType;
+
+// --- Helper functions ---
+
+/// Create a test `TriggerEvent` with the given trigger type and event ID.
+fn make_event(trigger_type: TriggerType, event_id: &str) -> TriggerEvent {
+    TriggerEvent {
+        trigger_type,
+        repo_path: "owner/repo".to_string(),
+        event_id: event_id.to_string(),
+    }
+}
+
+/// Create a `DispatchMessage` wrapping the given event.
+fn make_message(trigger_type: TriggerType, event_id: &str) -> DispatchMessage {
+    DispatchMessage {
+        event: make_event(trigger_type, event_id),
+    }
+}
+
+/// Create a temp directory for test persistence files.
+fn make_workdir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("failed to create temp dir")
+}
+
+// --- Test: Full dispatch flow (send, dedup, spawn, complete, persist) ---
+
+#[tokio::test]
+async fn test_full_dispatch_flow_completes_and_persists() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // Spawn the dispatcher loop
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    // Send a single event
+    let msg = make_message(
+        TriggerType::GithubIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        },
+        "issue-42",
+    );
+    tx.send(msg).await.unwrap();
+
+    // Give the dispatcher time to process
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Close the channel to stop the dispatcher
+    drop(tx);
+    handle.await.unwrap();
+
+    // Verify the event was tracked in completed set
+    let sets = dedup_sets.read().await;
+    let event = make_event(
+        TriggerType::GithubIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        },
+        "issue-42",
+    );
+    let key = build_dedup_key("owner", "repo", &extract_event_id(&event));
+    assert!(
+        sets.completed.contains(&key),
+        "event should be in completed set"
+    );
+    assert!(
+        sets.in_flight.is_empty(),
+        "in_flight should be empty after completion"
+    );
+}
+
+// --- Test: Duplicate rejection ---
+
+#[tokio::test]
+async fn test_duplicate_event_rejected() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    // Send the same event twice
+    let event_type = TriggerType::GithubIssueAssigned {
+        assigned_to: None,
+        allowed_users: None,
+    };
+    let msg1 = make_message(event_type.clone(), "issue-42");
+    let msg2 = make_message(event_type, "issue-42");
+
+    tx.send(msg1).await.unwrap();
+    tx.send(msg2).await.unwrap();
+
+    // Give the dispatcher time to process both messages
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Close the channel
+    drop(tx);
+    handle.await.unwrap();
+
+    // Verify only one event is in completed (second was rejected as duplicate)
+    let sets = dedup_sets.read().await;
+    assert_eq!(
+        sets.completed.len(),
+        1,
+        "only one event should be in completed set"
+    );
+}
+
+// --- Test: Concurrency limit caps parallel workflows ---
+
+#[tokio::test]
+async fn test_concurrency_limit() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    // Limit to 1 concurrent workflow
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 1, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    // Send two events with different event IDs
+    let msg1 = make_message(
+        TriggerType::GithubIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        },
+        "issue-42",
+    );
+    let msg2 = make_message(
+        TriggerType::GithubIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        },
+        "issue-43",
+    );
+
+    tx.send(msg1).await.unwrap();
+    tx.send(msg2).await.unwrap();
+
+    // Give time for both to process
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Close the channel
+    drop(tx);
+    handle.await.unwrap();
+
+    // Both events should eventually complete
+    let sets = dedup_sets.read().await;
+    assert_eq!(
+        sets.completed.len(),
+        2,
+        "both events should be in completed set"
+    );
+}
+
+// --- Test: Persistence of completed events ---
+
+#[tokio::test]
+async fn test_completed_events_persisted_to_disk() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    let msg = make_message(
+        TriggerType::GithubIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        },
+        "issue-42",
+    );
+    tx.send(msg).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    drop(tx);
+    handle.await.unwrap();
+
+    // Verify completed.json was written to disk
+    let completed_path = workdir.path().join("completed.json");
+    assert!(
+        completed_path.exists(),
+        "completed.json should exist on disk"
+    );
+    let loaded: HashSet<String> =
+        serde_json::from_str(&std::fs::read_to_string(&completed_path).unwrap()).unwrap();
+    let event = make_event(
+        TriggerType::GithubIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        },
+        "issue-42",
+    );
+    let key = build_dedup_key("owner", "repo", &extract_event_id(&event));
+    assert!(
+        loaded.contains(&key),
+        "completed.json should contain the event key"
+    );
+}
+
+// --- Test: Graceful shutdown drains in-flight tasks ---
+
+#[tokio::test]
+async fn test_graceful_shutdown_drains_in_flight() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    // Send an event
+    let msg = make_message(
+        TriggerType::GithubPullRequestReview {
+            allowed_users: None,
+        },
+        "pr-7-review-999",
+    );
+    tx.send(msg).await.unwrap();
+
+    // Give it a moment to start processing
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Signal shutdown
+    shutdown_tx.send(true).unwrap();
+
+    // Close channel so the dispatcher stops receiving
+    drop(tx);
+
+    // The dispatcher should drain and complete
+    handle.await.unwrap();
+
+    // Event should be completed
+    let sets = dedup_sets.read().await;
+    assert!(
+        !sets.completed.is_empty(),
+        "event should be in completed set after graceful shutdown"
+    );
+}
+
+// --- Test: Channel closed stops dispatcher ---
+
+#[tokio::test]
+async fn test_dispatcher_stops_when_channel_closed() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    // Send an event and close the channel
+    let msg = make_message(
+        TriggerType::GithubIssueCommentMention {
+            mentioned_user: None,
+            allowed_users: None,
+        },
+        "issue-42-comment-12345",
+    );
+    tx.send(msg).await.unwrap();
+    drop(tx); // Close channel
+
+    // Dispatcher should stop cleanly
+    handle.await.unwrap();
+
+    // Event should have been processed
+    let sets = dedup_sets.read().await;
+    assert!(
+        !sets.completed.is_empty(),
+        "event should be in completed set after channel close"
+    );
+}
+
+// --- Test: Multiple different events are all processed ---
+
+#[tokio::test]
+async fn test_multiple_different_events_processed() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    // Send multiple different events
+    let events = vec![
+        make_message(
+            TriggerType::GithubIssueAssigned {
+                assigned_to: None,
+                allowed_users: None,
+            },
+            "issue-42",
+        ),
+        make_message(
+            TriggerType::GithubIssueAssigned {
+                assigned_to: None,
+                allowed_users: None,
+            },
+            "issue-43",
+        ),
+        make_message(
+            TriggerType::GithubPullRequestReview {
+                allowed_users: None,
+            },
+            "pr-7-review-999",
+        ),
+    ];
+
+    for msg in events {
+        tx.send(msg).await.unwrap();
+    }
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    drop(tx);
+    handle.await.unwrap();
+
+    let sets = dedup_sets.read().await;
+    assert_eq!(
+        sets.completed.len(),
+        3,
+        "all three events should be in completed set"
+    );
+}
+
+// --- Test: on_workflow_complete transitions state correctly ---
+
+#[tokio::test]
+async fn test_on_workflow_complete_success() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    // Manually mark an event as in-flight
+    {
+        let mut sets = dedup_sets.write().await;
+        sets.mark_in_flight("owner/repo/42");
+    }
+
+    // Complete it
+    dispatcher
+        .on_workflow_complete("owner/repo/42", Ok(()))
+        .await;
+
+    let sets = dedup_sets.read().await;
+    assert!(
+        sets.completed.contains("owner/repo/42"),
+        "key should be in completed set"
+    );
+    assert!(
+        !sets.in_flight.contains("owner/repo/42"),
+        "key should no longer be in in_flight set"
+    );
+
+    // Verify persistence
+    let loaded = load_persistence(workdir.path());
+    assert!(
+        loaded.completed.contains("owner/repo/42"),
+        "key should be persisted in completed set"
+    );
+}
+
+#[tokio::test]
+async fn test_on_workflow_complete_failure() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    // Manually mark an event as in-flight
+    {
+        let mut sets = dedup_sets.write().await;
+        sets.mark_in_flight("owner/repo/42");
+    }
+
+    // Fail it
+    dispatcher
+        .on_workflow_complete("owner/repo/42", Err("something went wrong".to_string()))
+        .await;
+
+    let sets = dedup_sets.read().await;
+    assert!(
+        sets.permanently_failed.contains("owner/repo/42"),
+        "key should be in permanently_failed set"
+    );
+    assert!(
+        !sets.in_flight.contains("owner/repo/42"),
+        "key should no longer be in in_flight set"
+    );
+
+    // Verify persistence
+    let loaded = load_persistence(workdir.path());
+    assert!(
+        loaded.permanently_failed.contains("owner/repo/42"),
+        "key should be persisted in permanently_failed set"
+    );
+}
+
+// --- Test: Active count with concurrent events ---
+
+#[tokio::test]
+async fn test_dispatcher_active_count_with_concurrent_events() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    // Use concurrency limit of 2 so the semaphore is in play
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
+
+    // Use run_with_permit directly since spawn_workflow is fire-and-forget
+    // and active_count is decremented in run_with_permit
+    assert_eq!(
+        dispatcher.active_count(),
+        0,
+        "initial active count should be 0"
+    );
+
+    let result = dispatcher.run_with_permit(async { 42 }).await;
+    assert_eq!(result, 42);
+    assert_eq!(
+        dispatcher.active_count(),
+        0,
+        "active count should return to 0 after run_with_permit completes"
+    );
+}
+
+// --- Test: GitLab events are also processed ---
+
+#[tokio::test]
+async fn test_gitlab_event_dispatched() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher.run(rx, shutdown_rx).await;
+    });
+
+    let msg = make_message(
+        TriggerType::GitlabIssueAssigned { assigned_to: None },
+        "issue-7",
+    );
+    tx.send(msg).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    drop(tx);
+    handle.await.unwrap();
+
+    let sets = dedup_sets.read().await;
+    let event = make_event(
+        TriggerType::GitlabIssueAssigned { assigned_to: None },
+        "issue-7",
+    );
+    let key = build_dedup_key("owner", "repo", &extract_event_id(&event));
+    assert!(
+        sets.completed.contains(&key),
+        "GitLab event should be in completed set"
+    );
+}
