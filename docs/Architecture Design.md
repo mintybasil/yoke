@@ -351,14 +351,23 @@ This catches user error early, before any webhook is received.
 
 ### Hooks
 
-Pre/post step hooks:
+Pre/post step hooks validate file conditions before and after each step. A hook failure stops the workflow with a clear error message.
 
-| Hook             | Checks                            |
-|------------------|-----------------------------------|
-| `file_not_empty` | A file has non-zero content       |
-| `file_contains`  | A file contains a specific string |
+Hooks are configured per-step as inline TOML tables with a `type` field and hook-specific parameters:
 
-Hooks are configured per-step.
+```toml
+[[steps]]
+name = "Plan"
+agent = "pm"
+prompt_template = "Plan the issue"
+pre_hooks = [{ type = "file_not_empty", path = "plan.md" }]
+post_hooks = [{ type = "file_contains", path = "plan.md", text = "implementation" }]
+```
+
+| Hook             | Fields          | Checks                                  | Failure message                              |
+|------------------|-----------------|-----------------------------------------|-----------------------------------------------|
+| `file_not_empty`  | `path`          | File exists and has non-zero content    | `File 'X' is empty` or `File 'X' not found`  |
+| `file_contains`   | `path`, `text`  | File contains the specified substring   | `File 'X' does not contain 'Y'`               |
 
 ### Dedup & Persistence
 
@@ -864,7 +873,7 @@ Yoke is tested at three levels:
 | `webhook/github.rs` | HMAC verification (valid/invalid), payload parsing, event mapping           |
 | `webhook/gitlab.rs` | Token verification (valid/invalid), payload parsing, event mapping          |
 | `dispatcher.rs`     | Dedup logic (same key skipped, different keys run), semaphore acquisition   |
-| `hooks.rs`          | `file_not_empty`, `file_contains` (pass/fail cases)                         |
+| `hooks.rs`          | `Hook` enum, `run_hook()`, `HookError` — all hook types (pass/fail cases), TOML deserialization/serialization                         |
 | `config.rs`         | TOML parsing (valid/invalid), agent resolution, trigger validation          |
 
 **Example: Template rendering**

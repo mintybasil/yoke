@@ -145,6 +145,12 @@ agent = "pm"
 prompt_template = "Plan the issue"
 
 [[steps]]
+name = "Plan"
+agent = "pm"
+prompt_template = "Plan the issue"
+post_hooks = [{ type = "file_not_empty", path = "plan.md" }]
+
+[[steps]]
 name = "Implement"
 agent = "swe"
 prompt_template = "Read the plan and implement it."
@@ -169,10 +175,19 @@ prompt_template = "Read the plan and implement it."
 
 ### Hook types
 
-| Hook | Description |
-|---|---|
-| `file_not_empty` | Checks that a file has non-zero content |
-| `file_contains` | Checks that a file contains a specific string |
+Hooks are inline TOML tables with a `type` field and hook-specific parameters:
+
+```toml
+pre_hooks = [{ type = "file_not_empty", path = "plan.md" }]
+post_hooks = [{ type = "file_contains", path = "plan.md", text = "implementation" }]
+```
+
+| Hook | Fields | Description |
+|---|---|---|
+| `file_not_empty` | `path` | Checks that a file exists and has non-zero content |
+| `file_contains` | `path`, `text` | Checks that a file contains a specific string |
+
+A hook failure stops the workflow and produces a clear error message identifying the file (and text, for `file_contains`) that failed validation.
 
 ### Known trigger types
 
