@@ -10,7 +10,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::{Platform, ServerConfig};
-use crate::dispatcher::SharedDedupSets;
+use crate::dispatcher::Dispatcher;
 use crate::webhook;
 
 /// Application state shared across handlers.
@@ -18,7 +18,7 @@ use crate::webhook;
 pub struct AppState {
     pub webhook_handler: webhook::WebhookHandler,
     #[allow(dead_code)]
-    pub dedup_sets: SharedDedupSets,
+    pub dispatcher: Dispatcher,
 }
 
 /// HTTP server encapsulating an axum Router and bind address.
@@ -146,6 +146,7 @@ fn build_router(state: AppState, config: &ServerConfig) -> Router {
 pub async fn run_server(
     config: &ServerConfig,
     platform: &Platform,
+    max_concurrent: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{}:{}", config.host, config.port)
         .parse()
@@ -160,6 +161,7 @@ pub async fn run_server(
     // TODO: Pass rx to the dispatcher in a future issue
 
     let dedup_sets = crate::dispatcher::new_dedup_sets();
+    let dispatcher = crate::dispatcher::Dispatcher::new(dedup_sets, max_concurrent);
 
     let state = AppState {
         webhook_handler: webhook::WebhookHandler::new(
@@ -167,7 +169,7 @@ pub async fn run_server(
             config.webhook_secret.clone(),
             tx,
         ),
-        dedup_sets,
+        dispatcher,
     };
 
     let router = build_router(state, config);
@@ -205,18 +207,22 @@ mod tests {
 
     fn test_state() -> (AppState, mpsc::Receiver<TriggerEvent>) {
         let (tx, rx) = mpsc::channel(100);
+        let dedup_sets = crate::dispatcher::new_dedup_sets();
+        let dispatcher = crate::dispatcher::Dispatcher::new(dedup_sets, 0);
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
-            dedup_sets: crate::dispatcher::new_dedup_sets(),
+            dispatcher,
         };
         (state, rx)
     }
 
     fn test_state_github() -> (AppState, mpsc::Receiver<TriggerEvent>) {
         let (tx, rx) = mpsc::channel(100);
+        let dedup_sets = crate::dispatcher::new_dedup_sets();
+        let dispatcher = crate::dispatcher::Dispatcher::new(dedup_sets, 0);
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Github, "test-secret".to_string(), tx),
-            dedup_sets: crate::dispatcher::new_dedup_sets(),
+            dispatcher,
         };
         (state, rx)
     }
@@ -733,7 +739,7 @@ mod tests {
 
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
-            dedup_sets: crate::dispatcher::new_dedup_sets(),
+            dispatcher: crate::dispatcher::Dispatcher::new(crate::dispatcher::new_dedup_sets(), 0),
         };
         let app = build_router(state, &config);
 

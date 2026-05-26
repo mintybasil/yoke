@@ -281,6 +281,19 @@ Three hash sets track event lifecycle states: `in_flight` (currently processing)
 
 See [docs/Architecture Design.md](docs/Architecture%20Design.md) for the full system design.
 
+### Concurrency limiting
+
+Yoke can cap the number of workflows running simultaneously. The `[runtime].max_concurrent` setting (default: `0`, meaning unlimited) controls how many webhook events can be processed concurrently. When `max_concurrent > 0`, a `tokio::Semaphore` limits in-flight workflows — additional events wait for a permit before starting. When `max_concurrent == 0`, no semaphore is created and all events start immediately.
+
+The `Dispatcher` struct holds both the concurrency semaphore and the deduplication sets, providing a single coordination point for event processing:
+
+| Method | Behavior |
+|---|---|
+| `Dispatcher::acquire_permit()` | Returns `Some(OwnedSemaphorePermit)` when limited (blocks until available), `None` when unlimited |
+| `Dispatcher::run_with_permit(fut)` | Convenience wrapper: acquires permit, runs future, releases permit (RAII) |
+| `Dispatcher::active_count()` | Returns current number of held permits (lock-free, for observability) |
+| `Dispatcher::max_concurrent()` | Returns the configured limit (0 = unlimited) |
+
 ## License
 
 TBD

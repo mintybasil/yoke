@@ -1,16 +1,22 @@
-//! Dispatcher deduplication data structures, in-memory logic, and persistence.
+//! Dispatcher: concurrency control, deduplication, and persistence.
 //!
-//! This module provides the core deduplication mechanism to prevent concurrent
-//! or repeated execution of the same webhook event. Three `HashSet`s track
-//! event states: `in_flight` (currently processing), `completed` (successfully
-//! finished), and `permanently_failed` (terminally failed).
+//! This module provides two core mechanisms:
 //!
-//! The dedup key format is `{owner}/{repo}/{event_id}`, where
-//! `event_id` is extracted from the `TriggerEvent` based on the event type:
-//! - Issue events: the issue number
-//! - PR review events: `{pr_number}_review-{review_id}`
-//! - Issue comment events: the issue number
-//! - PR review comment events: `{pr_number}_comment-{comment_id}`
+//! 1. **Concurrency limiting** — A `Dispatcher` wraps an optional `tokio::Semaphore`
+//!    that caps how many workflows can run simultaneously. When `max_concurrent`
+//!    is 0 (unlimited), the semaphore is `None` and every event starts immediately.
+//!    When `max_concurrent > 0`, the dispatcher acquires a permit before spawning
+//!    each workflow, and the permit is automatically released when the workflow
+//!    completes (success or failure) via the RAII guard pattern.
+//!
+//! 2. **Deduplication** — Three `HashSet`s track event lifecycle states
+//!    (`in_flight`, `completed`, `permanently_failed`) to prevent concurrent
+//!    or repeated execution of the same webhook event. The dedup key format
+//!    is `{owner}/{repo}/{event_id}`, where `event_id` varies by event type:
+//!    - Issue events: the issue number
+//!    - PR review events: `{pr_number}_review-{review_id}`
+//!    - Issue comment events: the issue number
+//!    - PR review comment events: `{pr_number}_comment-{comment_id}`
 //!
 //! Thread-safe access is provided via `SharedDedupSets` (`Arc<RwLock<DedupSets>>`).
 //!
@@ -22,11 +28,12 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::webhook::TriggerEvent;
 use crate::workflow::TriggerType;
@@ -127,6 +134,133 @@ impl DedupSets {
 /// state transitions.
 #[allow(dead_code)]
 pub type SharedDedupSets = Arc<RwLock<DedupSets>>;
+
+// ---------------------------------------------------------------------------
+// Dispatcher: concurrency control via tokio::sync::Semaphore
+// ---------------------------------------------------------------------------
+
+/// Dispatcher coordinates concurrency limiting and deduplication for webhook
+/// event processing.
+///
+/// When `max_concurrent > 0`, the dispatcher holds a `tokio::Semaphore` that
+/// caps how many workflows can execute simultaneously. A permit is acquired
+/// before each workflow spawn and automatically released on completion (RAII
+/// guard pattern via `OwnedSemaphorePermit`).
+///
+/// When `max_concurrent == 0`, the semaphore is `None` and no limiting is
+/// applied — every event starts immediately.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct Dispatcher {
+    /// Shared deduplication state for tracking event lifecycles.
+    pub dedup_sets: SharedDedupSets,
+    /// Optional concurrency-limiting semaphore. `None` means unlimited.
+    semaphore: Option<Arc<Semaphore>>,
+    /// Counter for permits currently held (for observability).
+    active_count: Arc<AtomicUsize>,
+    /// The maximum concurrent workflows (0 = unlimited). Stores the value
+    /// for logging; the actual limiting is done by the semaphore.
+    max_concurrent: usize,
+}
+
+impl Dispatcher {
+    /// Create a new `Dispatcher`.
+    ///
+    /// If `max_concurrent` is 0, no semaphore is created and concurrency is
+    /// unlimited. Otherwise, a semaphore with `max_concurrent` permits is
+    /// allocated.
+    #[allow(dead_code)]
+    pub fn new(dedup_sets: SharedDedupSets, max_concurrent: usize) -> Self {
+        let semaphore = if max_concurrent > 0 {
+            Some(Arc::new(Semaphore::new(max_concurrent)))
+        } else {
+            None
+        };
+
+        tracing::info!(
+            max_concurrent,
+            "dispatcher initialized ({})",
+            if max_concurrent == 0 {
+                "unlimited"
+            } else {
+                "concurrency limited"
+            }
+        );
+
+        Self {
+            dedup_sets,
+            semaphore,
+            active_count: Arc::new(AtomicUsize::new(0)),
+            max_concurrent,
+        }
+    }
+
+    /// Acquire a concurrency permit from the semaphore.
+    ///
+    /// Returns `Ok(Some(permit))` when concurrency is limited — the permit
+    /// must be held for the duration of the workflow and is released
+    /// automatically when dropped.
+    ///
+    /// Returns `Ok(None)` when concurrency is unlimited (`max_concurrent == 0`).
+    ///
+    /// Returns `Err` if the semaphore is closed (should not happen in normal
+    /// operation).
+    #[allow(dead_code)]
+    pub async fn acquire_permit(
+        &self,
+    ) -> Result<Option<OwnedSemaphorePermit>, tokio::sync::AcquireError> {
+        match &self.semaphore {
+            Some(sem) => {
+                tracing::debug!(
+                    active = self.active_count.load(Ordering::Relaxed),
+                    max = self.max_concurrent,
+                    "acquiring concurrency permit"
+                );
+                let permit = sem.clone().acquire_owned().await?;
+                self.active_count.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(
+                    active = self.active_count.load(Ordering::Relaxed),
+                    max = self.max_concurrent,
+                    "concurrency permit acquired"
+                );
+                Ok(Some(permit))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Create a wrapper future that holds the permit for the duration of
+    /// the inner future, releasing it automatically on completion (success
+    /// or failure).
+    ///
+    /// If concurrency is unlimited (`max_concurrent == 0`), the inner future
+    /// runs directly without any permit management.
+    #[allow(dead_code)]
+    pub async fn run_with_permit<F>(&self, fut: F) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        let permit = self.acquire_permit().await.ok().flatten();
+        let result = fut.await;
+        if permit.is_some() {
+            self.active_count.fetch_sub(1, Ordering::Relaxed);
+        }
+        drop(permit);
+        result
+    }
+
+    /// Returns the configured maximum concurrent workflows (0 = unlimited).
+    #[allow(dead_code)]
+    pub fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+    }
+
+    /// Returns the number of currently active (held) permits.
+    #[allow(dead_code)]
+    pub fn active_count(&self) -> usize {
+        self.active_count.load(Ordering::Relaxed)
+    }
+}
 
 /// Build a dedup key from owner, repo, and event ID.
 ///
@@ -990,5 +1124,136 @@ mod tests {
         assert!(loaded.completed.contains("owner/repo/42"));
         assert!(loaded.permanently_failed.contains("owner/repo/7"));
         assert!(loaded.in_flight.is_empty()); // in_flight is always empty on load
+    }
+
+    // --- Dispatcher and Semaphore tests ---
+
+    #[test]
+    fn test_dispatcher_new_unlimited() {
+        let dedup = new_dedup_sets();
+        let dispatcher = Dispatcher::new(dedup, 0);
+        assert_eq!(dispatcher.max_concurrent(), 0);
+        assert_eq!(dispatcher.active_count(), 0);
+    }
+
+    #[test]
+    fn test_dispatcher_new_limited() {
+        let dedup = new_dedup_sets();
+        let dispatcher = Dispatcher::new(dedup, 2);
+        assert_eq!(dispatcher.max_concurrent(), 2);
+        assert_eq!(dispatcher.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_acquire_permit_unlimited_returns_none() {
+        let dedup = new_dedup_sets();
+        let dispatcher = Dispatcher::new(dedup, 0);
+        let permit = dispatcher.acquire_permit().await.unwrap();
+        assert!(permit.is_none(), "unlimited mode should return None permit");
+    }
+
+    #[tokio::test]
+    async fn test_acquire_permit_limited_returns_some() {
+        let dedup = new_dedup_sets();
+        let dispatcher = Dispatcher::new(dedup, 2);
+        let permit = dispatcher.acquire_permit().await.unwrap();
+        assert!(permit.is_some(), "limited mode should return Some permit");
+        assert_eq!(dispatcher.active_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_permit_released_on_drop() {
+        let dedup = new_dedup_sets();
+        let dispatcher = Dispatcher::new(dedup, 2);
+
+        // Acquire a permit via run_with_permit and verify active count
+        let active = Arc::new(AtomicUsize::new(0));
+        let ac = active.clone();
+        let d = dispatcher.clone();
+        d.run_with_permit(async move {
+            ac.store(1, Ordering::SeqCst);
+        })
+        .await;
+        // After run_with_permit completes, active count should be 0
+        assert_eq!(dispatcher.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_run_with_permit_unlimited() {
+        let dedup = new_dedup_sets();
+        let dispatcher = Dispatcher::new(dedup, 0);
+
+        let result = dispatcher.run_with_permit(async { 42 }).await;
+        assert_eq!(result, 42);
+        assert_eq!(dispatcher.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_run_with_permit_limited() {
+        let dedup = new_dedup_sets();
+        let dispatcher = Dispatcher::new(dedup, 2);
+
+        let result = dispatcher.run_with_permit(async { 42 }).await;
+        assert_eq!(result, 42);
+        assert_eq!(
+            dispatcher.active_count(),
+            0,
+            "active count should return to 0 after completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_semaphore_limits_concurrency() {
+        let dedup = new_dedup_sets();
+        let dispatcher = Dispatcher::new(dedup, 2);
+
+        let active_count = Arc::new(AtomicUsize::new(0));
+        let max_observed = Arc::new(AtomicUsize::new(0));
+        let mut handles = vec![];
+
+        for _ in 0..5 {
+            let d = dispatcher.clone();
+            let ac = active_count.clone();
+            let mo = max_observed.clone();
+            handles.push(tokio::spawn(async move {
+                d.run_with_permit(async {
+                    let current = ac.fetch_add(1, Ordering::SeqCst) + 1;
+                    mo.fetch_max(current, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    ac.fetch_sub(1, Ordering::SeqCst);
+                })
+                .await
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // With max_concurrent=2, we should never see more than 2 active at once
+        assert!(
+            max_observed.load(Ordering::SeqCst) <= 2,
+            "max concurrent exceeded: observed {}",
+            max_observed.load(Ordering::SeqCst)
+        );
+        // With 5 tasks and max_concurrent=2, we should have seen at least 2 concurrent at some point
+        assert!(
+            max_observed.load(Ordering::SeqCst) >= 2,
+            "expected at least 2 concurrent, observed {}",
+            max_observed.load(Ordering::SeqCst)
+        );
+        // All tasks should be done, active count should be 0
+        assert_eq!(active_count.load(Ordering::SeqCst), 0);
+        assert_eq!(dispatcher.active_count(), 0);
+    }
+
+    #[test]
+    fn test_dispatcher_clone_shares_state() {
+        let dedup = new_dedup_sets();
+        let dispatcher = Dispatcher::new(dedup, 2);
+        let clone = dispatcher.clone();
+
+        // Both should share the same max_concurrent
+        assert_eq!(dispatcher.max_concurrent(), clone.max_concurrent());
     }
 }
