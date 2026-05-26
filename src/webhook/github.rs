@@ -717,4 +717,205 @@ mod tests {
         let result = parse_github_event("push", b"{}");
         assert!(result.is_err());
     }
+
+    // --- Additional HMAC verification tests ---
+
+    #[test]
+    fn test_verify_empty_signature() {
+        // An empty string is not a valid signature (no "sha256=" prefix)
+        let payload = b"test payload data";
+        let secret = "my-webhook-secret";
+        let result = verify_github_signature(payload, "", secret);
+        assert!(matches!(
+            result,
+            Err(GitHubWebhookError::InvalidSignatureFormat)
+        ));
+    }
+
+    #[test]
+    fn test_verify_empty_payload_with_valid_signature() {
+        // Empty payload should still verify correctly with the right HMAC
+        let payload = b"";
+        let secret = "secret";
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(payload);
+        let result = mac.finalize().into_bytes();
+        let expected_hex = hex::encode(result);
+        let signature = format!("sha256={expected_hex}");
+
+        assert!(verify_github_signature(payload, &signature, secret).is_ok());
+    }
+
+    // --- Integration tests for handle_github_webhook ---
+
+    fn make_signature(payload: &[u8], secret: &str) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(payload);
+        let result = mac.finalize().into_bytes();
+        format!("sha256={}", hex::encode(result))
+    }
+
+    #[test]
+    fn test_handle_github_webhook_full_pipeline_issues_assigned() {
+        let secret = "test-secret";
+        let body = r#"{
+            "action": "assigned",
+            "issue": {
+                "number": 42,
+                "title": "Bug",
+                "body": "desc",
+                "assignee": {"login": "alice"},
+                "assignees": [{"login": "alice"}]
+            },
+            "sender": {"login": "bob"}
+        }"#;
+        let payload = body.as_bytes();
+        let signature = make_signature(payload, secret);
+
+        let result = handle_github_webhook(&signature, "issues", payload, secret);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert!(matches!(
+            event.trigger_type,
+            TriggerType::GithubIssueAssigned { .. }
+        ));
+        assert_eq!(event.event_id, "issue-42");
+    }
+
+    #[test]
+    fn test_handle_github_webhook_full_pipeline_issue_comment() {
+        let secret = "test-secret";
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 12345,
+                "body": "@alice please review"
+            },
+            "issue": {
+                "number": 42,
+                "title": "Some issue",
+                "assignees": []
+            },
+            "sender": {"login": "charlie"}
+        }"#;
+        let payload = body.as_bytes();
+        let signature = make_signature(payload, secret);
+
+        let result = handle_github_webhook(&signature, "issue_comment", payload, secret);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert!(matches!(
+            event.trigger_type,
+            TriggerType::GithubIssueCommentMention { .. }
+        ));
+        assert_eq!(event.event_id, "issue-42-comment-12345");
+    }
+
+    #[test]
+    fn test_handle_github_webhook_full_pipeline_pr_review() {
+        let secret = "test-secret";
+        let body = r#"{
+            "action": "submitted",
+            "review": {
+                "id": 999,
+                "body": "LGTM",
+                "user": {"login": "reviewer"}
+            },
+            "pull_request": {"number": 7},
+            "sender": {"login": "reviewer"}
+        }"#;
+        let payload = body.as_bytes();
+        let signature = make_signature(payload, secret);
+
+        let result = handle_github_webhook(&signature, "pull_request_review", payload, secret);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert!(matches!(
+            event.trigger_type,
+            TriggerType::GithubPullRequestReview { .. }
+        ));
+        assert_eq!(event.event_id, "pr-7-review-999");
+    }
+
+    #[test]
+    fn test_handle_github_webhook_full_pipeline_pr_review_comment() {
+        let secret = "test-secret";
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 555,
+                "body": "Nit: fix typo",
+                "pull_request_review_id": 999
+            },
+            "pull_request": {"number": 7},
+            "sender": {"login": "commenter"}
+        }"#;
+        let payload = body.as_bytes();
+        let signature = make_signature(payload, secret);
+
+        let result =
+            handle_github_webhook(&signature, "pull_request_review_comment", payload, secret);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert!(matches!(
+            event.trigger_type,
+            TriggerType::GithubPullRequestCommentMention { .. }
+        ));
+        assert_eq!(event.event_id, "pr-7-comment-555");
+    }
+
+    #[test]
+    fn test_handle_github_webhook_invalid_signature_returns_unauthorized() {
+        let secret = "secret";
+        let body = r#"{"action":"assigned","issue":{"number":1,"title":"t","assignees":[]},"sender":{"login":"a"}}"#;
+        let wrong_sig = "sha256=0000000000000000000000000000000000000000000000000000000000000000";
+
+        let result = handle_github_webhook(wrong_sig, "issues", body.as_bytes(), secret);
+        assert!(matches!(result, Err(WebhookError::Unauthorized(_))));
+    }
+
+    #[test]
+    fn test_handle_github_webhook_unknown_event_returns_no_matching_trigger() {
+        let secret = "secret";
+        let body = b"{\"action\":\"assigned\"}";
+        let signature = make_signature(body, secret);
+
+        // "push" is unknown — parse_github_event returns UnknownEventType,
+        // which maps to NoMatchingTrigger
+        let result = handle_github_webhook(&signature, "push", body, secret);
+        assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
+    }
+
+    #[test]
+    fn test_handle_github_webhook_no_matching_action_returns_no_matching_trigger() {
+        let secret = "secret";
+        // issues + action "opened" should not map to any trigger
+        let body = r#"{"action":"opened","issue":{"number":1,"title":"t","assignees":[]},"sender":{"login":"a"}}"#;
+        let payload = body.as_bytes();
+        let signature = make_signature(payload, secret);
+
+        let result = handle_github_webhook(&signature, "issues", payload, secret);
+        assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
+    }
+
+    #[test]
+    fn test_handle_github_webhook_malformed_json_returns_bad_request() {
+        let secret = "secret";
+        let body = b"not json";
+        let signature = make_signature(body, secret);
+
+        let result = handle_github_webhook(&signature, "issues", body, secret);
+        assert!(matches!(result, Err(WebhookError::BadRequest(_))));
+    }
+
+    #[test]
+    fn test_handle_github_webhook_invalid_signature_format_returns_unauthorized() {
+        let secret = "secret";
+        let body = b"{}";
+        // Missing "sha256=" prefix
+        let bad_sig = "abcdef0123456789";
+
+        let result = handle_github_webhook(bad_sig, "issues", body, secret);
+        assert!(matches!(result, Err(WebhookError::Unauthorized(_))));
+    }
 }

@@ -576,4 +576,222 @@ mod tests {
         let event = GitLabEvent::NoteHook(payload);
         assert_eq!(event.repo_path(), "internal-team/backend-service");
     }
+
+    // ── Integration tests for handle_gitlab_webhook ────────────────────
+
+    #[test]
+    fn test_handle_gitlab_webhook_full_pipeline_issue_assigned() {
+        let secret = "test-secret";
+        let body = serde_json::json!({
+            "object_kind": "issue",
+            "event_type": "Issue Hook",
+            "object_attributes": {
+                "id": 42,
+                "action": "update",
+                "iid": 7
+            },
+            "project": {
+                "id": 1,
+                "path_with_namespace": "internal-team/backend-service"
+            }
+        });
+        let body_bytes = body.to_string().into_bytes();
+
+        let result = handle_gitlab_webhook(secret, "Issue Hook", &body_bytes, secret);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert!(matches!(
+            event.trigger_type,
+            TriggerType::GitlabIssueAssigned { .. }
+        ));
+        assert_eq!(event.repo_path, "internal-team/backend-service");
+        assert_eq!(event.event_id, "issue-7");
+    }
+
+    #[test]
+    fn test_handle_gitlab_webhook_full_pipeline_note_on_issue() {
+        let secret = "gl-token";
+        let body = serde_json::json!({
+            "object_kind": "note",
+            "event_type": "Note Hook",
+            "object_attributes": {
+                "id": 100,
+                "note": "@bot review this",
+                "note_id": 99,
+                "iid": 7
+            },
+            "project": {
+                "id": 1,
+                "path_with_namespace": "owner/repo"
+            },
+            "noteable_type": "Issue"
+        });
+        let body_bytes = body.to_string().into_bytes();
+
+        let result = handle_gitlab_webhook(secret, "Note Hook", &body_bytes, secret);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert!(matches!(
+            event.trigger_type,
+            TriggerType::GitlabIssueMention { .. }
+        ));
+        assert_eq!(event.repo_path, "owner/repo");
+    }
+
+    #[test]
+    fn test_handle_gitlab_webhook_full_pipeline_note_on_mr() {
+        let secret = "gl-token";
+        let body = serde_json::json!({
+            "object_kind": "note",
+            "event_type": "Note Hook",
+            "object_attributes": {
+                "id": 200,
+                "note": "LGTM",
+                "note_id": 150,
+                "iid": 12
+            },
+            "project": {
+                "id": 1,
+                "path_with_namespace": "owner/repo"
+            },
+            "noteable_type": "MergeRequest"
+        });
+        let body_bytes = body.to_string().into_bytes();
+
+        let result = handle_gitlab_webhook(secret, "Note Hook", &body_bytes, secret);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert!(matches!(
+            event.trigger_type,
+            TriggerType::GitlabMergeRequestReview { .. }
+        ));
+    }
+
+    #[test]
+    fn test_handle_gitlab_webhook_full_pipeline_diff_note_on_mr() {
+        let secret = "gl-token";
+        let body = serde_json::json!({
+            "object_kind": "note",
+            "event_type": "Note Hook",
+            "object_attributes": {
+                "id": 300,
+                "note": "nit: typo",
+                "note_id": 250,
+                "iid": 12
+            },
+            "project": {
+                "id": 1,
+                "path_with_namespace": "owner/repo"
+            },
+            "noteable_type": "MergeRequest",
+            "system": {
+                "action": "DiffNote"
+            }
+        });
+        let body_bytes = body.to_string().into_bytes();
+
+        let result = handle_gitlab_webhook(secret, "Note Hook", &body_bytes, secret);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert!(matches!(
+            event.trigger_type,
+            TriggerType::GitlabMergeRequestCommentMention { .. }
+        ));
+    }
+
+    #[test]
+    fn test_handle_gitlab_webhook_invalid_token_returns_unauthorized() {
+        let secret = "correct-token";
+        let body = serde_json::json!({
+            "object_kind": "issue",
+            "object_attributes": {
+                "id": 1,
+                "action": "update",
+                "iid": 1
+            },
+            "project": {
+                "id": 1,
+                "path_with_namespace": "owner/repo"
+            }
+        });
+        let body_bytes = body.to_string().into_bytes();
+
+        let result = handle_gitlab_webhook("wrong-token", "Issue Hook", &body_bytes, secret);
+        assert!(matches!(result, Err(WebhookError::Unauthorized(_))));
+    }
+
+    #[test]
+    fn test_handle_gitlab_webhook_invalid_json_returns_bad_request() {
+        let secret = "token";
+        let body = b"not json";
+
+        let result = handle_gitlab_webhook(secret, "Issue Hook", body, secret);
+        assert!(matches!(result, Err(WebhookError::BadRequest(_))));
+    }
+
+    #[test]
+    fn test_handle_gitlab_webhook_unsupported_kind_returns_no_matching_trigger() {
+        let secret = "token";
+        let body = serde_json::json!({
+            "object_kind": "push",
+            "object_attributes": {
+                "id": 1
+            },
+            "project": {
+                "id": 1,
+                "path_with_namespace": "owner/repo"
+            }
+        });
+        let body_bytes = body.to_string().into_bytes();
+
+        let result = handle_gitlab_webhook(secret, "Push Hook", &body_bytes, secret);
+        assert!(matches!(result, Err(WebhookError::BadRequest(_))));
+    }
+
+    #[test]
+    fn test_handle_gitlab_webhook_issue_open_returns_no_matching_trigger() {
+        // Issue with action "open" should not map to any trigger
+        let secret = "token";
+        let body = serde_json::json!({
+            "object_kind": "issue",
+            "event_type": "Issue Hook",
+            "object_attributes": {
+                "id": 1,
+                "action": "open",
+                "iid": 1
+            },
+            "project": {
+                "id": 1,
+                "path_with_namespace": "owner/repo"
+            }
+        });
+        let body_bytes = body.to_string().into_bytes();
+
+        let result = handle_gitlab_webhook(secret, "Issue Hook", &body_bytes, secret);
+        assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
+    }
+
+    #[test]
+    fn test_handle_gitlab_webhook_note_unknown_noteable_type_returns_no_matching_trigger() {
+        let secret = "token";
+        let body = serde_json::json!({
+            "object_kind": "note",
+            "event_type": "Note Hook",
+            "object_attributes": {
+                "id": 1,
+                "note": "a comment",
+                "note_id": 1,
+                "iid": 1
+            },
+            "project": {
+                "id": 1,
+                "path_with_namespace": "owner/repo"
+            },
+            "noteable_type": "Commit"
+        });
+        let body_bytes = body.to_string().into_bytes();
+
+        let result = handle_gitlab_webhook(secret, "Note Hook", &body_bytes, secret);
+        assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
+    }
 }
