@@ -77,7 +77,7 @@ This document outlines the phased implementation approach for Yoke. It complemen
 ### Scope
 - mpsc channel: webhook handler → dispatcher
 - Dedup sets: `in_flight`, `completed`, `permanently_failed`
-- Dedup key format: `{owner}/{repo}/{workspace_id}`
+- Dedup key format: `{owner}/{repo}/{event_id}`
 - Persistence: `completed.json`, `failed.json` with atomic writes
 - tokio semaphore for `[runtime].max_concurrent`
 - Single consumer loop (no races on dedup check)
