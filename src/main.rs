@@ -5,6 +5,7 @@ use std::time::Duration;
 use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
+
 use yoke::cli;
 use yoke::cli::{Command, WebhooksSubcommand};
 use yoke::config;
@@ -80,7 +81,7 @@ async fn handle_webhooks_command(
     let client = match webhooks::WebhookClient::new(&config.platform, &owner, gitlab_url) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Error creating webhook client: {e}");
+            tracing::error!(error = %e, "Error creating webhook client");
             std::process::exit(1);
         }
     };
@@ -89,19 +90,19 @@ async fn handle_webhooks_command(
         WebhooksSubcommand::Add { workflows } => {
             let workflows_path = workflows.as_deref().unwrap_or(workflows_dir);
             if let Err(e) = webhooks::webhooks_add(config, &client, workflows_path).await {
-                eprintln!("Error: {e}");
+                tracing::error!(error = %e, "Error adding webhooks");
                 std::process::exit(1);
             }
         }
         WebhooksSubcommand::Remove => {
             if let Err(e) = webhooks::webhooks_remove(config, &client).await {
-                eprintln!("Error: {e}");
+                tracing::error!(error = %e, "Error removing webhooks");
                 std::process::exit(1);
             }
         }
         WebhooksSubcommand::List => {
             if let Err(e) = webhooks::webhooks_list(config, &client).await {
-                eprintln!("Error: {e}");
+                tracing::error!(error = %e, "Error listing webhooks");
                 std::process::exit(1);
             }
         }
@@ -111,11 +112,16 @@ async fn handle_webhooks_command(
 #[tokio::main]
 async fn main() {
     // Initialize tracing subscriber for structured logging
+    // Timestamps in HH:MM:SS format (local time). RUST_LOG controls levels at runtime.
+    let timer = tracing_subscriber::fmt::time::LocalTime::new(
+        time::format_description::parse("[hour]:[minute]:[second]").expect("valid time format"),
+    );
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_timer(timer)
         .init();
 
     let args = cli::Cli::parse();
@@ -125,7 +131,7 @@ async fn main() {
         let config = match Config::load(&args.config) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Error loading config from {}: {e}", args.config.display());
+                tracing::error!(path = %args.config.display(), error = %e, "Error loading config");
                 std::process::exit(1);
             }
         };
@@ -138,7 +144,7 @@ async fn main() {
     let mut config = match Config::load(&args.config) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Error loading config from {}: {e}", args.config.display());
+            tracing::error!(path = %args.config.display(), error = %e, "Error loading config");
             std::process::exit(1);
         }
     };
@@ -158,16 +164,17 @@ async fn main() {
 
     // Validate required environment variables before starting
     if let Err(e) = config::validate_env_vars(&config.platform) {
-        eprintln!("Configuration error: {e}");
+        tracing::error!(error = %e, "Configuration error");
         std::process::exit(1);
     }
 
     let workflows = match workflow::load_workflows(&args.workflows) {
         Ok(w) => w,
         Err(e) => {
-            eprintln!(
-                "Error loading workflows from {}: {e}",
-                args.workflows.display()
+            tracing::error!(
+                path = %args.workflows.display(),
+                error = %e,
+                "Error loading workflows"
             );
             std::process::exit(1);
         }
@@ -176,13 +183,13 @@ async fn main() {
     // Validate that all agents referenced in workflow steps exist in config
     let workflow_refs: Vec<workflow::Workflow> = workflows.iter().map(|(_, w)| w.clone()).collect();
     if let Err(e) = config::resolve_agents(&config, &workflow_refs) {
-        eprintln!("Configuration error: {e}");
+        tracing::error!(error = %e, "Configuration error");
         std::process::exit(1);
     }
 
     // Validate that all trigger types match the configured platform
     if let Err(e) = workflow::validate_triggers(&config.platform, &workflows) {
-        eprintln!("Configuration error: {e}");
+        tracing::error!(error = %e, "Configuration error");
         std::process::exit(1);
     }
 
@@ -264,7 +271,7 @@ async fn main() {
     )
     .await
     {
-        eprintln!("Server error: {e}");
+        tracing::error!(error = %e, "Server error");
         std::process::exit(1);
     }
 }
