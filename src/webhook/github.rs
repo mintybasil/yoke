@@ -11,7 +11,6 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Errors that can occur during GitHub webhook processing.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum GitHubWebhookError {
     /// The X-Hub-Signature-256 header is missing.
     MissingSignature,
@@ -72,7 +71,6 @@ pub enum GitHubPayload {
 
 /// Payload for GitHub `issues` events.
 #[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct IssuesPayload {
     pub action: String,
     pub issue: IssueDetails,
@@ -81,7 +79,6 @@ pub struct IssuesPayload {
 
 /// Payload for GitHub `issue_comment` events.
 #[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct IssueCommentPayload {
     pub action: String,
     pub comment: CommentDetails,
@@ -91,7 +88,6 @@ pub struct IssueCommentPayload {
 
 /// Payload for GitHub `pull_request_review` events.
 #[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct PullRequestReviewPayload {
     pub action: String,
     pub review: ReviewDetails,
@@ -101,7 +97,6 @@ pub struct PullRequestReviewPayload {
 
 /// Payload for GitHub `pull_request_review_comment` events.
 #[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct PullRequestReviewCommentPayload {
     pub action: String,
     pub comment: ReviewCommentDetails,
@@ -114,7 +109,6 @@ pub struct PullRequestReviewCommentPayload {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct IssueDetails {
     pub number: u64,
     pub title: String,
@@ -132,13 +126,11 @@ pub struct UserDetails {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct SenderDetails {
     pub login: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct CommentDetails {
     pub id: u64,
     #[serde(default)]
@@ -146,7 +138,6 @@ pub struct CommentDetails {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct ReviewDetails {
     pub id: u64,
     #[serde(default)]
@@ -155,7 +146,6 @@ pub struct ReviewDetails {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct ReviewCommentDetails {
     pub id: u64,
     #[serde(default)]

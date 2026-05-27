@@ -42,7 +42,6 @@ impl std::error::Error for TemplateError {}
 /// - `UnknownVariable` — a referenced variable is not in `vars`.
 /// - `SyntaxError` — a `{{` without matching `}}`, or a `{{}}` with no variable name.
 /// - `EmptyTemplate` — the rendered output is empty or whitespace-only.
-#[allow(dead_code)]
 pub fn render(template: &str, vars: &HashMap<String, String>) -> Result<String, TemplateError> {
     let mut result = String::with_capacity(template.len());
     let bytes = template.as_bytes();

@@ -20,16 +20,9 @@ use crate::webhook;
 #[derive(Clone)]
 pub struct AppState {
     pub webhook_handler: webhook::WebhookHandler,
-    #[allow(dead_code)]
     pub dispatcher: Dispatcher,
 }
 
-/// HTTP server encapsulating an axum Router and bind address.
-#[allow(dead_code)]
-pub struct Server {
-    router: Router,
-    addr: SocketAddr,
-}
 
 /// Health check handler — returns `{"status": "ok"}`.
 async fn health() -> Json<Value> {

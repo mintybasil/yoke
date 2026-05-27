@@ -10,7 +10,6 @@ use tokio::sync::mpsc;
 /// Internal representation of a parsed and verified webhook event,
 /// ready to be sent to the dispatcher channel.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TriggerEvent {
     /// Which trigger type matched.
     pub trigger_type: TriggerType,
