@@ -1,5 +1,5 @@
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -40,6 +40,14 @@ pub struct Webhook {
     pub active: bool,
 }
 
+/// Configuration for creating or updating a GitHub webhook.
+#[derive(Debug, Clone, Serialize)]
+pub struct WebhookConfig {
+    pub url: String,
+    pub secret: String,
+    pub events: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -68,6 +76,12 @@ impl GitHubClient {
     }
 
     // -- Internal helpers ----------------------------------------------------
+
+    /// Find a webhook in a list by its URL. Used for idempotency checks.
+    #[allow(dead_code)]
+    fn find_webhook_by_url<'a>(&self, webhooks: &'a [Webhook], url: &str) -> Option<&'a Webhook> {
+        webhooks.iter().find(|w| w.url == url)
+    }
 
     /// Build the authentication + user-agent headers that every request needs.
     fn auth_headers(&self) -> reqwest::header::HeaderMap {
@@ -145,6 +159,60 @@ impl GitHubClient {
         }
 
         Ok(all_webhooks)
+    }
+
+    /// Create a new webhook for the given repository.
+    pub async fn create_webhook(
+        &self,
+        owner: &str,
+        repo: &str,
+        config: &WebhookConfig,
+    ) -> Result<Webhook, GitHubError> {
+        let url = format!("{}/repos/{}/{}/hooks", self.base_url, owner, repo);
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(self.auth_headers())
+            .json(config)
+            .send()
+            .await?;
+
+        if response.status() != reqwest::StatusCode::OK
+            && response.status() != reqwest::StatusCode::CREATED
+        {
+            return Err(Self::map_status(response.status()));
+        }
+
+        response.json().await.map_err(GitHubError::RequestError)
+    }
+
+    /// Update an existing webhook for the given repository.
+    pub async fn update_webhook(
+        &self,
+        owner: &str,
+        repo: &str,
+        webhook_id: u64,
+        config: &WebhookConfig,
+    ) -> Result<Webhook, GitHubError> {
+        let url = format!(
+            "{}/repos/{}/{}/hooks/{}",
+            self.base_url, owner, repo, webhook_id
+        );
+
+        let response = self
+            .client
+            .patch(&url)
+            .headers(self.auth_headers())
+            .json(config)
+            .send()
+            .await?;
+
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(Self::map_status(response.status()));
+        }
+
+        response.json().await.map_err(GitHubError::RequestError)
     }
 }
 
@@ -285,5 +353,132 @@ mod tests {
         let result = client.list_webhooks("owner", "repo").await;
 
         assert!(matches!(result, Err(GitHubError::RateLimited)));
+    }
+
+    #[tokio::test]
+    async fn test_create_webhook_success() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let mock_response = r#"{ "id": 456, "url": "https://api.github.com/repos/owner/repo/hooks/456", "secret": null, "events": ["push"], "active": true }"#;
+
+        server
+            .mock("POST", "/repos/owner/repo/hooks")
+            .with_status(201)
+            .with_body(mock_response)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "http://example.com/webhook".to_string(),
+            secret: "secret123".to_string(),
+            events: vec!["push".to_string()],
+        };
+        let result = client
+            .create_webhook("owner", "repo", &config)
+            .await
+            .unwrap();
+
+        assert_eq!(result.id, 456);
+    }
+
+    #[tokio::test]
+    async fn test_update_webhook_success() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let mock_response = r#"{ "id": 456, "url": "https://api.github.com/repos/owner/repo/hooks/456", "secret": null, "events": ["push", "pull_request"], "active": true }"#;
+
+        server
+            .mock("PATCH", "/repos/owner/repo/hooks/456")
+            .with_status(200)
+            .with_body(mock_response)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "http://example.com/webhook".to_string(),
+            secret: "new-secret".to_string(),
+            events: vec!["push".to_string(), "pull_request".to_string()],
+        };
+        let result = client
+            .update_webhook("owner", "repo", 456, &config)
+            .await
+            .unwrap();
+
+        assert_eq!(result.id, 456);
+        assert_eq!(result.events, vec!["push", "pull_request"]);
+    }
+
+    #[tokio::test]
+    async fn test_create_webhook_conflict() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("POST", "/repos/owner/repo/hooks")
+            .with_status(422)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "http://example.com/webhook".to_string(),
+            secret: "s".to_string(),
+            events: vec![],
+        };
+        let result = client.create_webhook("owner", "repo", &config).await;
+
+        assert!(
+            matches!(result, Err(GitHubError::ApiError(msg)) if msg.contains("Unexpected status: 422"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_webhook_not_found() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("PATCH", "/repos/owner/repo/hooks/999")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "http://example.com/webhook".to_string(),
+            secret: "s".to_string(),
+            events: vec![],
+        };
+        let result = client.update_webhook("owner", "repo", 999, &config).await;
+
+        assert!(matches!(result, Err(GitHubError::NotFound)));
+    }
+
+    #[test]
+    fn test_find_webhook_by_url() {
+        let client = GitHubClient::new("t".to_string(), None);
+        let webhooks = vec![
+            Webhook {
+                id: 1,
+                url: "u1".to_string(),
+                secret: None,
+                events: vec![],
+                active: true,
+            },
+            Webhook {
+                id: 2,
+                url: "u2".to_string(),
+                secret: None,
+                events: vec![],
+                active: true,
+            },
+        ];
+
+        assert_eq!(client.find_webhook_by_url(&webhooks, "u2").unwrap().id, 2);
+        assert!(client.find_webhook_by_url(&webhooks, "u3").is_none());
     }
 }
