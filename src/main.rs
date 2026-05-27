@@ -113,7 +113,6 @@ async fn handle_webhooks_command(
 async fn main() {
     // Initialize tracing subscriber for structured logging
     // Timestamps in HH:MM:SS format (local time). RUST_LOG controls levels at runtime.
-    // Timestamps in HH:MM:SS format (local time)
     let timer = tracing_subscriber::fmt::time::LocalTime::new(
         time::format_description::parse("[hour]:[minute]:[second]").expect("valid time format"),
     );
