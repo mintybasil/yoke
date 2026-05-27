@@ -4,19 +4,102 @@ A Rust daemon that receives webhook events from GitHub or GitLab and runs multi-
 
 ## Quick Start
 
-```bash
-# Build
-cargo build
+This walkthrough shows a complete setup from zero to a running Yoke instance with webhooks configured on GitHub.
 
+### 1. Build
+
+```bash
+cargo build
+```
+
+### 2. Create a config file
+
+Create `config.toml` in your project directory:
+
+```toml
+platform = "github"
+
+repos = [
+    { owner = "your-org", repo = "your-repo" },
+]
+
+[[agents]]
+name = "pm"
+base_url = "http://localhost:8000"
+
+[[agents]]
+name = "swe"
+base_url = "http://localhost:8001"
+
+[runtime]
+max_concurrent = 2
+workdir = "~/.yoke"
+
+[server]
+host = "0.0.0.0"
+port = 8644
+webhook_secret = "your-webhook-secret"
+```
+
+### 3. Create a workflow
+
+Create a `.toml` file in your workflows directory (default: current directory):
+
+```toml
+[trigger]
+type = "github_issue_assigned"
+assigned_to = "your-username"
+
+[git]
+clone = true
+worktree = true
+default_branch = "main"
+
+[[steps]]
+name = "Plan"
+agent = "pm"
+prompt_template = "Plan the issue: {{issue_title}}"
+
+[[steps]]
+name = "Implement"
+agent = "swe"
+prompt_template = "Implement the plan in plan.md"
+post_hooks = [{ type = "file_not_empty", path = "plan.md" }]
+```
+
+### 4. Set environment variables
+
+```bash
+export HERMES_API_KEY="your-hermes-api-key"
+export WEBHOOK_SECRET="your-webhook-secret"
+export GITHUB_TOKEN="your-github-token"
+```
+
+### 5. Register webhooks on your repositories
+
+```bash
+yoke --config config.toml webhooks add --workflows .
+```
+
+This reads your workflow trigger definitions and creates (or updates) the appropriate webhooks on each repository. The operation is idempotent — running it again will update existing webhooks rather than create duplicates.
+
+Verify the webhooks were created:
+
+```bash
+yoke --config config.toml webhooks list
+```
+
+### 6. Run Yoke
+
+```bash
 # Run with defaults (loads config.toml from current directory)
 cargo run
 
-# Run with custom config and workflows directory
+# Or specify config and workflows paths
 cargo run -- --config /path/to/config.toml --workflows /path/to/workflows
-
-# Override server host and port
-cargo run -- --host 127.0.0.1 --port 9000
 ```
+
+Yoke listens for webhook events on `http://{host}:{port}/webhook`. When an issue is assigned to the specified user, the workflow runs: the `pm` agent plans, then the `swe` agent implements.
 
 ## Configuration
 
