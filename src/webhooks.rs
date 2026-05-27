@@ -386,26 +386,24 @@ pub async fn webhooks_list(config: &Config, client: &WebhookClient) -> Result<()
         let repo_display = format!("{}/{}", repo.owner, repo.repo);
         match client.list_webhooks(&repo.repo).await {
             Ok(hooks) => {
-                println!("Webhooks for {}:", repo_display);
+                tracing::info!(repo = %repo_display, "Listing webhooks");
                 if hooks.is_empty() {
-                    println!("  (none)");
+                    tracing::info!("No webhooks found");
                 }
                 for hook in hooks {
-                    let secret_display = match &hook.secret {
-                        Some(s) if s.len() >= 4 => &s[s.len() - 4..],
-                        Some(s) => s,
-                        None => "(none)",
-                    };
                     let yoke_tag = if hook.url == yoke_url { " (yoke)" } else { "" };
-                    println!(
-                        "  [{}] {}{} events={:?} active={}",
-                        hook.id, hook.url, yoke_tag, hook.events, hook.active
+                    tracing::info!(
+                        id = hook.id,
+                        url = %hook.url,
+                        yoke = !yoke_tag.is_empty(),
+                        events = ?hook.events,
+                        active = hook.active,
+                        "Webhook found"
                     );
-                    println!("        secret=****{secret_display}");
                 }
             }
             Err(e) => {
-                eprintln!("Error listing webhooks for {repo_display}: {e}");
+                tracing::error!(repo = %repo_display, error = %e, "Error listing webhooks");
             }
         }
     }
@@ -429,7 +427,7 @@ pub async fn webhooks_remove(
         let hooks = match client.list_webhooks(&repo.repo).await {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("Error listing webhooks for {repo_display}: {e}");
+                tracing::error!(repo = %repo_display, error = %e, "Error listing webhooks");
                 summary.errors += 1;
                 continue;
             }
@@ -437,7 +435,7 @@ pub async fn webhooks_remove(
 
         let matching: Vec<&WebhookInfo> = hooks.iter().filter(|h| h.url == yoke_url).collect();
         if matching.is_empty() {
-            println!("{repo_display}: no Yoke webhooks found");
+            tracing::info!(repo = %repo_display, "No Yoke webhooks found");
             summary.not_found += 1;
             continue;
         }
@@ -445,20 +443,22 @@ pub async fn webhooks_remove(
         for hook in &matching {
             match client.delete_webhook(&repo.repo, hook.id).await {
                 Ok(()) => {
-                    println!("{repo_display}: deleted webhook {} ({})", hook.id, hook.url);
+                    tracing::info!(repo = %repo_display, id = hook.id, url = %hook.url, "Deleted webhook");
                     summary.deleted += 1;
                 }
                 Err(e) => {
-                    eprintln!("{repo_display}: error deleting webhook {}: {e}", hook.id);
+                    tracing::error!(repo = %repo_display, webhook_id = hook.id, error = %e, "Error deleting webhook");
                     summary.errors += 1;
                 }
             }
         }
     }
 
-    println!(
-        "\nSummary: deleted={}, not_found={}, errors={}",
-        summary.deleted, summary.not_found, summary.errors
+    tracing::info!(
+        deleted = summary.deleted,
+        not_found = summary.not_found,
+        errors = summary.errors,
+        "Webhook removal complete"
     );
     Ok(summary)
 }
@@ -488,7 +488,7 @@ pub async fn webhooks_add(
     let events = workflow::derive_required_events(&workflow_refs);
 
     if events.is_empty() {
-        eprintln!("Warning: no workflow triggers found; subscribing to no events");
+        tracing::warn!("No workflow triggers found; subscribing to no events");
     }
 
     let hook_config = WebhookConfig {
@@ -504,7 +504,7 @@ pub async fn webhooks_add(
         let existing = match client.list_webhooks(&repo.repo).await {
             Ok(hooks) => hooks,
             Err(e) => {
-                eprintln!("Error listing webhooks for {repo_display}: {e}");
+                tracing::error!(repo = %repo_display, error = %e, "Error listing webhooks");
                 summary.errors += 1;
                 continue;
             }
@@ -518,31 +518,34 @@ pub async fn webhooks_add(
                     .await
                 {
                     Ok(_) => {
-                        println!("{repo_display}: updated webhook {} ({})", hook.id, yoke_url);
+                        tracing::info!(repo = %repo_display, id = hook.id, url = %yoke_url, "Updated webhook");
                         summary.updated += 1;
                     }
                     Err(e) => {
-                        eprintln!("{repo_display}: error updating webhook {}: {e}", hook.id);
+                        tracing::error!(repo = %repo_display, webhook_id = hook.id, error = %e, "Error updating webhook");
                         summary.errors += 1;
                     }
                 }
             }
             None => match client.create_webhook(&repo.repo, &hook_config).await {
                 Ok(hook) => {
-                    println!("{repo_display}: created webhook {} ({})", hook.id, yoke_url);
+                    tracing::info!(repo = %repo_display, id = hook.id, url = %yoke_url, "Created webhook");
                     summary.created += 1;
                 }
                 Err(e) => {
-                    eprintln!("{repo_display}: error creating webhook: {e}");
+                    tracing::error!(repo = %repo_display, error = %e, "Error creating webhook");
                     summary.errors += 1;
                 }
             },
         }
     }
 
-    println!(
-        "\nSummary: created={}, updated={}, skipped={}, errors={}",
-        summary.created, summary.updated, summary.skipped, summary.errors
+    tracing::info!(
+        created = summary.created,
+        updated = summary.updated,
+        skipped = summary.skipped,
+        errors = summary.errors,
+        "Webhook setup complete"
     );
     Ok(summary)
 }

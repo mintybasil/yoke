@@ -38,6 +38,7 @@ use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use crate::logging;
 use crate::webhook::TriggerEvent;
 use crate::workflow::TriggerType;
+use tracing::instrument;
 
 /// A record of a permanently failed event, persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -418,6 +419,7 @@ impl Dispatcher {
     /// concurrency permit is acquired (if limiting is enabled), and a tokio
     /// task is spawned to run the workflow. On completion, the dedup state is
     /// updated and persisted to disk.
+    #[instrument(skip_all, fields(event_id = %msg.event.event_id, repo = %msg.event.repo_path))]
     #[allow(dead_code)]
     async fn spawn_workflow(&self, msg: DispatchMessage) {
         let event = msg.event;
@@ -545,6 +547,7 @@ impl Dispatcher {
     /// for a completed workflow. On success, the event key moves from
     /// `in_flight` to `completed`. On failure, it moves to
     /// `permanently_failed`.
+    #[instrument(skip(self))]
     #[allow(dead_code)]
     pub async fn on_workflow_complete(&self, key: &str, result: Result<(), String>) {
         let mut sets = self.dedup_sets.write().await;
@@ -791,7 +794,7 @@ pub fn load_persistence(workdir: &Path) -> DedupSets {
             &e,
             PersistenceError::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound
         ) {
-            eprintln!("Warning: Corrupted completed.json: {e}");
+            tracing::warn!(error = %e, "Corrupted completed.json, treating as empty");
         }
         HashSet::new()
     });
@@ -801,7 +804,7 @@ pub fn load_persistence(workdir: &Path) -> DedupSets {
             &e,
             PersistenceError::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound
         ) {
-            eprintln!("Warning: Corrupted failed.json: {e}");
+            tracing::warn!(error = %e, "Corrupted failed.json, treating as empty");
         }
         Vec::new()
     });

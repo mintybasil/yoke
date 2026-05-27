@@ -6,6 +6,7 @@ use crate::config::Platform;
 use crate::dispatcher::DispatchMessage;
 use crate::workflow::TriggerType;
 use tokio::sync::mpsc;
+use tracing::instrument;
 
 /// Internal representation of a parsed and verified webhook event,
 /// ready to be sent to the dispatcher channel.
@@ -69,6 +70,7 @@ impl WebhookHandler {
     /// `DispatchMessage` to the dispatcher channel.
     ///
     /// Returns `Ok(())` on success, or a `WebhookError` on failure.
+    #[instrument(skip(self, body, token_or_signature), fields(platform = ?self.platform, event_type = %event_header))]
     pub async fn handle_webhook(
         &self,
         token_or_signature: &str,
@@ -103,6 +105,7 @@ impl WebhookHandler {
 /// header, parses the event type, and maps events to trigger types.
 ///
 /// Returns `Ok(TriggerEvent)` on success, or a `WebhookError` on failure.
+#[instrument(skip(token_or_signature, body, secret), fields(platform = ?platform, event_type = %event_header))]
 pub fn dispatch_webhook(
     platform: &Platform,
     token_or_signature: &str,
@@ -110,12 +113,16 @@ pub fn dispatch_webhook(
     body: &[u8],
     secret: &str,
 ) -> Result<TriggerEvent, WebhookError> {
-    match platform {
+    let result = match platform {
         Platform::Gitlab => {
             gitlab::handle_gitlab_webhook(token_or_signature, event_header, body, secret)
         }
         Platform::Github => {
             github::handle_github_webhook(token_or_signature, event_header, body, secret)
         }
+    };
+    if let Ok(ref event) = result {
+        tracing::Span::current().record("event_id", &event.event_id);
     }
+    result
 }

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use crate::harness::HermesClient;
 use crate::workflow::Workflow;
+use tracing::instrument;
 
 /// Errors that can occur during workflow execution.
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +62,7 @@ impl WorkflowRunner {
     }
 
     /// Execute a single workflow step: pre-hooks → template render → API call → post-hooks.
+    #[instrument(skip(self), fields(step = %step.name))]
     pub async fn execute_step(
         &self,
         step: &crate::workflow::Step,
@@ -97,6 +99,7 @@ impl WorkflowRunner {
     /// Each step is executed in order via `execute_step`. On the first error,
     /// the workflow stops and returns `Err(RunnerError::Execution)`.
     /// On success, returns `Ok(())`.
+    #[instrument(skip(self), fields(workflow = %self.workflow.path))]
     pub async fn run(&mut self) -> Result<(), RunnerError> {
         for step in &self.workflow.steps {
             self.execute_step(step).await.map_err(|e| {

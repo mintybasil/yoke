@@ -15,6 +15,7 @@ use tower_http::trace::TraceLayer;
 use crate::config::{Platform, ServerConfig};
 use crate::dispatcher::{Dispatcher, new_dedup_sets};
 use crate::webhook;
+use tracing::instrument;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -54,6 +55,7 @@ async fn ready() -> &'static str {
 /// - `401 Unauthorized` if signature/token verification fails
 /// - `400 Bad Request` if the payload cannot be parsed
 /// - `503 Service Unavailable` if the dispatcher channel is full
+#[instrument(skip_all, fields(platform = ?state.webhook_handler.platform))]
 async fn webhook_handler(
     State(state): State<AppState>,
     headers: HeaderMap,

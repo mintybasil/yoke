@@ -5,7 +5,7 @@
 ```
 src/
   lib.rs       — Library root (pub mod re-exports for integration tests; includes webhooks module)
-  main.rs      — CLI entrypoint (loads config, loads workflows, validates agents & triggers, starts server; handles `webhooks` subcommand)
+  main.rs      — CLI entrypoint (initializes tracing subscriber, loads config, loads workflows, validates agents & triggers, starts server; handles `webhooks` subcommand)
   cli.rs       — CLI argument parsing (clap derive) with `webhooks` subcommand support
   config.rs    — Configuration parsing, validation, and error types
   dispatcher.rs — Concurrency control (Dispatcher + Semaphore), deduplication (DedupSets, SharedDedupSets), persistence, and workspace directory management
@@ -123,7 +123,8 @@ GitLab triggers: `gitlab_issue_assigned`, `gitlab_issue_mention`, `gitlab_merge_
 | `tower` | Service abstraction (ServiceExt for tests) |
 | `tower-http` | HTTP middleware (body limit, tracing, CORS) |
 | `tracing` | Structured logging |
-| `tracing-subscriber` | Log subscriber with env-filter support |
+| `tracing-subscriber` | Log subscriber with env-filter and local-time support |
+| `time` | Time formatting for HH:MM:SS timestamps in logs |
 | `url` | Parse and validate URLs in agent config |
 | `shellexpand` | Expand `~` in workdir paths |
 | `hmac` | HMAC-SHA256 computation for GitHub webhook signature verification |
@@ -182,3 +183,60 @@ Dispatcher tests cover:
 - Semaphore stress: high-concurrency with bounded permits
 
 The `tests/webhooks_tests.rs` file contains integration tests for the webhooks CLI command handlers. These tests use `mockito` to mock the GitHub API and verify the behavior of `webhooks_list`, `webhooks_remove`, and `webhooks_add` against various scenarios (empty repos, API errors, existing hooks, new hooks, URL matching).
+## Logging
+
+Yoke uses the `tracing` crate for structured logging. The subscriber is initialized in `main.rs` with `env-filter` support (controlled by `RUST_LOG`) and `HH:MM:SS` local-time timestamps.
+
+**Directive:** Include logs at high-level operation boundaries and within error paths. When adding new functionality, add `tracing::info!` at the completion of significant operations and `tracing::debug!`/`tracing::trace!` for internal detail.
+
+### Log Level Contract
+
+| Level | When to use |
+|-------|-------------|
+| `error!` | Unexpected failures requiring attention |
+| `warn!` | Unexpected conditions the system is continuing through |
+| `info!` | Significant, operator-relevant events (service start/stop, operation completion). Low volume, always useful |
+| `debug!` | Developer-relevant detail for debugging. Safe to enable in production during incidents |
+| `trace!` | Inner-loop, per-iteration detail. Only enabled during intense tracing sessions |
+
+### Spans and `#[instrument]`
+
+Use `#[instrument]` on functions to automatically carry context through the call stack. This is preferred over threading context into every log line.
+
+```rust
+#[instrument(skip(self, body), fields(platform = ?self.platform))]
+async fn handle_webhook(&self, ...) -> Result<(), WebhookError> {
+    // All logs here automatically carry platform and any recorded fields
+}
+```
+
+### Event Context
+
+Most activity in yoke relates to an Event with a unique `event_id`. Every log emitted while processing an event must include `event_id`. The preferred approach is `#[instrument]` on the event-handling function with `event_id` as a span field:
+
+```rust
+#[instrument(skip_all, fields(event_id = %msg.event.event_id, repo = %msg.event.repo_path))]
+async fn spawn_workflow(&self, msg: DispatchMessage) {
+    // All logs in this span carry event_id and repo automatically
+}
+```
+
+### No `println!` / `eprintln!`
+
+The codebase must not contain `println!` or `eprintln!` calls. All output goes through `tracing` macros. CLI output (e.g. `yoke webhooks list`) uses `tracing::info!` so it is captured by the subscriber and respect `RUST_LOG` filtering.
+
+### Controlling Log Output
+
+```bash
+# Default: info level
+cargo run
+
+# Debug level for the yoke crate
+RUST_LOG=yoke=debug cargo run
+
+# Only warnings and errors
+RUST_LOG=yoke=warn cargo run
+
+# Trace level for intense debugging
+RUST_LOG=yoke=trace cargo run
+```
