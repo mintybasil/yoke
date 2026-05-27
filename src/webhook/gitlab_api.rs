@@ -6,7 +6,7 @@
 //! [`crate::github_api::GitHubClient`].
 
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -46,6 +46,20 @@ pub struct GitLabWebhook {
     pub push_disabled: bool,
     #[serde(default)]
     pub active: bool,
+}
+
+/// Configuration for creating or updating a GitLab project webhook.
+#[derive(Debug, Clone, Serialize)]
+pub struct WebhookConfig {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_disabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +166,94 @@ impl GitLabClient {
 
         Ok(all_webhooks)
     }
+
+    /// Create a new webhook for the given project.
+    ///
+    /// `project_id` can be the numeric project ID or the URL-encoded
+    /// `namespace/project` path (e.g. `"group%2Fproject"`).
+    pub async fn create_webhook(
+        &self,
+        project_id: &str,
+        config: &WebhookConfig,
+    ) -> Result<GitLabWebhook, GitLabError> {
+        let url = format!("{}/projects/{}/webhooks", self.base_url, project_id);
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(self.auth_headers())
+            .json(config)
+            .send()
+            .await?;
+
+        if response.status() != reqwest::StatusCode::CREATED {
+            return Err(Self::map_status(response.status()));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GitLabError::ApiError(e.to_string()))
+    }
+
+    /// Update an existing webhook for the given project.
+    ///
+    /// `project_id` can be the numeric project ID or the URL-encoded
+    /// `namespace/project` path (e.g. `"group%2Fproject"`).
+    pub async fn update_webhook(
+        &self,
+        project_id: &str,
+        webhook_id: u64,
+        config: &WebhookConfig,
+    ) -> Result<GitLabWebhook, GitLabError> {
+        let url = format!(
+            "{}/projects/{}/webhooks/{}",
+            self.base_url, project_id, webhook_id
+        );
+
+        let response = self
+            .client
+            .put(&url)
+            .headers(self.auth_headers())
+            .json(config)
+            .send()
+            .await?;
+
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(Self::map_status(response.status()));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GitLabError::ApiError(e.to_string()))
+    }
+
+    /// Delete a webhook by ID for the given project.
+    ///
+    /// `project_id` can be the numeric project ID or the URL-encoded
+    /// `namespace/project` path (e.g. `"group%2Fproject"`).
+    pub async fn delete_webhook(&self, project_id: &str, webhook_id: u64) -> Result<(), GitLabError> {
+        let url = format!(
+            "{}/projects/{}/webhooks/{}",
+            self.base_url, project_id, webhook_id
+        );
+
+        let response = self
+            .client
+            .delete(&url)
+            .headers(self.auth_headers())
+            .send()
+            .await?;
+
+        if response.status() != reqwest::StatusCode::NO_CONTENT
+            && response.status() != reqwest::StatusCode::OK
+        {
+            return Err(Self::map_status(response.status()));
+        }
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +279,250 @@ pub fn find_webhook_by_url<'a>(
 mod tests {
     use super::*;
     use mockito::Server;
+
+    // -- WebhookConfig serialization tests ------------------------------------
+
+    #[test]
+    fn test_webhook_config_serialization_full() {
+        let config = WebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            token: Some("secret123".to_string()),
+            push_disabled: Some(false),
+            active: Some(true),
+            events: Some(vec!["push".to_string(), "merge_requests".to_string()]),
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["url"], "https://example.com/hook");
+        assert_eq!(json["token"], "secret123");
+        assert_eq!(json["push_disabled"], false);
+        assert_eq!(json["active"], true);
+        let events = json["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], "push");
+        assert_eq!(events[1], "merge_requests");
+    }
+
+    #[test]
+    fn test_webhook_config_serialization_minimal() {
+        let config = WebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            token: None,
+            push_disabled: None,
+            active: None,
+            events: None,
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["url"], "https://example.com/hook");
+        // Fields with skip_serializing_if should be absent when None
+        assert!(json.get("token").is_none());
+        assert!(json.get("push_disabled").is_none());
+        assert!(json.get("active").is_none());
+        assert!(json.get("events").is_none());
+    }
+
+    // -- create_webhook tests -------------------------------------------------
+
+    #[tokio::test]
+    async fn test_create_webhook_success() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let mock_response = r#"{
+            "id": 456,
+            "url": "https://example.com/hook",
+            "push_disabled": false,
+            "active": true
+        }"#;
+
+        server
+            .mock("POST", "/projects/1/webhooks")
+            .match_header("PRIVATE-TOKEN", "test-token")
+            .with_status(201)
+            .with_body(mock_response)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new("test-token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            token: Some("secret123".to_string()),
+            push_disabled: Some(false),
+            active: Some(true),
+            events: Some(vec!["push".to_string()]),
+        };
+        let result = client.create_webhook("1", &config).await.unwrap();
+
+        assert_eq!(result.id, 456);
+        assert_eq!(result.url, "https://example.com/hook");
+        assert!(!result.push_disabled);
+        assert!(result.active);
+    }
+
+    #[tokio::test]
+    async fn test_create_webhook_unauthorized() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("POST", "/projects/1/webhooks")
+            .with_status(401)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new("bad-token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            token: None,
+            push_disabled: None,
+            active: None,
+            events: None,
+        };
+        let result = client.create_webhook("1", &config).await;
+
+        assert!(matches!(result, Err(GitLabError::Unauthorized)));
+    }
+
+    // -- update_webhook tests -------------------------------------------------
+
+    #[tokio::test]
+    async fn test_update_webhook_success() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let mock_response = r#"{
+            "id": 456,
+            "url": "https://example.com/hook",
+            "push_disabled": true,
+            "active": true
+        }"#;
+
+        server
+            .mock("PUT", "/projects/1/webhooks/456")
+            .match_header("PRIVATE-TOKEN", "test-token")
+            .with_status(200)
+            .with_body(mock_response)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new("test-token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            token: Some("new-secret".to_string()),
+            push_disabled: Some(true),
+            active: Some(true),
+            events: Some(vec!["push".to_string(), "merge_requests".to_string()]),
+        };
+        let result = client.update_webhook("1", 456, &config).await.unwrap();
+
+        assert_eq!(result.id, 456);
+        assert_eq!(result.url, "https://example.com/hook");
+        assert!(result.push_disabled);
+        assert!(result.active);
+    }
+
+    #[tokio::test]
+    async fn test_update_webhook_not_found() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("PUT", "/projects/1/webhooks/999")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new("test-token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            token: None,
+            push_disabled: None,
+            active: None,
+            events: None,
+        };
+        let result = client.update_webhook("1", 999, &config).await;
+
+        assert!(matches!(result, Err(GitLabError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_update_webhook_unauthorized() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("PUT", "/projects/1/webhooks/456")
+            .with_status(401)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new("bad-token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "https://example.com/hook".to_string(),
+            token: None,
+            push_disabled: None,
+            active: None,
+            events: None,
+        };
+        let result = client.update_webhook("1", 456, &config).await;
+
+        assert!(matches!(result, Err(GitLabError::Unauthorized)));
+    }
+
+    // -- delete_webhook tests -------------------------------------------------
+
+    #[tokio::test]
+    async fn test_delete_webhook_success() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("DELETE", "/projects/1/webhooks/456")
+            .match_header("PRIVATE-TOKEN", "test-token")
+            .with_status(204)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new("test-token".to_string(), Some(url));
+        let result = client.delete_webhook("1", 456).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_webhook_not_found() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("DELETE", "/projects/1/webhooks/999")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new("test-token".to_string(), Some(url));
+        let result = client.delete_webhook("1", 999).await;
+
+        assert!(matches!(result, Err(GitLabError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_delete_webhook_unauthorized() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("DELETE", "/projects/1/webhooks/456")
+            .with_status(401)
+            .create_async()
+            .await;
+
+        let client = GitLabClient::new("bad-token".to_string(), Some(url));
+        let result = client.delete_webhook("1", 456).await;
+
+        assert!(matches!(result, Err(GitLabError::Unauthorized)));
+    }
+
+    // -- Existing list/find tests (preserved) ----------------------------------
 
     #[tokio::test]
     async fn test_list_webhooks_success() {
