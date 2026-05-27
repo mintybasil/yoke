@@ -300,83 +300,16 @@ impl Dispatcher {
         &self.workdir
     }
 
-    /// Run the main dispatcher loop.
+    /// Run the dispatcher loop with a configurable drain timeout.
     ///
     /// Consumes `DispatchMessage`s from the provided `mpsc::Receiver`, performs
     /// dedup checks, acquires concurrency permits, and spawns workflow runners
     /// as independent tokio tasks.
     ///
     /// When a `shutdown` signal is received (the watch value becomes `true`),
-    /// the loop stops consuming new messages and waits for all in-flight
-    /// tasks to complete before returning.
-    ///
-    /// # Arguments
-    ///
-    /// * `rx` — The receiving end of the mpsc channel for dispatch messages.
-    /// * `shutdown` — A `watch::Receiver<bool>` that signals graceful shutdown
-    ///   when the value becomes `true`.
-    #[allow(dead_code)]
-    pub async fn run(
-        &self,
-        mut rx: tokio::sync::mpsc::Receiver<DispatchMessage>,
-        mut shutdown: tokio::sync::watch::Receiver<bool>,
-    ) {
-        tracing::info!("dispatcher run loop started");
-
-        loop {
-            tokio::select! {
-                msg = rx.recv() => {
-                    match msg {
-                        Some(dispatch_msg) => {
-                            self.spawn_workflow(dispatch_msg).await;
-                        }
-                        None => {
-                            tracing::info!("dispatcher channel closed, stopping");
-                            break;
-                        }
-                    }
-                }
-                _ = shutdown.changed() => {
-                    if *shutdown.borrow() {
-                        tracing::info!("dispatcher shutting down, draining in-flight tasks...");
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Drain in-flight tasks: wait until active_count reaches 0
-        let drain_timeout = Duration::from_secs(30);
-        let drain_interval = Duration::from_millis(100);
-        let mut elapsed = Duration::ZERO;
-
-        while self.active_count() > 0 && elapsed < drain_timeout {
-            tracing::info!(
-                active = self.active_count(),
-                "waiting for in-flight workflows to complete..."
-            );
-            tokio::time::sleep(drain_interval).await;
-            elapsed += drain_interval;
-        }
-
-        if self.active_count() > 0 {
-            tracing::warn!(
-                active = self.active_count(),
-                "shutdown timed out, some in-flight workflows may not have completed"
-            );
-        } else {
-            tracing::info!("all in-flight workflows completed, dispatcher shut down");
-        }
-
-        // Persist state before exit
-        self.persist_state().await;
-    }
-
-    /// Run the dispatcher loop with a configurable drain timeout.
-    ///
-    /// This is identical to [`run()`] but accepts an explicit `drain_timeout`
-    /// parameter instead of using a hardcoded 30-second timeout. Prefer this
-    /// method when the drain timeout should be configurable (e.g. from config).
+    /// the loop stops consuming new messages and waits for in-flight
+    /// workflows to complete (up to `drain_timeout`) before persisting state
+    /// and returning.
     ///
     /// # Arguments
     ///
