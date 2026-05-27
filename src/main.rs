@@ -1,10 +1,12 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 use yoke::cli;
 use yoke::config;
 use yoke::config::Config;
 use yoke::reload;
+use yoke::reload::WorkflowState;
 use yoke::server;
 use yoke::workflow;
 
@@ -76,6 +78,9 @@ async fn main() {
         workflows.len()
     );
 
+    // Create the global workflow state with ArcSwap for lock-free atomic updates
+    let state = Arc::new(WorkflowState::new(workflows));
+
     // Set up file watcher for hot-reload of workflow TOML files
     let (reload_tx, mut reload_rx) = tokio::sync::mpsc::channel(32);
     let _file_watcher = match reload::setup_file_watcher(&args.workflows, reload_tx) {
@@ -95,16 +100,29 @@ async fn main() {
         }
     };
 
-    // Spawn reload handler that logs workflow file changes.
-    // Actual workflow re-loading and state swap will be added in a follow-up issue.
+    // Spawn reload handler that re-loads workflows and swaps state atomically.
+    // If validation fails, the error is logged and the previous state is preserved.
+    let reload_state = state.clone();
+    let reload_config = config.clone();
+    let reload_workflows_dir = args.workflows.clone();
     tokio::spawn(async move {
         while let Some(msg) = reload_rx.recv().await {
             match &msg {
                 reload::ReloadMessage::FileChanged { path } => {
-                    tracing::info!(path = %path.display(), "Workflow file changed; reload pending");
+                    tracing::info!(path = %path.display(), "Workflow file changed, attempting reload...");
                 }
                 reload::ReloadMessage::FileRemoved { path } => {
-                    tracing::info!(path = %path.display(), "Workflow file removed; reload pending");
+                    tracing::info!(path = %path.display(), "Workflow file removed, attempting reload...");
+                }
+            }
+
+            match reload::reload_workflows(&reload_workflows_dir, &reload_config) {
+                Ok(new_workflows) => {
+                    reload_state.update(new_workflows);
+                    tracing::info!("Workflows reloaded successfully");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to reload workflows; keeping previous state");
                 }
             }
         }
