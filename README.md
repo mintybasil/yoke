@@ -359,22 +359,22 @@ runner.run().await?; // Returns Ok(()) or Err(RunnerError)
 
 ### Hot-reload
 
-Yoke watches the `--workflows` directory for `.toml` file changes and emits reload events when files are created, modified, or deleted. This enables hot-reload of workflow definitions without restarting the server.
+Yoke watches the `--workflows` directory for `.toml` file changes and automatically reloads workflow definitions without restarting the server.
 
 Key behaviors:
 
 - **File filtering**: Only `.toml` files are monitored; other file types (`.txt`, `.md`, etc.) are ignored.
 - **Debouncing**: Rapid successive changes within 500ms are collapsed into a single reload event, preventing unnecessary reload storms during multi-file edits or atomic save operations.
 - **Detection latency**: File changes are detected within ~1 second (500ms debounce window + event processing).
+- **Atomic state swap**: Workflow state is stored in an `ArcSwap<Vec<(String, Workflow)>>`, enabling lock-free reads. When a reload succeeds, the entire workflow set is replaced atomically — readers never see partial state.
+- **Validation on reload**: Every reload runs the full validation cycle (TOML parsing, agent resolution, trigger platform validation). If any step fails, the error is logged and the previous workflow state is preserved.
 
-| Message | Trigger |
+|| Message | Trigger |
 |---|---|
 | `FileChanged { path }` | A `.toml` file was created or modified |
 | `FileRemoved { path }` | A `.toml` file was deleted |
 
 The file watcher starts at application startup. If the watcher fails to initialize (e.g., the directory does not exist), a warning is logged and the server continues without hot-reload. The watcher runs in a background task; dropping the `FileWatcher` handle stops the watcher.
-
-> **Note**: The actual workflow re-loading and state replacement is planned for a follow-up issue. Currently, the watcher logs detected changes but does not yet swap the live workflow set.
 
 ## Testing
 
