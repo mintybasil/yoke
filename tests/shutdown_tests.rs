@@ -41,7 +41,7 @@ fn make_workdir() -> tempfile::TempDir {
 
 #[tokio::test]
 async fn test_signal_handler_sends_shutdown_on_first_signal() {
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // We can't easily send real UNIX signals in tests, so we test the
     // watch channel propagation directly — verifying the shutdown signal

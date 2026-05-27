@@ -42,7 +42,6 @@ use tracing::instrument;
 
 /// A record of a permanently failed event, persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[allow(dead_code)]
 pub struct FailedEntry {
     /// The dedup key of the failed event (e.g. `owner/repo/42`).
     pub key: String,
@@ -58,7 +57,6 @@ pub struct FailedEntry {
 /// workflow processing. The dispatcher consumes these from an mpsc channel
 /// and spawns a workflow runner for each non-duplicate event.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DispatchMessage {
     /// The verified trigger event to process.
     pub event: TriggerEvent,
@@ -67,7 +65,6 @@ pub struct DispatchMessage {
 /// Result of a completed workflow run, sent back to the dispatcher
 /// for state tracking and persistence.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct WorkflowResult {
     /// The dedup key of the completed event.
     pub key: String,
@@ -79,7 +76,6 @@ pub struct WorkflowResult {
 
 /// Errors that can occur during persistence operations.
 #[derive(Debug, Error)]
-#[allow(dead_code)]
 pub enum PersistenceError {
     /// An I/O error occurred reading or writing a file.
     #[error("IO error: {0}")]
@@ -98,14 +94,12 @@ pub enum PersistenceError {
 ///
 /// An event is considered a duplicate if its key exists in any of the three sets.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct DedupSets {
     pub in_flight: HashSet<String>,
     pub completed: HashSet<String>,
     pub permanently_failed: HashSet<String>,
 }
 
-#[allow(dead_code)]
 impl DedupSets {
     /// Create a new empty `DedupSets`.
     pub fn new() -> Self {
@@ -159,7 +153,6 @@ impl DedupSets {
 /// This type is `Clone` (cheaply, via `Arc` clone) and can be shared across
 /// async tasks. Use `read()` for `is_duplicate` checks and `write()` for
 /// state transitions.
-#[allow(dead_code)]
 pub type SharedDedupSets = Arc<RwLock<DedupSets>>;
 
 // ---------------------------------------------------------------------------
@@ -180,7 +173,6 @@ pub type SharedDedupSets = Arc<RwLock<DedupSets>>;
 /// the semaphore is `None` and no limiting is applied — every event starts
 /// immediately.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct Dispatcher {
     /// Shared deduplication state for tracking event lifecycles.
     pub dedup_sets: SharedDedupSets,
@@ -202,7 +194,6 @@ impl Dispatcher {
     /// unlimited. Otherwise, a semaphore with `max_concurrent` permits is
     /// allocated. The `workdir` path is used for persisting completed/failed
     /// dedup state to disk.
-    #[allow(dead_code)]
     pub fn new(dedup_sets: SharedDedupSets, max_concurrent: usize, workdir: PathBuf) -> Self {
         let semaphore = if max_concurrent > 0 {
             Some(Arc::new(Semaphore::new(max_concurrent)))
@@ -239,7 +230,6 @@ impl Dispatcher {
     ///
     /// Returns `Err` if the semaphore is closed (should not happen in normal
     /// operation).
-    #[allow(dead_code)]
     pub async fn acquire_permit(
         &self,
     ) -> Result<Option<OwnedSemaphorePermit>, tokio::sync::AcquireError> {
@@ -269,7 +259,6 @@ impl Dispatcher {
     ///
     /// If concurrency is unlimited (`max_concurrent == 0`), the inner future
     /// runs directly without any permit management.
-    #[allow(dead_code)]
     pub async fn run_with_permit<F>(&self, fut: F) -> F::Output
     where
         F: std::future::Future,
@@ -284,19 +273,16 @@ impl Dispatcher {
     }
 
     /// Returns the configured maximum concurrent workflows (0 = unlimited).
-    #[allow(dead_code)]
     pub fn max_concurrent(&self) -> usize {
         self.max_concurrent
     }
 
     /// Returns the number of currently active (held) permits.
-    #[allow(dead_code)]
     pub fn active_count(&self) -> usize {
         self.active_count.load(Ordering::Relaxed)
     }
 
     /// Returns a reference to the workdir path.
-    #[allow(dead_code)]
     pub fn workdir(&self) -> &Path {
         &self.workdir
     }
@@ -319,7 +305,6 @@ impl Dispatcher {
     ///   when the value becomes `true`.
     /// * `drain_timeout` — Maximum duration to wait for in-flight workflows
     ///   to complete before giving up.
-    #[allow(dead_code)]
     pub async fn run_with_drain(
         &self,
         mut rx: tokio::sync::mpsc::Receiver<DispatchMessage>,
@@ -420,7 +405,6 @@ impl Dispatcher {
     /// task is spawned to run the workflow. On completion, the dedup state is
     /// updated and persisted to disk.
     #[instrument(skip_all, fields(event_id = %msg.event.event_id, repo = %msg.event.repo_path))]
-    #[allow(dead_code)]
     async fn spawn_workflow(&self, msg: DispatchMessage) {
         let event = msg.event;
         let event_id = extract_event_id(&event);
@@ -548,7 +532,6 @@ impl Dispatcher {
     /// `in_flight` to `completed`. On failure, it moves to
     /// `permanently_failed`.
     #[instrument(skip(self))]
-    #[allow(dead_code)]
     pub async fn on_workflow_complete(&self, key: &str, result: Result<(), String>) {
         let mut sets = self.dedup_sets.write().await;
         match result {
@@ -579,7 +562,6 @@ impl Dispatcher {
 ///
 /// The format is `{owner}/{repo}/{event_id}`, e.g.
 /// `mintybasil/yoke/42` or `internal-team/backend-service/7_review-999`.
-#[allow(dead_code)]
 pub fn build_dedup_key(owner: &str, repo: &str, event_id: &str) -> String {
     format!("{}/{}/{}", owner, repo, event_id)
 }
@@ -595,7 +577,6 @@ pub fn build_dedup_key(owner: &str, repo: &str, event_id: &str) -> String {
 /// - GitLab issue mention: the issue IID (e.g. `7`)
 /// - GitLab MR review: `{mr_iid}_review-{note_id}` (e.g. `12_review-150`)
 /// - GitLab MR comment: `{mr_iid}_comment-{note_id}` (e.g. `12_comment-250`)
-#[allow(dead_code)]
 pub fn extract_event_id(event: &TriggerEvent) -> String {
     match &event.trigger_type {
         // GitHub: event_id format is "issue-{number}" or "issue-{number}-comment-{id}"
@@ -626,7 +607,6 @@ pub fn extract_event_id(event: &TriggerEvent) -> String {
 
 /// For GitHub issue events, extract the issue number as event ID.
 /// Input: "issue-42" or "issue-42-comment-12345" -> "42"
-#[allow(dead_code)]
 fn extract_github_issue_event_id(event_id: &str) -> String {
     event_id
         .strip_prefix("issue-")
@@ -640,7 +620,6 @@ fn extract_github_issue_event_id(event_id: &str) -> String {
 /// For GitHub PR events, extract event ID from the TriggerEvent's event_id.
 /// Input: "pr-7-review-999" -> "7_review-999"
 /// Input: "pr-7-comment-555" -> "7_comment-555"
-#[allow(dead_code)]
 fn extract_github_pr_event_id(event_id: &str) -> String {
     event_id
         .strip_prefix("pr-")
@@ -656,7 +635,6 @@ fn extract_github_pr_event_id(event_id: &str) -> String {
 
 /// For GitLab issue events, extract the issue number as event ID.
 /// Input: "issue-7" or "issue-7-note-99" -> "7"
-#[allow(dead_code)]
 fn extract_gitlab_issue_event_id(event_id: &str) -> String {
     event_id
         .strip_prefix("issue-")
@@ -670,7 +648,6 @@ fn extract_gitlab_issue_event_id(event_id: &str) -> String {
 /// For GitLab MR events, extract event ID from the TriggerEvent's event_id.
 /// Input: "mr-12-review-150" -> "12_review-150"
 /// Input: "mr-12-comment-250" -> "12_comment-250"
-#[allow(dead_code)]
 fn extract_gitlab_mr_event_id(event_id: &str) -> String {
     event_id
         .strip_prefix("mr-")
@@ -687,7 +664,6 @@ fn extract_gitlab_mr_event_id(event_id: &str) -> String {
 /// Parse the owner part from a `repo_path` string (e.g. `"owner/repo"` → `"owner"`).
 ///
 /// Returns the full string if no `/` separator is found.
-#[allow(dead_code)]
 pub fn parse_owner(repo_path: &str) -> String {
     repo_path
         .split_once('/')
@@ -697,7 +673,6 @@ pub fn parse_owner(repo_path: &str) -> String {
 /// Parse the repo part from a `repo_path` string (e.g. `"owner/repo"` → `"repo"`).
 ///
 /// Returns the full string if no `/` separator is found.
-#[allow(dead_code)]
 pub fn parse_repo(repo_path: &str) -> String {
     repo_path
         .split_once('/')
@@ -705,7 +680,6 @@ pub fn parse_repo(repo_path: &str) -> String {
 }
 
 /// Create a new `SharedDedupSets` (wrapped in `Arc<RwLock<...>>`).
-#[allow(dead_code)]
 pub fn new_dedup_sets() -> SharedDedupSets {
     Arc::new(RwLock::new(DedupSets::new()))
 }
@@ -714,7 +688,6 @@ pub fn new_dedup_sets() -> SharedDedupSets {
 ///
 /// The format is `{workdir}/{owner}/{repo}/{event_id}/`, matching the
 /// data directory layout from the architecture design doc (Section 11).
-#[allow(dead_code)]
 pub fn workspace_dir(workdir: &Path, owner: &str, repo: &str, event_id: &str) -> PathBuf {
     workdir.join(owner).join(repo).join(event_id)
 }
@@ -751,7 +724,6 @@ fn save_dedup_file<T: Serialize>(path: &Path, entries: &T) -> Result<(), Persist
     Ok(())
 }
 
-#[allow(dead_code)]
 impl DedupSets {
     /// Persist the `completed` set to `completed.json` in the given directory.
     ///
@@ -784,7 +756,6 @@ impl DedupSets {
 /// treated as empty sets (no error). Corrupted files produce a warning on
 /// stderr and are treated as empty sets. The `in_flight` set is always empty
 /// on startup (in-flight state is transient).
-#[allow(dead_code)]
 pub fn load_persistence(workdir: &Path) -> DedupSets {
     let completed_path = workdir.join("completed.json");
     let failed_path = workdir.join("failed.json");
