@@ -11,3 +11,4 @@ pub mod server;
 pub mod template;
 pub mod webhook;
 pub mod workflow;
+pub mod github_api;
