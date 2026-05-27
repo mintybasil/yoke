@@ -27,4 +27,5 @@ git2 = "0.19"
 arc-swap = "1.9.1"
 
 [dev-dependencies]
+mockito = "1.7.2"
 tempfile = "3"
