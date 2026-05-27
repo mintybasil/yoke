@@ -375,7 +375,10 @@ mod tests {
             secret: "secret123".to_string(),
             events: vec!["push".to_string()],
         };
-        let result = client.create_webhook("owner", "repo", &config).await.unwrap();
+        let result = client
+            .create_webhook("owner", "repo", &config)
+            .await
+            .unwrap();
 
         assert_eq!(result.id, 456);
     }
@@ -428,7 +431,9 @@ mod tests {
         };
         let result = client.create_webhook("owner", "repo", &config).await;
 
-        assert!(matches!(result, Err(GitHubError::ApiError(msg)) if msg.contains("Unexpected status: 422")));
+        assert!(
+            matches!(result, Err(GitHubError::ApiError(msg)) if msg.contains("Unexpected status: 422"))
+        );
     }
 
     #[tokio::test]
@@ -448,9 +453,7 @@ mod tests {
             secret: "s".to_string(),
             events: vec![],
         };
-        let result = client
-            .update_webhook("owner", "repo", 999, &config)
-            .await;
+        let result = client.update_webhook("owner", "repo", 999, &config).await;
 
         assert!(matches!(result, Err(GitHubError::NotFound)));
     }
@@ -475,10 +478,7 @@ mod tests {
             },
         ];
 
-        assert_eq!(
-            client.find_webhook_by_url(&webhooks, "u2").unwrap().id,
-            2
-        );
+        assert_eq!(client.find_webhook_by_url(&webhooks, "u2").unwrap().id, 2);
         assert!(client.find_webhook_by_url(&webhooks, "u3").is_none());
     }
 }
