@@ -11,7 +11,7 @@ pub struct Cli {
     pub config: PathBuf,
 
     /// Directory containing workflow TOML files
-    #[arg(long, default_value = ".")]
+    #[arg(long, default_value = "./workflows")]
     pub workflows: PathBuf,
 
     /// Server bind address (overrides config.toml)
@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn test_default_workflows_dir() {
         let cli = Cli::parse_from::<_, &str>([]);
-        assert_eq!(cli.workflows, PathBuf::from("."));
+        assert_eq!(cli.workflows, PathBuf::from("./workflows"));
     }
 
     #[test]
