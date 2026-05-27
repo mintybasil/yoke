@@ -48,6 +48,26 @@ pub struct WebhookConfig {
     pub events: Vec<String>,
 }
 
+/// Summary of a webhook orchestration operation across one or more repositories.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebhookOrchestrationSummary {
+    pub created: u32,
+    pub updated: u32,
+    pub skipped: u32,
+}
+
+impl WebhookOrchestrationSummary {
+    pub fn add_created(&mut self) {
+        self.created += 1;
+    }
+    pub fn add_updated(&mut self) {
+        self.updated += 1;
+    }
+    pub fn add_skipped(&mut self) {
+        self.skipped += 1;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -78,7 +98,6 @@ impl GitHubClient {
     // -- Internal helpers ----------------------------------------------------
 
     /// Find a webhook in a list by its URL. Used for idempotency checks.
-    #[allow(dead_code)]
     fn find_webhook_by_url<'a>(&self, webhooks: &'a [Webhook], url: &str) -> Option<&'a Webhook> {
         webhooks.iter().find(|w| w.url == url)
     }
@@ -213,6 +232,81 @@ impl GitHubClient {
         }
 
         response.json().await.map_err(GitHubError::RequestError)
+    }
+
+    /// Delete a webhook for the given repository.
+    pub async fn delete_webhook(
+        &self,
+        owner: &str,
+        repo: &str,
+        webhook_id: u64,
+    ) -> Result<(), GitHubError> {
+        let url = format!(
+            "{}/repos/{}/{}/hooks/{}",
+            self.base_url, owner, repo, webhook_id
+        );
+
+        let response = self
+            .client
+            .delete(&url)
+            .headers(self.auth_headers())
+            .send()
+            .await?;
+
+        if response.status() != reqwest::StatusCode::NO_CONTENT
+            && response.status() != reqwest::StatusCode::OK
+        {
+            return Err(Self::map_status(response.status()));
+        }
+
+        Ok(())
+    }
+
+    /// Ensures a webhook exists with the given configuration.
+    ///
+    /// If a webhook with the same URL already exists, it updates it.
+    /// Otherwise, it creates a new one.
+    pub async fn ensure_webhook(
+        &self,
+        owner: &str,
+        repo: &str,
+        config: &WebhookConfig,
+    ) -> Result<WebhookOrchestrationSummary, GitHubError> {
+        let mut summary = WebhookOrchestrationSummary::default();
+        let webhooks = self.list_webhooks(owner, repo).await?;
+
+        if let Some(existing) = self.find_webhook_by_url(&webhooks, &config.url) {
+            self.update_webhook(owner, repo, existing.id, config)
+                .await?;
+            summary.add_updated();
+        } else {
+            self.create_webhook(owner, repo, config).await?;
+            summary.add_created();
+        }
+
+        Ok(summary)
+    }
+
+    /// Idempotently ensures webhooks are configured across a list of repositories.
+    ///
+    /// For each repository, checks if a webhook with the configured URL already
+    /// exists. If so, updates it; otherwise, creates a new one. Aggregates results
+    /// across all repositories into a single summary.
+    pub async fn orchestrate_webhooks(
+        &self,
+        repos: Vec<(String, String)>,
+        config: &WebhookConfig,
+    ) -> Result<WebhookOrchestrationSummary, GitHubError> {
+        let mut total_summary = WebhookOrchestrationSummary::default();
+
+        for (owner, repo) in repos {
+            let repo_summary = self.ensure_webhook(&owner, &repo, config).await?;
+            total_summary.created += repo_summary.created;
+            total_summary.updated += repo_summary.updated;
+            total_summary.skipped += repo_summary.skipped;
+        }
+
+        Ok(total_summary)
     }
 }
 
@@ -480,5 +574,170 @@ mod tests {
 
         assert_eq!(client.find_webhook_by_url(&webhooks, "u2").unwrap().id, 2);
         assert!(client.find_webhook_by_url(&webhooks, "u3").is_none());
+    }
+
+    // -- delete_webhook tests ------------------------------------------------
+
+    #[tokio::test]
+    async fn test_delete_webhook_success() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("DELETE", "/repos/owner/repo/hooks/123")
+            .with_status(204)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.delete_webhook("owner", "repo", 123).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_webhook_not_found() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("DELETE", "/repos/owner/repo/hooks/999")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.delete_webhook("owner", "repo", 999).await;
+
+        assert!(matches!(result, Err(GitHubError::NotFound)));
+    }
+
+    // -- ensure_webhook tests -------------------------------------------------
+
+    #[tokio::test]
+    async fn test_ensure_webhook_creates_new() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        // 1. List returns empty
+        server
+            .mock("GET", "/repos/owner/repo/webhooks")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        // 2. Create is called
+        server
+            .mock("POST", "/repos/owner/repo/hooks")
+            .with_status(201)
+            .with_body(
+                r#"{ "id": 123, "url": "u1", "secret": null, "events": [], "active": true }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "u1".into(),
+            secret: "s".into(),
+            events: vec![],
+        };
+
+        let summary = client
+            .ensure_webhook("owner", "repo", &config)
+            .await
+            .unwrap();
+        assert_eq!(summary.created, 1);
+        assert_eq!(summary.updated, 0);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_webhook_updates_existing() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("GET", "/repos/owner/repo/webhooks")
+            .with_status(200)
+            .with_body(
+                r#"[{ "id": 123, "url": "u1", "secret": null, "events": [], "active": true }]"#,
+            )
+            .create_async()
+            .await;
+
+        server
+            .mock("PATCH", "/repos/owner/repo/hooks/123")
+            .with_status(200)
+            .with_body(
+                r#"{ "id": 123, "url": "u1", "secret": null, "events": [], "active": true }"#,
+            )
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "u1".into(),
+            secret: "s".into(),
+            events: vec![],
+        };
+
+        let summary = client
+            .ensure_webhook("owner", "repo", &config)
+            .await
+            .unwrap();
+        assert_eq!(summary.updated, 1);
+        assert_eq!(summary.created, 0);
+    }
+
+    // -- orchestrate_webhooks tests -------------------------------------------
+
+    #[tokio::test]
+    async fn test_orchestrate_webhooks_multi() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        // Repo A: Existing (Update)
+        server
+            .mock("GET", "/repos/owner/repoA/webhooks")
+            .with_status(200)
+            .with_body(r#"[{"id":1, "url":"u1", "secret":null, "events":[], "active":true}]"#)
+            .create_async()
+            .await;
+        server
+            .mock("PATCH", "/repos/owner/repoA/hooks/1")
+            .with_status(200)
+            .with_body(r#"{ "id": 1, "url": "u1", "secret": null, "events": [], "active": true }"#)
+            .create_async()
+            .await;
+
+        // Repo B: Missing (Create)
+        server
+            .mock("GET", "/repos/owner/repoB/webhooks")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/repos/owner/repoB/hooks")
+            .with_status(201)
+            .with_body(r#"{ "id": 2, "url": "u1", "secret": null, "events": [], "active": true }"#)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "u1".into(),
+            secret: "s".into(),
+            events: vec![],
+        };
+        let repos = vec![
+            ("owner".into(), "repoA".into()),
+            ("owner".into(), "repoB".into()),
+        ];
+
+        let summary = client.orchestrate_webhooks(repos, &config).await.unwrap();
+        assert_eq!(summary.created, 1);
+        assert_eq!(summary.updated, 1);
     }
 }

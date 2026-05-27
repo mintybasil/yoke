@@ -329,6 +329,44 @@ Yoke includes a `git` module (`src/git.rs`) that provides repository management 
 
 Token-based authentication: `GITHUB_TOKEN` or `GITLAB_TOKEN` environment variables are read at runtime and wired into the `git2` credential callbacks. GitHub tokens are passed via the `x-access-token` header; GitLab tokens use the `PRIVATE-TOKEN` header. Branch names are sanitized to `[a-zA-Z0-9._-]` before use in worktree creation.
 
+### GitHub API client
+
+The `github_api` module (`src/github_api.rs`) provides a REST API client for managing GitHub repository webhooks:
+
+```rust
+use yoke::github_api::{GitHubClient, WebhookConfig, WebhookOrchestrationSummary};
+
+let client = GitHubClient::new(token, None); // None = default GitHub API base URL
+
+// List webhooks for a repository
+let webhooks = client.list_webhooks("owner", "repo").await?;
+
+// Create a new webhook
+let config = WebhookConfig {
+    url: "https://example.com/webhook".into(),
+    secret: "my-secret".into(),
+    events: vec!["push".into(), "pull_request".into()],
+};
+let webhook = client.create_webhook("owner", "repo", &config).await?;
+
+// Update an existing webhook
+let updated = client.update_webhook("owner", "repo", webhook.id, &config).await?;
+
+// Delete a webhook
+client.delete_webhook("owner", "repo", webhook.id).await?;
+
+// Idempotent ensure: creates or updates based on URL match
+let summary = client.ensure_webhook("owner", "repo", &config).await?;
+// summary.created == 1 (new) or summary.updated == 1 (existing)
+
+// Multi-repo orchestration
+let repos = vec![("owner".into(), "repoA".into()), ("owner".into(), "repoB".into())];
+let totals = client.orchestrate_webhooks(repos, &config).await?;
+// totals.created, totals.updated, totals.skipped
+```
+
+`ensure_webhook` lists existing webhooks, finds one matching the configured URL, and either updates it or creates a new one. `orchestrate_webhooks` applies `ensure_webhook` across multiple repositories, aggregating results into a single `WebhookOrchestrationSummary` with `created`, `updated`, and `skipped` counts.
+
 
 ### Workflow Runner
 
