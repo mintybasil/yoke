@@ -4,9 +4,9 @@
 
 ```
 src/
-  lib.rs       — Library root (pub mod re-exports for integration tests)
-  main.rs      — CLI entrypoint (loads config, loads workflows, validates agents & triggers, starts server)
-  cli.rs       — CLI argument parsing (clap derive)
+  lib.rs       — Library root (pub mod re-exports for integration tests; includes webhooks module)
+  main.rs      — CLI entrypoint (loads config, loads workflows, validates agents & triggers, starts server; handles `webhooks` subcommand)
+  cli.rs       — CLI argument parsing (clap derive) with `webhooks` subcommand support
   config.rs    — Configuration parsing, validation, and error types
   dispatcher.rs — Concurrency control (Dispatcher + Semaphore), deduplication (DedupSets, SharedDedupSets), persistence, and workspace directory management
   harness.rs   — Hermes API client harness (HermesClient, request/response types, StepResult, error handling)
@@ -16,6 +16,7 @@ src/
   workflow.rs  — Workflow TOML parsing, validation, and error types
   git.rs        — Git repository operations (clone, pull, worktree, auth callbacks, dirty-check)
   github_api.rs — GitHub REST API client (GitHubClient, Webhook, WebhookConfig, WebhookOrchestrationSummary, list/create/update/delete webhooks, find_webhook_by_url, ensure_webhook, orchestrate_webhooks, error types)
+  webhooks.rs  — Unified webhook management (WebhookClient enum, GitHubWebhookClient, GitLabWebhookClient, WebhookInfo, WebhookConfig, WebhookError) — CLI subcommand handler for `yoke webhooks`
   template.rs  — Template rendering with `{{variable}}` substitution and validation
   hooks.rs     — Hook definitions (FileNotEmpty, FileContains) and run_hook dispatcher
   runner.rs    — Workflow runner: sequential step execution with template vars, hooks, and fail-fast
@@ -47,6 +48,7 @@ tests/
 - **`WEBHOOK_SECRET` env override**: The `WEBHOOK_SECRET` env var overrides the `config.toml` `server.webhook_secret` value at startup.
 - **GitHub API client** (`src/github_api.rs`): `GitHubClient` struct wraps `reqwest::Client` with Bearer token authentication. Public API: `list_webhooks(owner, repo)` with transparent pagination (follows `Link` rel="next" headers), `create_webhook(owner, repo, config)` (POST to `/repos/{owner}/{repo}/hooks`), `update_webhook(owner, repo, webhook_id, config)` (PATCH to `/repos/{owner}/{repo}/hooks/{id}`), `delete_webhook(owner, repo, webhook_id)` (DELETE to `/repos/{owner}/{repo}/hooks/{id}`). `WebhookConfig` struct (`url`, `secret`, `events`) is passed to create/update. `find_webhook_by_url(webhooks, url)` searches a webhook list by URL for idempotency checks. `ensure_webhook(owner, repo, config)` is an idempotent orchestrator that lists existing webhooks, finds by URL, and either updates the existing webhook or creates a new one — returning a `WebhookOrchestrationSummary`. `orchestrate_webhooks(repos, config)` iterates over multiple `(owner, repo)` pairs, calling `ensure_webhook` for each and aggregating results into a single summary with `created`, `updated`, and `skipped` counts. Error mapping: HTTP 401→`Unauthorized`, 404→`NotFound`, 403→`RateLimited`, 201→success (create), 200→success (update, list), 204→success (delete), others→`ApiError`. Unit tests use `mockito` for HTTP mocking and cover: list (success, empty, pagination, 401, 404, 403), create (success 201, conflict 422), update (success 200, not found 404), delete (success 204, not found 404), `find_webhook_by_url` helper, `ensure_webhook` (creates new, updates existing), and `orchestrate_webhooks` (multi-repo with mixed create/update).
 - **GitLab API client** (`src/webhook/gitlab_api.rs`): `GitLabClient` struct wraps `reqwest::Client` with Private-Token authentication. Public API: `list_webhooks(project_id)` with transparent pagination (follows `Link` rel="next" headers), `create_webhook(project_id, config)` (POST, returns 201 Created), `update_webhook(project_id, webhook_id, config)` (PUT, returns 200 OK), `delete_webhook(project_id, webhook_id)` (DELETE, returns 204 No Content). `WebhookConfig` struct (`url`, `token`, `push_disabled`, `active`, `events`) is passed to create/update; `Option` fields use `skip_serializing_if` to omit nulls from JSON. Supports self-hosted GitLab via configurable `base_url` (default: `https://gitlab.com/api/v4`). Also provides `find_webhook_by_url` for idempotency checks. Error mapping: HTTP 401→`Unauthorized`, 404→`NotFound`, others→`ApiError`. Unit tests use `mockito` for HTTP mocking and cover: list (success, empty, pagination, 401, 404, 500), create (success 201, 401), update (success 200, 404, 401), delete (success 204, 404, 401), `WebhookConfig` serialization (full, minimal), `find_webhook_by_url` (found, not found, empty), and client construction (default/custom base URL).
+- **Webhook management module** (`src/webhooks.rs`): Provides a unified CLI interface for managing webhooks across GitHub and GitLab. `WebhookInfo` is a platform-agnostic struct (`id`, `url`, `secret`, `events`, `active`) that maps from platform-specific types. `WebhookConfig` holds `url`, `secret`, and `events` for creating/updating webhooks. `WebhookClient` is an enum-based dispatcher with `Github(GitHubWebhookClient)` and `Gitlab(GitLabWebhookClient)` variants — this avoids `dyn` dispatch since async trait methods are not dyn-compatible in Rust 2024. `WebhookClient::new(platform, owner, gitlab_url)` reads `GITHUB_TOKEN` or `GITLAB_TOKEN` from the environment (returns `WebhookError::Config` if missing) and constructs the appropriate client. `WebhookClient` methods (`list_webhooks`, `create_webhook`, `update_webhook`, `delete_webhook`) delegate to the inner platform client. `GitHubWebhookClient` wraps `github_api::GitHubClient` and adapts between `WebhookInfo`/`WebhookConfig` and GitHub-specific types. `GitLabWebhookClient` wraps `webhook::gitlab_api::GitLabClient` similarly. `WebhookError` enum: `Http` (network errors), `Config` (missing env vars or invalid setup), `Api` (non-success HTTP responses). The `webhooks` CLI subcommand in `main.rs` handles `list` (prints table per repo), `remove` (deletes by ID across all repos), and `add` (exits with "not yet implemented" message).
 - **Trigger platform validation**: After loading config and workflows, `validate_triggers()` checks that each workflow's trigger type prefix matches the configured platform. GitLab triggers (`gitlab_*`) on a GitHub platform (and vice versa) cause a hard exit with a clear error.
 - **`TriggerType` enum**: Typed representation of known trigger types (4 GitHub, 4 GitLab). Each variant carries its required filter fields per Appendix A. `TriggerType::from_trigger()` converts a `Trigger` struct; `TriggerType::platform()` returns the owning platform; `TriggerType::label()` returns the string identifier used in workflow TOML files.
 - **`WorkflowError` enum**: Typed errors (Io, Parse, Validation) with `Display` and `Error` impls. Parse/Validation errors include the file path for clear diagnostics.
@@ -82,15 +84,23 @@ tests/
 
 ```
 yoke [OPTIONS]
+yoke webhooks <SUBCOMMAND>
 
 Options:
   --config <PATH>       Path to config.toml (default: config.toml)
   --workflows <DIR>      Directory containing workflow TOML files (default: .)
   --host <ADDR>          Server bind address (overrides config.toml)
   --port <PORT>          Server listen port (overrides config.toml)
+
+Webhook subcommands:
+  webhooks list              List webhooks for all configured repositories
+  webhooks add               Add a webhook (not yet implemented)
+  webhooks remove <ID>       Remove a webhook by ID
 ```
 
 Note: `[runtime].max_concurrent`, `[runtime].workdir`, and `platform` are set in `config.toml` only (no CLI flags).
+
+- **`webhooks` subcommand**: When a subcommand is provided, yoke handles it and exits without starting the server. The `webhooks` command reads `platform`, `repos`, and `gitlab_url` from `config.toml` and uses `GITHUB_TOKEN` or `GITLAB_TOKEN` env vars for authentication. It dispatches to `GitHubWebhookClient` or `GitLabWebhookClient` based on the platform. `webhooks list` prints all webhooks for each configured repo (with secret redacted). `webhooks remove <ID>` deletes a webhook by ID from all repos. `webhooks add` is reserved but not yet implemented — it exits with an error message.
 
 ## Known Trigger Types
 

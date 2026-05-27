@@ -11,4 +11,5 @@ pub mod runner;
 pub mod server;
 pub mod template;
 pub mod webhook;
+pub mod webhooks;
 pub mod workflow;
