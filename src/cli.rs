@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// Yoke agent orchestrator
 #[derive(Parser, Debug)]
@@ -21,6 +21,42 @@ pub struct Cli {
     /// Server listen port (overrides config.toml)
     #[arg(long)]
     pub port: Option<u16>,
+
+    /// Subcommand to execute
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// Root-level subcommands.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Manage repository webhooks
+    Webhooks(WebhooksCommand),
+}
+
+/// Manage repository webhooks on GitHub or GitLab.
+#[derive(Parser, Debug)]
+pub struct WebhooksCommand {
+    #[command(subcommand)]
+    pub command: WebhooksSubcommand,
+}
+
+/// Webhook management subcommands.
+#[derive(Subcommand, Debug)]
+pub enum WebhooksSubcommand {
+    /// Add a new webhook to the configured repositories
+    Add {
+        /// Path to workflow TOML file to inspect for event types
+        #[arg(long)]
+        workflows: Option<PathBuf>,
+    },
+    /// Remove an existing webhook by ID
+    Remove {
+        /// The ID of the webhook to remove
+        id: u64,
+    },
+    /// List existing webhooks for the configured repositories
+    List,
 }
 
 #[cfg(test)]
@@ -75,5 +111,65 @@ mod tests {
         let cli = Cli::parse_from::<_, &str>([]);
         assert!(cli.host.is_none());
         assert!(cli.port.is_none());
+    }
+
+    #[test]
+    fn test_webhooks_add_subcommand() {
+        let cli = Cli::parse_from(["yoke", "webhooks", "add"]);
+        match cli.command {
+            Some(Command::Webhooks(cmd)) => match cmd.command {
+                WebhooksSubcommand::Add { workflows } => {
+                    assert!(workflows.is_none());
+                }
+                _ => panic!("expected Add subcommand"),
+            },
+            _ => panic!("expected Webhooks command"),
+        }
+    }
+
+    #[test]
+    fn test_webhooks_add_with_workflows() {
+        let cli = Cli::parse_from(["yoke", "webhooks", "add", "--workflows", "/path/to/wf"]);
+        match cli.command {
+            Some(Command::Webhooks(cmd)) => match cmd.command {
+                WebhooksSubcommand::Add { workflows } => {
+                    assert_eq!(workflows, Some(PathBuf::from("/path/to/wf")));
+                }
+                _ => panic!("expected Add subcommand"),
+            },
+            _ => panic!("expected Webhooks command"),
+        }
+    }
+
+    #[test]
+    fn test_webhooks_remove_subcommand() {
+        let cli = Cli::parse_from(["yoke", "webhooks", "remove", "12345"]);
+        match cli.command {
+            Some(Command::Webhooks(cmd)) => match cmd.command {
+                WebhooksSubcommand::Remove { id } => {
+                    assert_eq!(id, 12345);
+                }
+                _ => panic!("expected Remove subcommand"),
+            },
+            _ => panic!("expected Webhooks command"),
+        }
+    }
+
+    #[test]
+    fn test_webhooks_list_subcommand() {
+        let cli = Cli::parse_from(["yoke", "webhooks", "list"]);
+        match cli.command {
+            Some(Command::Webhooks(cmd)) => match cmd.command {
+                WebhooksSubcommand::List => {}
+                _ => panic!("expected List subcommand"),
+            },
+            _ => panic!("expected Webhooks command"),
+        }
+    }
+
+    #[test]
+    fn test_no_subcommand() {
+        let cli = Cli::parse_from::<_, &str>([]);
+        assert!(cli.command.is_none());
     }
 }

@@ -29,6 +29,7 @@ cargo run -- --host 127.0.0.1 --port 9000
 
 ```
 yoke [OPTIONS]
+yoke webhooks <SUBCOMMAND>
 
 Options:
   --config <PATH>       Path to config.toml (default: config.toml)
@@ -37,9 +38,42 @@ Options:
   --port <PORT>          Server listen port (overrides config.toml)
   -h, --help             Print help
   -V, --version          Print version
+
+Webhook subcommands:
+  webhooks list              List webhooks for all configured repositories
+  webhooks add               Add a webhook to all configured repositories (not yet implemented)
+  webhooks remove <ID>       Remove a webhook by ID from all configured repositories
 ```
 
 CLI `--host` and `--port` flags override the corresponding values in `config.toml`. The `[runtime].max_concurrent`, `[runtime].workdir`, and `platform` settings are configured in `config.toml` only and cannot be overridden from the command line.
+
+### Webhook Management
+
+The `webhooks` subcommand provides a unified CLI for managing repository webhooks across GitHub and GitLab. It uses the `platform` and `repos` settings from `config.toml` and reads authentication tokens from environment variables (`GITHUB_TOKEN` for GitHub, `GITLAB_TOKEN` for GitLab).
+
+**List webhooks:**
+
+```bash
+yoke --config config.toml webhooks list
+```
+
+Lists all webhooks for each repository defined in `config.toml`. Output includes webhook ID, URL, events, active status, and secret (redacted as `********`).
+
+**Remove a webhook:**
+
+```bash
+yoke --config config.toml webhooks remove <ID>
+```
+
+Deletes the webhook with the given ID from all configured repositories.
+
+**Add a webhook (not yet implemented):**
+
+```bash
+yoke --config config.toml webhooks add [--workflows <DIR>]
+```
+
+> **Note:** The `webhooks add` subcommand is not yet implemented. Use `yoke --config config.toml webhooks list` to view existing webhooks, or use the GitHub/GitLab API directly to create webhooks.
 
 ## Configuration
 

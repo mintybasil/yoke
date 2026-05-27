@@ -6,11 +6,13 @@ use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use yoke::cli;
+use yoke::cli::{Command, WebhooksSubcommand};
 use yoke::config;
 use yoke::config::Config;
 use yoke::reload;
 use yoke::reload::WorkflowState;
 use yoke::server;
+use yoke::webhooks;
 use yoke::workflow;
 
 /// Set up the SIGINT/SIGTERM signal handler for graceful shutdown.
@@ -57,6 +59,74 @@ pub fn setup_signal_handler(shutdown_tx: watch::Sender<bool>) -> tokio::task::Jo
     })
 }
 
+/// Handle the `webhooks` subcommand.
+async fn handle_webhooks_command(config: &Config, cmd: &WebhooksSubcommand) {
+    // Determine the gitlab_url for GitLab platform
+    let gitlab_url = config.gitlab_url.as_ref().map(|u| {
+        let s = u.to_string();
+        format!("{}/api/v4", s.trim_end_matches('/'))
+    });
+    // For GitHub, extract owner from the first repo in config (or empty string if none)
+    let owner = config
+        .repos
+        .first()
+        .map(|r| r.owner.clone())
+        .unwrap_or_default();
+
+    let client = match webhooks::WebhookClient::new(&config.platform, &owner, gitlab_url) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error creating webhook client: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match cmd {
+        WebhooksSubcommand::Add { workflows: _ } => {
+            eprintln!("Error: 'webhooks add' is not yet implemented");
+            std::process::exit(1);
+        }
+        WebhooksSubcommand::Remove { id } => {
+            for repo in &config.repos {
+                let repo_path = format!("{}/{}", repo.owner, repo.repo);
+                match client.delete_webhook(&repo_path, *id).await {
+                    Ok(()) => {
+                        println!("Deleted webhook {} from {}", id, repo_path);
+                    }
+                    Err(e) => {
+                        eprintln!("Error deleting webhook {} from {}: {e}", id, repo_path);
+                    }
+                }
+            }
+        }
+        WebhooksSubcommand::List => {
+            for repo in &config.repos {
+                let repo_path = format!("{}/{}", repo.owner, repo.repo);
+                match client.list_webhooks(&repo_path).await {
+                    Ok(hooks) => {
+                        println!("Webhooks for {}:", repo_path);
+                        if hooks.is_empty() {
+                            println!("  (none)");
+                        }
+                        for hook in hooks {
+                            let secret_display =
+                                hook.secret.as_ref().map(|_| "********").unwrap_or("(none)");
+                            println!(
+                                "  [{}] {} events={:?} active={}",
+                                hook.id, hook.url, hook.events, hook.active
+                            );
+                            println!("        secret={}", secret_display);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error listing webhooks for {}: {e}", repo_path);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize tracing subscriber for structured logging
@@ -69,6 +139,21 @@ async fn main() {
 
     let args = cli::Cli::parse();
 
+    // If a subcommand was provided, handle it and exit
+    if let Some(Command::Webhooks(webhooks_cmd)) = &args.command {
+        let config = match Config::load(&args.config) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error loading config from {}: {e}", args.config.display());
+                std::process::exit(1);
+            }
+        };
+
+        handle_webhooks_command(&config, &webhooks_cmd.command).await;
+        return;
+    }
+
+    // Default behavior: start the server
     let mut config = match Config::load(&args.config) {
         Ok(c) => c,
         Err(e) => {
