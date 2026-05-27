@@ -50,11 +50,13 @@ async fn test_full_dispatch_flow_completes_and_persists() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Spawn the dispatcher loop
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     // Send a single event
@@ -103,10 +105,12 @@ async fn test_duplicate_event_rejected() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     // Send the same event twice
@@ -146,10 +150,12 @@ async fn test_concurrency_limit() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 1, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     // Send two events with different event IDs
@@ -196,10 +202,12 @@ async fn test_completed_events_persisted_to_disk() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     let msg = make_message(
@@ -247,10 +255,12 @@ async fn test_graceful_shutdown_drains_in_flight() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     // Send an event
@@ -291,10 +301,12 @@ async fn test_dispatcher_stops_when_channel_closed() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     // Send an event and close the channel
@@ -328,10 +340,12 @@ async fn test_multiple_different_events_processed() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     // Send multiple different events
@@ -482,10 +496,12 @@ async fn test_gitlab_event_dispatched() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     let msg = make_message(
@@ -520,10 +536,12 @@ async fn test_unlimited_throughput() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(2000);
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     // Send 500 unique events through the dispatcher with max_concurrent=0 (unlimited)
@@ -577,10 +595,12 @@ async fn test_concurrency_stress_with_semaphore() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 4, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(200);
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     // Send 50 unique events — they should all eventually complete with concurrency limit of 4
@@ -671,10 +691,12 @@ async fn test_permits_released_after_completion() {
     let dispatcher = Dispatcher::new(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     let handle = tokio::spawn(async move {
-        dispatcher.run(rx, shutdown_rx).await;
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
     });
 
     // Send 6 events with concurrency limit of 2
