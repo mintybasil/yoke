@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::watch;
 use yoke::cli;
 use yoke::config;
 use yoke::config::Config;
@@ -9,6 +12,50 @@ use yoke::reload;
 use yoke::reload::WorkflowState;
 use yoke::server;
 use yoke::workflow;
+
+/// Set up the SIGINT/SIGTERM signal handler for graceful shutdown.
+///
+/// On the first SIGINT or SIGTERM, sends `true` on the watch channel to
+/// trigger graceful shutdown across all components (HTTP server, dispatcher).
+/// On a second signal, forces an immediate `process::exit(1)`.
+///
+/// Returns a `JoinHandle` for the spawned signal handler task.
+pub fn setup_signal_handler(shutdown_tx: watch::Sender<bool>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+
+        // Wait for the first signal
+        tokio::select! {
+            _ = sigint.recv() => {
+                tracing::info!("SIGINT received, starting graceful shutdown");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("SIGTERM received, starting graceful shutdown");
+            }
+        }
+
+        // First signal: trigger graceful shutdown
+        let _ = shutdown_tx.send(true);
+
+        // Wait for a second signal to force immediate exit
+        tokio::select! {
+            _ = sigint.recv() => {
+                tracing::warn!("Second SIGINT received: forcing immediate exit");
+                std::process::exit(1);
+            }
+            _ = sigterm.recv() => {
+                tracing::warn!("Second SIGTERM received: forcing immediate exit");
+                std::process::exit(1);
+            }
+            // Safety net: if no second signal arrives within 60s, exit normally
+            _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                tracing::info!("Shutdown timeout reached in signal handler");
+            }
+        }
+    })
+}
 
 #[tokio::main]
 async fn main() {
@@ -78,6 +125,11 @@ async fn main() {
         workflows.len()
     );
 
+    // Create shutdown watch channel — shared across signal handler, server, and dispatcher
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Set up SIGINT/SIGTERM signal handler
+    let _signal_handler = setup_signal_handler(shutdown_tx);
     // Create the global workflow state with ArcSwap for lock-free atomic updates
     let state = Arc::new(WorkflowState::new(workflows));
 
@@ -128,17 +180,21 @@ async fn main() {
         }
     });
 
-    // Start the HTTP server
+    // Start the HTTP server with graceful shutdown
+    let drain_timeout = Duration::from_secs(config.runtime.drain_timeout_secs);
     tracing::info!(
-        "Starting server on {}:{}",
+        "Starting server on {}:{} (drain timeout: {:?})",
         config.server.host,
-        config.server.port
+        config.server.port,
+        drain_timeout
     );
     if let Err(e) = server::run_server(
         &config.server,
         &config.platform,
         config.runtime.max_concurrent,
         PathBuf::from(&config.runtime.workdir),
+        drain_timeout,
+        shutdown_rx,
     )
     .await
     {

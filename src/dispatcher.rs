@@ -367,6 +367,114 @@ impl Dispatcher {
         } else {
             tracing::info!("all in-flight workflows completed, dispatcher shut down");
         }
+
+        // Persist state before exit
+        self.persist_state().await;
+    }
+
+    /// Run the dispatcher loop with a configurable drain timeout.
+    ///
+    /// This is identical to [`run()`] but accepts an explicit `drain_timeout`
+    /// parameter instead of using a hardcoded 30-second timeout. Prefer this
+    /// method when the drain timeout should be configurable (e.g. from config).
+    ///
+    /// # Arguments
+    ///
+    /// * `rx` — The receiving end of the mpsc channel for dispatch messages.
+    /// * `shutdown` — A `watch::Receiver<bool>` that signals graceful shutdown
+    ///   when the value becomes `true`.
+    /// * `drain_timeout` — Maximum duration to wait for in-flight workflows
+    ///   to complete before giving up.
+    #[allow(dead_code)]
+    pub async fn run_with_drain(
+        &self,
+        mut rx: tokio::sync::mpsc::Receiver<DispatchMessage>,
+        shutdown: &mut tokio::sync::watch::Receiver<bool>,
+        drain_timeout: Duration,
+    ) {
+        tracing::info!(?drain_timeout, "dispatcher run loop started");
+
+        loop {
+            tokio::select! {
+                msg = rx.recv() => {
+                    match msg {
+                        Some(dispatch_msg) => {
+                            self.spawn_workflow(dispatch_msg).await;
+                        }
+                        None => {
+                            tracing::info!("dispatcher channel closed, stopping");
+                            break;
+                        }
+                    }
+                }
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        tracing::info!("dispatcher received shutdown signal, draining in-flight tasks...");
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Drain in-flight tasks: wait until active_count reaches 0 or timeout
+        let drain_interval = Duration::from_millis(100);
+        let mut elapsed = Duration::ZERO;
+
+        while self.active_count() > 0 && elapsed < drain_timeout {
+            tracing::info!(
+                active = self.active_count(),
+                "waiting for in-flight workflows to complete..."
+            );
+            tokio::time::sleep(drain_interval).await;
+            elapsed += drain_interval;
+        }
+
+        if self.active_count() > 0 {
+            tracing::warn!(
+                active = self.active_count(),
+                "shutdown timed out, some in-flight workflows may not have completed"
+            );
+        } else {
+            tracing::info!("all in-flight workflows completed, dispatcher shut down");
+        }
+
+        // Persist state before exit
+        self.persist_state().await;
+    }
+
+    /// Persist the current state of completed and failed sets to disk.
+    ///
+    /// Called during graceful shutdown to ensure state is saved before exit,
+    /// even if no workflow just completed. Uses the same atomic write
+    /// pattern as individual persist calls.
+    async fn persist_state(&self) {
+        tracing::info!("persisting dispatcher state before exit");
+        let sets = self.dedup_sets.read().await;
+        if let Err(e) = sets.persist_completed(&self.workdir) {
+            tracing::error!(error = %e, "failed to persist completed set during shutdown");
+        }
+        // persist_failed only appends individual entries; we re-write the
+        // permanent_failed keys as a safety net by writing the full file
+        if !sets.permanently_failed.is_empty() {
+            let path = self.workdir.join("failed.json");
+            // Load existing entries and rewrite (or start fresh)
+            let mut failed_entries: Vec<FailedEntry> = load_dedup_file(&path).unwrap_or_default();
+            // Ensure all currently tracked permanently_failed keys are present
+            let existing_keys: HashSet<String> =
+                failed_entries.iter().map(|e| e.key.clone()).collect();
+            for key in &sets.permanently_failed {
+                if !existing_keys.contains(key) {
+                    failed_entries.push(FailedEntry {
+                        key: key.clone(),
+                        timestamp: SystemTime::now(),
+                        error: "persisted during shutdown".to_string(),
+                    });
+                }
+            }
+            if let Err(e) = save_dedup_file(&path, &failed_entries) {
+                tracing::error!(error = %e, "failed to persist failed set during shutdown");
+            }
+        }
     }
 
     /// Process a single dispatch message: dedup check, permit acquisition,

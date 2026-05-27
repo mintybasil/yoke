@@ -7,6 +7,8 @@ use axum::{
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
+use tokio::sync::watch;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
@@ -145,14 +147,26 @@ fn build_router(state: AppState, config: &ServerConfig) -> Router {
 ///
 /// Spawns a background dispatcher task that consumes events from the mpsc
 /// channel and manages concurrency, deduplication, and persistence.
-/// Graceful shutdown is handled via a `watch` channel — when the server
-/// receives a `ctrl+c` or SIGTERM, the dispatcher drains in-flight
-/// workflows before exiting.
+/// Graceful shutdown is handled via a `watch` channel — when a SIGINT or
+/// SIGTERM signal is received, the signal handler sends `true` on the
+/// watch channel, the HTTP server stops accepting new connections, and
+/// the dispatcher drains in-flight workflows before exiting.
+///
+/// # Arguments
+///
+/// * `config` — Server configuration (host, port, webhook secret, etc.)
+/// * `platform` — The platform type (GitHub or GitLab)
+/// * `max_concurrent` — Maximum concurrent workflows (0 = unlimited)
+/// * `workdir` — Directory for persisting dispatcher state
+/// * `drain_timeout` — Maximum time to wait for in-flight workflows to complete
+/// * `shutdown_rx` — Watch channel receiver that signals graceful shutdown
 pub async fn run_server(
     config: &ServerConfig,
     platform: &Platform,
     max_concurrent: usize,
     workdir: PathBuf,
+    drain_timeout: Duration,
+    shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{}:{}", config.host, config.port)
         .parse()
@@ -168,14 +182,14 @@ pub async fn run_server(
     let dedup_sets = new_dedup_sets();
     let dispatcher = Dispatcher::new(dedup_sets, max_concurrent, workdir);
 
-    // Create shutdown signal
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-    // Spawn dispatcher run loop as a background task
+    // Spawn dispatcher run loop as a background task, passing drain_timeout
     let dispatcher_handle = tokio::spawn({
         let dispatcher = dispatcher.clone();
+        let mut shutdown = shutdown_rx.clone();
         async move {
-            dispatcher.run(rx, shutdown_rx).await;
+            dispatcher
+                .run_with_drain(rx, &mut shutdown, drain_timeout)
+                .await;
         }
     });
 
@@ -194,21 +208,23 @@ pub async fn run_server(
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    // Set up graceful shutdown via ctrl+c
-    let shutdown_signal = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install ctrl+c handler");
-        tracing::info!("Received shutdown signal");
+    // Run server with graceful shutdown — watch for shutdown signal
+    let shutdown_watch = async move {
+        let mut rx = shutdown_rx;
+        // Wait for the shutdown signal (value becomes true)
+        loop {
+            if rx.changed().await.is_err() {
+                break;
+            }
+            if *rx.borrow() {
+                tracing::info!("HTTP server shutting down...");
+                break;
+            }
+        }
     };
 
-    // Run server with graceful shutdown
     axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            shutdown_signal.await;
-            // Signal the dispatcher to begin draining
-            let _ = shutdown_tx.send(true);
-        })
+        .with_graceful_shutdown(shutdown_watch)
         .await?;
 
     // Wait for dispatcher to finish draining

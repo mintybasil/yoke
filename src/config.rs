@@ -36,6 +36,10 @@ pub struct RuntimeConfig {
     pub max_concurrent: usize,
     #[serde(default = "default_workdir")]
     pub workdir: String,
+    /// Maximum time (in seconds) to wait for in-flight workflows to complete
+    /// during graceful shutdown. Default: 30 seconds.
+    #[serde(default = "default_drain_timeout_secs")]
+    pub drain_timeout_secs: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -43,12 +47,17 @@ impl Default for RuntimeConfig {
         Self {
             max_concurrent: default_max_concurrent(),
             workdir: default_workdir(),
+            drain_timeout_secs: default_drain_timeout_secs(),
         }
     }
 }
 
 fn default_max_concurrent() -> usize {
     0
+}
+
+fn default_drain_timeout_secs() -> u64 {
+    30
 }
 
 fn default_workdir() -> String {

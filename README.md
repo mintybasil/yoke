@@ -70,6 +70,7 @@ base_url = "http://localhost:8001"
 [runtime]
 max_concurrent = 2       # max concurrent workflows (0 = unlimited)
 workdir = "~/.yoke"      # runtime data directory (supports ~ expansion)
+drain_timeout_secs = 30  # seconds to wait for in-flight workflows on shutdown
 
 # Server settings
 [server]
@@ -95,6 +96,7 @@ max_body_size = 1048576                  # 1MB default
 | `repos` | `[]` (empty) |
 | `runtime.max_concurrent` | `0` (unlimited) |
 | `runtime.workdir` | `"~/.yoke"` |
+| `runtime.drain_timeout_secs` | `30` |
 | `server.host` | `"0.0.0.0"` |
 | `server.port` | `8644` |
 | `server.max_body_size` | `1048576` |
@@ -400,3 +402,21 @@ Running integration tests requires the library target (`src/lib.rs`), which re-e
 ## License
 
 TBD
+## Graceful Shutdown
+
+Yoke handles SIGINT and SIGTERM for graceful shutdown:
+
+1. **First signal** (SIGINT or SIGTERM): triggers graceful shutdown
+   - HTTP server stops accepting new connections
+   - Dispatcher stops consuming new events from the channel
+   - In-flight workflows are given `drain_timeout_secs` to complete
+   - State is persisted (`completed.json`, `failed.json`) before exit
+2. **Second signal**: forces immediate `process::exit(1)`
+
+Configure the drain timeout in `config.toml`:
+
+```toml
+[runtime]
+drain_timeout_secs = 30  # default: 30 seconds
+```
+
