@@ -11,6 +11,7 @@ src/
   dispatcher.rs — Concurrency control (Dispatcher + Semaphore), deduplication (DedupSets, SharedDedupSets), persistence, and workspace directory management
   harness.rs   — Hermes API client harness (HermesClient, request/response types, StepResult, error handling)
   logging.rs   — Workflow step logging: write `.prompt` and `.log` files per agent step
+  reload.rs    — File watcher for workflow hot-reload (notify crate, debouncing, ReloadMessage types)
   server.rs    — axum HTTP server with health, readiness, and unified webhook endpoint
   workflow.rs  — Workflow TOML parsing, validation, and error types
   git.rs        — Git repository operations (clone, pull, worktree, auth callbacks, dirty-check)
@@ -25,6 +26,7 @@ tests/
   dispatcher_tests.rs — Integration tests for dispatcher (full dispatch flow, dedup, concurrency, shutdown, persistence)
   git_integration_tests.rs — Integration tests for git module (clone, pull, worktree, dirty-check with local repos)
   harness_tests.rs   — Integration tests for harness (serialization, response parsing, error file, multi-instance)
+  reload_tests.rs    — Integration tests for reload module (file detection, debouncing, .toml filtering)
   runner_tests.rs   — Integration tests for workflow runner (step execution, template vars, hooks, fail-fast)
 ```
 
@@ -53,6 +55,7 @@ tests/
 - **GitLab webhook handler**: `src/webhook/gitlab.rs` provides constant-time token verification (`verify_gitlab_token`), JSON payload parsing (`parse_gitlab_event`), and event-to-trigger mapping (`map_to_trigger_event`). The `handle_gitlab_webhook` function orchestrates the full flow.
 - **Constant-time comparison**: Both handlers use `subtle::ConstantTimeEq` to prevent timing attacks — GitHub for HMAC signatures, GitLab for token comparison.
 - **`WebhookError` enum**: Shared error type (Unauthorized, BadRequest, NoMatchingTrigger, InternalError) in `webhook/mod.rs`, used by `WebhookHandler::handle_webhook()`. `InternalError` is returned when the dispatcher channel is closed, mapping to HTTP 503 Service Unavailable.
+- **File watcher / Hot-reload** (`src/reload.rs`): Monitors the `--workflows` directory for `.toml` file changes using the `notify` crate. `setup_file_watcher(workflows_dir, tx)` creates a `notify::RecommendedWatcher`, a bridge thread (sync→async channel adapter), and a debouncing tokio task. The `FileWatcher` handle keeps the watcher alive — dropping it stops the watcher. Debouncing: 500ms after the last event, a single `ReloadMessage` (`FileChanged { path }` or `FileRemoved { path }`) is sent on the async channel. Non-`.toml` files are filtered out in the sync callback before entering the pipeline. The bridge thread converts the synchronous `notify` callback into async events via `blocking_send`. The debounce loop is fully async (`tokio::time::timeout` for the debounce window), avoiding blocking the runtime. Actual workflow re-loading and state swap will be added in a follow-up issue — currently the watcher only logs detected changes.
 - **`TriggerEvent` struct**: Shared webhook result type in `webhook/mod.rs` with `trigger_type: TriggerType`, `repo_path`, and `event_id` fields. Sent to the dispatcher via the mpsc channel in `WebhookHandler`.
 - **`WebhookHandler` struct**: Holds `platform`, `secret`, and `sender: mpsc::Sender<TriggerEvent>`. Created in `run_server()` with a bounded channel and passed to `AppState`. Derives `Clone`.
 - **`AppState` struct**: Contains `webhook_handler: WebhookHandler` and `dispatcher: Dispatcher`. Derives `Clone` for axum state sharing. The `dispatcher` field provides concurrency control (via `tokio::Semaphore`) and deduplication state (`SharedDedupSets`).
