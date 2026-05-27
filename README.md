@@ -328,6 +328,35 @@ Yoke includes a `git` module (`src/git.rs`) that provides repository management 
 Token-based authentication: `GITHUB_TOKEN` or `GITLAB_TOKEN` environment variables are read at runtime and wired into the `git2` credential callbacks. GitHub tokens are passed via the `x-access-token` header; GitLab tokens use the `PRIVATE-TOKEN` header. Branch names are sanitized to `[a-zA-Z0-9._-]` before use in worktree creation.
 
 
+### Workflow Runner
+
+The `WorkflowRunner` (`src/runner.rs`) orchestrates sequential execution of multi-step workflows:
+
+1. For each `Step` in the workflow, it runs **pre-hooks**, renders the `prompt_template` with template variables, calls the **Hermes API** via `HermesClient`, and runs **post-hooks**.
+2. **Fail-fast**: the first error stops the entire workflow immediately.
+3. Pre-hook failure prevents step execution; post-hook failure marks the step as failed.
+4. Template variables (`{{key}}`) are substituted using the `template` module — unknown variables cause an error.
+
+```rust
+use yoke::runner::WorkflowRunner;
+use yoke::harness::HermesClient;
+
+let client = HermesClient::new("http://localhost:8000".into(), "api-key".into());
+let runner = WorkflowRunner::new(workflow, variables, workspace_dir, client);
+runner.run().await?; // Returns Ok(()) or Err(RunnerError)
+```
+
+#### Error types
+
+`RunnerError` covers all failure modes:
+
+| Variant | Cause |
+|---|---|
+| `Template` | Unknown variable, malformed syntax, or empty template |
+| `Hook` | File not found, empty, or missing expected text |
+| `Harness` | Network error, non-2xx API response, or IO error |
+| `Execution` | Wrapping error from a failed step (includes step name) |
+
 ## Testing
 
 ### Unit tests

@@ -16,6 +16,7 @@ src/
   git.rs        — Git repository operations (clone, pull, worktree, auth callbacks, dirty-check)
   template.rs  — Template rendering with `{{variable}}` substitution and validation
   hooks.rs     — Hook definitions (FileNotEmpty, FileContains) and run_hook dispatcher
+  runner.rs    — Workflow runner: sequential step execution with template vars, hooks, and fail-fast
   webhook/     — Webhook handling modules
     mod.rs       — Shared types (TriggerEvent, WebhookError) and dispatch to platform handler
     github.rs   — GitHub webhook: HMAC-SHA256 verification, event parsing, trigger mapping
@@ -24,6 +25,7 @@ tests/
   dispatcher_tests.rs — Integration tests for dispatcher (full dispatch flow, dedup, concurrency, shutdown, persistence)
   git_integration_tests.rs — Integration tests for git module (clone, pull, worktree, dirty-check with local repos)
   harness_tests.rs   — Integration tests for harness (serialization, response parsing, error file, multi-instance)
+  runner_tests.rs   — Integration tests for workflow runner (step execution, template vars, hooks, fail-fast)
 ```
 
 ## Key Design Decisions
@@ -61,6 +63,7 @@ tests/
 - **StepResult struct** (`src/harness.rs`): `StepResult` captures the output of a single agent step execution. Fields: `extracted_message` (the text from `output_text` content blocks), `raw_request` (the full JSON request body sent to the API), and `raw_response` (the full JSON response body received). Both `execute_step` and `execute_step_with_error_path` return `Result<StepResult, HarnessError>` instead of `Result<String, HarnessError>`, enabling audit logging of the full HTTP exchange per step.
 - **Workflow logging** (`src/logging.rs`): `write_prompt_file(step_num, step_name, prompt, workspace_dir)` writes a rendered prompt template to `{workspace_dir}/{step_num:02}_{step_name}.prompt`. `write_log_file(step_num, step_name, request, response, extracted_message, workspace_dir)` writes a human-readable log of the full HTTP exchange to `{workspace_dir}/{step_num:02}_{step_name}.log`, with sections for `REQUEST:`, `RESPONSE:`, and `FINAL MESSAGE:`. Both functions create the workspace directory if it doesn't exist. File naming uses zero-padded two-digit step numbers (e.g., `00_Start.log`, `01_Analyze.prompt`).
 - **Workspace directory** (`src/dispatcher.rs`): `workspace_dir(workdir, owner, repo, event_id)` constructs the per-event workspace path `{workdir}/{owner}/{repo}/{event_id}/` per the architecture design doc (Section 11). The dispatcher creates this directory before spawning the workflow task and writes a step-0 `Start.log` file to record the trigger type and event metadata.
+- **Workflow runner** (`src/runner.rs`): `WorkflowRunner` orchestrates sequential execution of a `Workflow`. Each step goes through: pre-hooks → template rendering → Hermes API call → post-hooks. Fail-fast: the first error stops the entire workflow. `RunnerError` enum wraps errors from template rendering (`Template`), hook validation (`Hook`), Hermes API calls (`Harness`), and step execution (`Execution`). Pre-hook failure prevents step execution; post-hook failure marks the step as failed. Integration tests use an in-process mock axum server on a random port to simulate the Hermes API.
 
 ## CLI Arguments
 
@@ -121,7 +124,20 @@ Environment variable validation tests (`test_validate_env_vars_*`) use a static 
 
 The `tests/dispatcher_tests.rs` file contains integration tests that exercise the dispatcher module end-to-end. These tests import from `yoke::dispatcher` (requires the library target in `src/lib.rs`).
 
-Tests cover:
+The `tests/runner_tests.rs` file contains integration tests that exercise the workflow runner end-to-end. These tests use an in-process mock axum server to simulate the Hermes API and import from `yoke::runner` (requires the library target in `src/lib.rs`).
+
+Runner tests cover:
+- Two-step workflow execution with sequential API calls
+- Template variable substitution (`{{variable}}`) in prompt templates
+- Unknown variable errors cause step failure
+- Pre-hook failure prevents step execution
+- Post-hook failure marks step as failed
+- Fail-fast on first step error
+- Pre and post hooks both passing
+- Steps execute in defined order
+- Hook failure between steps stops the workflow
+
+Dispatcher tests cover:
 - Full dispatch flow: message sent via channel → `run()` dispatches → `on_workflow_complete` called
 - Duplicate event rejection: second event with the same dedup key is skipped
 - Concurrency limits: `max_concurrent` semaphore blocks excess events
