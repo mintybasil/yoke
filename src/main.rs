@@ -4,6 +4,7 @@ use clap::Parser;
 use yoke::cli;
 use yoke::config;
 use yoke::config::Config;
+use yoke::reload;
 use yoke::server;
 use yoke::workflow;
 
@@ -74,6 +75,40 @@ async fn main() {
         "Configuration and {} workflow(s) loaded and validated successfully",
         workflows.len()
     );
+
+    // Set up file watcher for hot-reload of workflow TOML files
+    let (reload_tx, mut reload_rx) = tokio::sync::mpsc::channel(32);
+    let _file_watcher = match reload::setup_file_watcher(&args.workflows, reload_tx) {
+        Ok(w) => {
+            tracing::info!(
+                "Watching workflow directory for changes: {}",
+                args.workflows.display()
+            );
+            Some(w)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to set up file watcher for {}: {e}; hot-reload disabled",
+                args.workflows.display()
+            );
+            None
+        }
+    };
+
+    // Spawn reload handler that logs workflow file changes.
+    // Actual workflow re-loading and state swap will be added in a follow-up issue.
+    tokio::spawn(async move {
+        while let Some(msg) = reload_rx.recv().await {
+            match &msg {
+                reload::ReloadMessage::FileChanged { path } => {
+                    tracing::info!(path = %path.display(), "Workflow file changed; reload pending");
+                }
+                reload::ReloadMessage::FileRemoved { path } => {
+                    tracing::info!(path = %path.display(), "Workflow file removed; reload pending");
+                }
+            }
+        }
+    });
 
     // Start the HTTP server
     tracing::info!(

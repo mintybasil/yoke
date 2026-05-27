@@ -5,6 +5,7 @@ pub mod git;
 pub mod harness;
 pub mod hooks;
 pub mod logging;
+pub mod reload;
 pub mod runner;
 pub mod server;
 pub mod template;
