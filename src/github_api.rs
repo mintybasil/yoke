@@ -80,9 +80,7 @@ impl GitHubClient {
         );
         headers.insert(
             reqwest::header::USER_AGENT,
-            "yoke-agent"
-                .parse()
-                .expect("header value should be valid"),
+            "yoke-agent".parse().expect("header value should be valid"),
         );
         headers
     }
@@ -122,8 +120,10 @@ impl GitHubClient {
         repo: &str,
     ) -> Result<Vec<Webhook>, GitHubError> {
         let mut all_webhooks = Vec::new();
-        let mut next_url: Option<String> =
-            Some(format!("{}/repos/{}/{}/webhooks", self.base_url, owner, repo));
+        let mut next_url: Option<String> = Some(format!(
+            "{}/repos/{}/{}/webhooks",
+            self.base_url, owner, repo
+        ));
 
         while let Some(url) = next_url {
             let response = self
@@ -206,15 +206,16 @@ mod tests {
         let url = server.url();
 
         let page1 = r#"[{ "id": 1, "url": "u1", "secret": null, "events": [], "active": true }]"#;
-        let page2 = r#"[{ "id": 2, "url": "u2", "secret": null, "events": ["push"], "active": false }]"#;
+        let page2 =
+            r#"[{ "id": 2, "url": "u2", "secret": null, "events": ["push"], "active": false }]"#;
 
         server
             .mock("GET", "/repos/owner/repo/webhooks")
             .with_status(200)
-            .with_header("link", &format!(
-                r#"<{}/repos/owner/repo/webhooks?page=2>; rel="next""#,
-                url
-            ))
+            .with_header(
+                "link",
+                &format!(r#"<{}/repos/owner/repo/webhooks?page=2>; rel="next""#, url),
+            )
             .with_body(page1)
             .create_async()
             .await;
