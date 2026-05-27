@@ -1,5 +1,6 @@
 pub mod github;
 pub mod gitlab;
+pub mod gitlab_api;
 
 use crate::config::Platform;
 use crate::dispatcher::DispatchMessage;
