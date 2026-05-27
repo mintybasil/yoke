@@ -60,7 +60,11 @@ pub fn setup_signal_handler(shutdown_tx: watch::Sender<bool>) -> tokio::task::Jo
 }
 
 /// Handle the `webhooks` subcommand.
-async fn handle_webhooks_command(config: &Config, cmd: &WebhooksSubcommand) {
+async fn handle_webhooks_command(
+    config: &Config,
+    cmd: &WebhooksSubcommand,
+    workflows_dir: &std::path::Path,
+) {
     // Determine the gitlab_url for GitLab platform
     let gitlab_url = config.gitlab_url.as_ref().map(|u| {
         let s = u.to_string();
@@ -82,46 +86,23 @@ async fn handle_webhooks_command(config: &Config, cmd: &WebhooksSubcommand) {
     };
 
     match cmd {
-        WebhooksSubcommand::Add { workflows: _ } => {
-            eprintln!("Error: 'webhooks add' is not yet implemented");
-            std::process::exit(1);
+        WebhooksSubcommand::Add { workflows } => {
+            let workflows_path = workflows.as_deref().unwrap_or(workflows_dir);
+            if let Err(e) = webhooks::webhooks_add(config, &client, workflows_path).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
         }
-        WebhooksSubcommand::Remove { id } => {
-            for repo in &config.repos {
-                let repo_path = format!("{}/{}", repo.owner, repo.repo);
-                match client.delete_webhook(&repo_path, *id).await {
-                    Ok(()) => {
-                        println!("Deleted webhook {} from {}", id, repo_path);
-                    }
-                    Err(e) => {
-                        eprintln!("Error deleting webhook {} from {}: {e}", id, repo_path);
-                    }
-                }
+        WebhooksSubcommand::Remove => {
+            if let Err(e) = webhooks::webhooks_remove(config, &client).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
             }
         }
         WebhooksSubcommand::List => {
-            for repo in &config.repos {
-                let repo_path = format!("{}/{}", repo.owner, repo.repo);
-                match client.list_webhooks(&repo_path).await {
-                    Ok(hooks) => {
-                        println!("Webhooks for {}:", repo_path);
-                        if hooks.is_empty() {
-                            println!("  (none)");
-                        }
-                        for hook in hooks {
-                            let secret_display =
-                                hook.secret.as_ref().map(|_| "********").unwrap_or("(none)");
-                            println!(
-                                "  [{}] {} events={:?} active={}",
-                                hook.id, hook.url, hook.events, hook.active
-                            );
-                            println!("        secret={}", secret_display);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error listing webhooks for {}: {e}", repo_path);
-                    }
-                }
+            if let Err(e) = webhooks::webhooks_list(config, &client).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
             }
         }
     }
@@ -149,7 +130,7 @@ async fn main() {
             }
         };
 
-        handle_webhooks_command(&config, &webhooks_cmd.command).await;
+        handle_webhooks_command(&config, &webhooks_cmd.command, &args.workflows).await;
         return;
     }
 

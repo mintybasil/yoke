@@ -44,17 +44,15 @@ pub struct WebhooksCommand {
 /// Webhook management subcommands.
 #[derive(Subcommand, Debug)]
 pub enum WebhooksSubcommand {
-    /// Add a new webhook to the configured repositories
+    /// Add or update a webhook for the configured repositories (idempotent)
     Add {
-        /// Path to workflow TOML file to inspect for event types
+        /// Path to workflow TOML directory to inspect for event types
+        /// (defaults to the --workflows CLI arg)
         #[arg(long)]
         workflows: Option<PathBuf>,
     },
-    /// Remove an existing webhook by ID
-    Remove {
-        /// The ID of the webhook to remove
-        id: u64,
-    },
+    /// Remove all webhooks matching Yoke's URL from configured repositories
+    Remove,
     /// List existing webhooks for the configured repositories
     List,
 }
@@ -143,12 +141,10 @@ mod tests {
 
     #[test]
     fn test_webhooks_remove_subcommand() {
-        let cli = Cli::parse_from(["yoke", "webhooks", "remove", "12345"]);
+        let cli = Cli::parse_from(["yoke", "webhooks", "remove"]);
         match cli.command {
             Some(Command::Webhooks(cmd)) => match cmd.command {
-                WebhooksSubcommand::Remove { id } => {
-                    assert_eq!(id, 12345);
-                }
+                WebhooksSubcommand::Remove => {}
                 _ => panic!("expected Remove subcommand"),
             },
             _ => panic!("expected Webhooks command"),
