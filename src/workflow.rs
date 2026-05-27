@@ -196,6 +196,50 @@ impl TriggerType {
     }
 }
 
+impl TriggerType {
+    /// Return the platform-specific webhook event name for this trigger type.
+    ///
+    /// GitHub webhook events match the `X-GitHub-Event` header values.
+    /// GitLab webhook events match the `X-GitLab-Event` header values
+    /// but are expressed as boolean flags on the hook configuration.
+    ///
+    /// The returned strings are suitable for use in webhook subscription
+    /// `events` arrays (GitHub) or as GitLab event flag names.
+    pub fn webhook_event(&self) -> &'static str {
+        match self {
+            TriggerType::GithubIssueAssigned { .. } => "issues",
+            TriggerType::GithubIssueCommentMention { .. } => "issue_comment",
+            TriggerType::GithubPullRequestReview { .. } => "pull_request_review",
+            TriggerType::GithubPullRequestCommentMention { .. } => "pull_request_review_comment",
+            TriggerType::GitlabIssueAssigned { .. } => "issues_events",
+            TriggerType::GitlabIssueMention { .. } => "note_events",
+            TriggerType::GitlabMergeRequestReview { .. } => "note_events",
+            TriggerType::GitlabMergeRequestCommentMention { .. } => "note_events",
+        }
+    }
+}
+
+/// Derive the set of unique webhook events required by a list of workflows.
+///
+/// Each workflow's trigger type is mapped to its corresponding platform
+/// webhook event name via [`TriggerType::webhook_event`]. The result is
+/// deduplicated (order-preserving) so that each event appears at most once.
+///
+/// Returns an empty `Vec` if no workflows have a recognized trigger type.
+pub fn derive_required_events(workflows: &[Workflow]) -> Vec<String> {
+    let mut events = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for wf in workflows {
+        if let Some(tt) = TriggerType::from_trigger(&wf.trigger) {
+            let event = tt.webhook_event().to_string();
+            if seen.insert(event.clone()) {
+                events.push(event);
+            }
+        }
+    }
+    events
+}
+
 impl Workflow {
     /// Validate the workflow meets semantic requirements:
     /// - trigger type must be non-empty and one of the known types
@@ -870,5 +914,143 @@ prompt_template = "Do the thing"
             }
             _ => panic!("expected GithubIssueCommentMention variant"),
         }
+    }
+
+    // --- derive_required_events tests ---
+
+    #[test]
+    fn test_derive_required_events_single_github_workflow() {
+        let wf = make_workflow("github_issue_assigned");
+        let events = derive_required_events(&[wf]);
+        assert_eq!(events, vec!["issues"]);
+    }
+
+    #[test]
+    fn test_derive_required_events_multiple_github_workflows() {
+        let wf1 = make_workflow("github_issue_assigned");
+        let wf2 = make_workflow("github_issue_comment_mention");
+        let events = derive_required_events(&[wf1, wf2]);
+        assert_eq!(events, vec!["issues", "issue_comment"]);
+    }
+
+    #[test]
+    fn test_derive_required_events_deduplicates() {
+        let wf1 = make_workflow("github_issue_assigned");
+        let wf2 = make_workflow("github_issue_assigned");
+        let events = derive_required_events(&[wf1, wf2]);
+        assert_eq!(events, vec!["issues"]);
+    }
+
+    #[test]
+    fn test_derive_required_events_gitlab_workflows() {
+        let wf1 = make_workflow("gitlab_issue_assigned");
+        let wf2 = make_workflow("gitlab_issue_mention");
+        let wf3 = make_workflow("gitlab_merge_request_review");
+        let events = derive_required_events(&[wf1, wf2, wf3]);
+        // gitlab_issue_mention and gitlab_merge_request_review both map to note_events
+        assert_eq!(events, vec!["issues_events", "note_events"]);
+    }
+
+    #[test]
+    fn test_derive_required_events_gitlab_dedup_note_events() {
+        let wf1 = make_workflow("gitlab_issue_mention");
+        let wf2 = make_workflow("gitlab_merge_request_review");
+        let wf3 = make_workflow("gitlab_merge_request_review_comment");
+        let events = derive_required_events(&[wf1, wf2, wf3]);
+        // All three map to note_events — deduplicated
+        assert_eq!(events, vec!["note_events"]);
+    }
+
+    #[test]
+    fn test_derive_required_events_empty() {
+        let events: Vec<String> = derive_required_events(&[]);
+        assert!(events.is_empty());
+    }
+
+    // --- TriggerType::webhook_event tests ---
+
+    #[test]
+    fn test_webhook_event_github_triggers() {
+        assert_eq!(
+            TriggerType::from_trigger(&Trigger {
+                r#type: "github_issue_assigned".to_string(),
+                assigned_to: None,
+                mentioned_user: None,
+                allowed_users: None,
+            })
+            .unwrap()
+            .webhook_event(),
+            "issues"
+        );
+        assert_eq!(
+            TriggerType::from_trigger(&Trigger {
+                r#type: "github_issue_comment_mention".to_string(),
+                assigned_to: None,
+                mentioned_user: None,
+                allowed_users: None,
+            })
+            .unwrap()
+            .webhook_event(),
+            "issue_comment"
+        );
+        assert_eq!(
+            TriggerType::from_trigger(&Trigger {
+                r#type: "github_pull_request_review".to_string(),
+                assigned_to: None,
+                mentioned_user: None,
+                allowed_users: None,
+            })
+            .unwrap()
+            .webhook_event(),
+            "pull_request_review"
+        );
+        assert_eq!(
+            TriggerType::from_trigger(&Trigger {
+                r#type: "github_pull_request_review_comment".to_string(),
+                assigned_to: None,
+                mentioned_user: None,
+                allowed_users: None,
+            })
+            .unwrap()
+            .webhook_event(),
+            "pull_request_review_comment"
+        );
+    }
+
+    #[test]
+    fn test_webhook_event_gitlab_triggers() {
+        assert_eq!(
+            TriggerType::from_trigger(&Trigger {
+                r#type: "gitlab_issue_assigned".to_string(),
+                assigned_to: None,
+                mentioned_user: None,
+                allowed_users: None,
+            })
+            .unwrap()
+            .webhook_event(),
+            "issues_events"
+        );
+        assert_eq!(
+            TriggerType::from_trigger(&Trigger {
+                r#type: "gitlab_issue_mention".to_string(),
+                assigned_to: None,
+                mentioned_user: None,
+                allowed_users: None,
+            })
+            .unwrap()
+            .webhook_event(),
+            "note_events"
+        );
+        assert_eq!(
+            TriggerType::from_trigger(&Trigger {
+                r#type: "gitlab_merge_request_review".to_string(),
+                assigned_to: None,
+                mentioned_user: None,
+                allowed_users: None,
+            })
+            .unwrap()
+            .webhook_event(),
+            "note_events"
+        );
     }
 }

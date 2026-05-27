@@ -6,11 +6,16 @@
 //! - [`WebhookClient`] — enum-based dispatcher selecting the right platform implementation
 //! - [`GitHubWebhookClient`] — GitHub implementation using [`crate::github_api::GitHubClient`]
 //! - [`GitLabWebhookClient`] — GitLab implementation using [`crate::webhook::gitlab_api::GitLabClient`]
+//! - [`webhooks_list`] — list webhooks for all configured repositories
+//! - [`webhooks_remove`] — remove webhooks matching Yoke's URL for all configured repositories
+//! - [`webhooks_add`] — idempotently create or update webhooks for all configured repositories
 
-use crate::config::Platform;
+use crate::config::{Config, Platform};
 use crate::github_api;
 use crate::webhook::gitlab_api;
+use crate::workflow;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -79,6 +84,17 @@ impl GitHubWebhookClient {
     pub fn new(token: String, owner: String) -> Self {
         Self {
             client: github_api::GitHubClient::new(token, None),
+            owner,
+        }
+    }
+
+    /// Create a new GitHub webhook client with a custom API base URL.
+    ///
+    /// Useful for testing against mock servers. `base_url` replaces the
+    /// default `https://api.github.com`.
+    pub fn new_with_base_url(token: String, owner: String, base_url: String) -> Self {
+        Self {
+            client: github_api::GitHubClient::new(token, Some(base_url)),
             owner,
         }
     }
@@ -324,6 +340,211 @@ impl WebhookClient {
             WebhookClient::Gitlab(c) => c.delete_webhook(repo, id).await,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// High-level command handlers
+// ---------------------------------------------------------------------------
+
+/// Summary counters returned by [`webhooks_add`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct AddSummary {
+    pub created: usize,
+    pub updated: usize,
+    pub skipped: usize,
+    pub errors: usize,
+}
+
+/// Summary counters returned by [`webhooks_remove`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RemoveSummary {
+    pub deleted: usize,
+    pub not_found: usize,
+    pub errors: usize,
+}
+
+/// Construct the Yoke webhook URL from config server settings.
+///
+/// Format: `https://{host}:{port}/webhook`
+fn yoke_webhook_url(config: &Config) -> String {
+    format!(
+        "https://{}:{}/webhook",
+        config.server.host, config.server.port
+    )
+}
+
+/// List all webhooks for configured repositories in a human-readable table.
+///
+/// For each repository, fetches webhooks via the platform client and prints:
+/// `ID | URL | Secret (last 4) | Events | Active`.
+/// Webhooks whose URL matches Yoke's configured webhook URL are marked with
+/// a `(yoke)` label.
+pub async fn webhooks_list(config: &Config, client: &WebhookClient) -> Result<(), WebhookError> {
+    let yoke_url = yoke_webhook_url(config);
+
+    for repo in &config.repos {
+        let repo_display = format!("{}/{}", repo.owner, repo.repo);
+        match client.list_webhooks(&repo.repo).await {
+            Ok(hooks) => {
+                println!("Webhooks for {}:", repo_display);
+                if hooks.is_empty() {
+                    println!("  (none)");
+                }
+                for hook in hooks {
+                    let secret_display = match &hook.secret {
+                        Some(s) if s.len() >= 4 => &s[s.len() - 4..],
+                        Some(s) => s,
+                        None => "(none)",
+                    };
+                    let yoke_tag = if hook.url == yoke_url { " (yoke)" } else { "" };
+                    println!(
+                        "  [{}] {}{} events={:?} active={}",
+                        hook.id, hook.url, yoke_tag, hook.events, hook.active
+                    );
+                    println!("        secret=****{secret_display}");
+                }
+            }
+            Err(e) => {
+                eprintln!("Error listing webhooks for {repo_display}: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Remove all webhooks matching Yoke's URL from configured repositories.
+///
+/// For each repository, lists existing webhooks, finds those whose URL
+/// matches `https://{host}:{port}/webhook`, and deletes them.
+/// Returns a [`RemoveSummary`] with deleted, not_found, and error counts.
+pub async fn webhooks_remove(
+    config: &Config,
+    client: &WebhookClient,
+) -> Result<RemoveSummary, WebhookError> {
+    let yoke_url = yoke_webhook_url(config);
+    let mut summary = RemoveSummary::default();
+
+    for repo in &config.repos {
+        let repo_display = format!("{}/{}", repo.owner, repo.repo);
+        let hooks = match client.list_webhooks(&repo.repo).await {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("Error listing webhooks for {repo_display}: {e}");
+                summary.errors += 1;
+                continue;
+            }
+        };
+
+        let matching: Vec<&WebhookInfo> = hooks.iter().filter(|h| h.url == yoke_url).collect();
+        if matching.is_empty() {
+            println!("{repo_display}: no Yoke webhooks found");
+            summary.not_found += 1;
+            continue;
+        }
+
+        for hook in &matching {
+            match client.delete_webhook(&repo.repo, hook.id).await {
+                Ok(()) => {
+                    println!("{repo_display}: deleted webhook {} ({})", hook.id, hook.url);
+                    summary.deleted += 1;
+                }
+                Err(e) => {
+                    eprintln!("{repo_display}: error deleting webhook {}: {e}", hook.id);
+                    summary.errors += 1;
+                }
+            }
+        }
+    }
+
+    println!(
+        "\nSummary: deleted={}, not_found={}, errors={}",
+        summary.deleted, summary.not_found, summary.errors
+    );
+    Ok(summary)
+}
+
+/// Idempotently create or update webhooks for all configured repositories.
+///
+/// Loads workflows from `workflows_path`, derives the required event
+/// subscriptions, and for each repository either creates a new webhook
+/// or updates an existing one (matched by URL).
+///
+/// Returns an [`AddSummary`] with created, updated, skipped, and error counts.
+pub async fn webhooks_add(
+    config: &Config,
+    client: &WebhookClient,
+    workflows_path: &Path,
+) -> Result<AddSummary, WebhookError> {
+    let yoke_url = yoke_webhook_url(config);
+
+    // Load workflows and derive required events
+    let workflows = workflow::load_workflows(workflows_path).map_err(|e| {
+        WebhookError::Config(format!(
+            "Failed to load workflows from {}: {e}",
+            workflows_path.display()
+        ))
+    })?;
+    let workflow_refs: Vec<workflow::Workflow> = workflows.iter().map(|(_, w)| w.clone()).collect();
+    let events = workflow::derive_required_events(&workflow_refs);
+
+    if events.is_empty() {
+        eprintln!("Warning: no workflow triggers found; subscribing to no events");
+    }
+
+    let hook_config = WebhookConfig {
+        url: yoke_url.clone(),
+        secret: Some(config.server.webhook_secret.clone()),
+        events,
+    };
+
+    let mut summary = AddSummary::default();
+
+    for repo in &config.repos {
+        let repo_display = format!("{}/{}", repo.owner, repo.repo);
+        let existing = match client.list_webhooks(&repo.repo).await {
+            Ok(hooks) => hooks,
+            Err(e) => {
+                eprintln!("Error listing webhooks for {repo_display}: {e}");
+                summary.errors += 1;
+                continue;
+            }
+        };
+
+        let matched = existing.iter().find(|h| h.url == yoke_url);
+        match matched {
+            Some(hook) => {
+                match client
+                    .update_webhook(&repo.repo, hook.id, &hook_config)
+                    .await
+                {
+                    Ok(_) => {
+                        println!("{repo_display}: updated webhook {} ({})", hook.id, yoke_url);
+                        summary.updated += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("{repo_display}: error updating webhook {}: {e}", hook.id);
+                        summary.errors += 1;
+                    }
+                }
+            }
+            None => match client.create_webhook(&repo.repo, &hook_config).await {
+                Ok(hook) => {
+                    println!("{repo_display}: created webhook {} ({})", hook.id, yoke_url);
+                    summary.created += 1;
+                }
+                Err(e) => {
+                    eprintln!("{repo_display}: error creating webhook: {e}");
+                    summary.errors += 1;
+                }
+            },
+        }
+    }
+
+    println!(
+        "\nSummary: created={}, updated={}, skipped={}, errors={}",
+        summary.created, summary.updated, summary.skipped, summary.errors
+    );
+    Ok(summary)
 }
 
 // ---------------------------------------------------------------------------

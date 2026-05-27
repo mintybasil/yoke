@@ -41,8 +41,8 @@ Options:
 
 Webhook subcommands:
   webhooks list              List webhooks for all configured repositories
-  webhooks add               Add a webhook to all configured repositories (not yet implemented)
-  webhooks remove <ID>       Remove a webhook by ID from all configured repositories
+  webhooks add               Add or update webhooks on all configured repositories based on workflow triggers
+  webhooks remove            Remove Yoke webhooks (matched by URL) from all configured repositories
 ```
 
 CLI `--host` and `--port` flags override the corresponding values in `config.toml`. The `[runtime].max_concurrent`, `[runtime].workdir`, and `platform` settings are configured in `config.toml` only and cannot be overridden from the command line.
@@ -59,21 +59,23 @@ yoke --config config.toml webhooks list
 
 Lists all webhooks for each repository defined in `config.toml`. Output includes webhook ID, URL, events, active status, and secret (redacted as `********`).
 
-**Remove a webhook:**
+**Remove webhooks:**
 
 ```bash
-yoke --config config.toml webhooks remove <ID>
+yoke --config config.toml webhooks remove
 ```
 
-Deletes the webhook with the given ID from all configured repositories.
+Removes all Yoke webhooks from each configured repository. A Yoke webhook is identified by its URL matching `https://{host}:{port}/webhook` (derived from the `[server]` config). This removes *all* webhooks whose URL matches the Yoke server URL, not just a single webhook by ID. A summary shows how many were deleted, how many repos had no matching webhooks, and any errors.
 
-**Add a webhook (not yet implemented):**
+**Add webhooks:**
 
 ```bash
 yoke --config config.toml webhooks add [--workflows <DIR>]
 ```
 
-> **Note:** The `webhooks add` subcommand is not yet implemented. Use `yoke --config config.toml webhooks list` to view existing webhooks, or use the GitHub/GitLab API directly to create webhooks.
+Creates or updates webhooks on all configured repositories based on the workflow trigger definitions. The command loads workflow TOML files from the `--workflows` directory, derives the required webhook events from the trigger types (e.g., `github_issue_assigned` → `issues` event on GitHub, `issues_events` on GitLab), and configures the webhook URL as `https://{host}:{port}/webhook`.
+
+The operation is idempotent: if a webhook with the Yoke URL already exists on a repository, it is updated with the new event set; otherwise, a new webhook is created. The webhook secret is set from the `server.webhook_secret` config value. A summary shows how many webhooks were created, updated, and any errors.
 
 ## Configuration
 
