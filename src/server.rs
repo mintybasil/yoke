@@ -23,7 +23,6 @@ pub struct AppState {
     pub dispatcher: Dispatcher,
 }
 
-
 /// Health check handler — returns `{"status": "ok"}`.
 async fn health() -> Json<Value> {
     Json(json!({"status": "ok"}))
