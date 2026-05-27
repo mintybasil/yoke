@@ -308,15 +308,6 @@ Webhook subcommands:
   webhooks remove            Remove Yoke webhooks from all configured repositories
 ```
 
-## Graceful Shutdown
-
-Send SIGINT or SIGTERM to gracefully shut down:
-
-1. HTTP server stops accepting new connections
-2. In-flight workflows are given `drain_timeout_secs` (default: 30s) to complete
-3. State is persisted before exit
-4. A second signal forces immediate exit
-
 ## Further Reading
 
 - [Architecture Design](docs/Architecture%20Design.md) — internal design, data flow, and full trigger variable reference
