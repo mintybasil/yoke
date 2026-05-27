@@ -233,7 +233,11 @@ impl GitLabClient {
     ///
     /// `project_id` can be the numeric project ID or the URL-encoded
     /// `namespace/project` path (e.g. `"group%2Fproject"`).
-    pub async fn delete_webhook(&self, project_id: &str, webhook_id: u64) -> Result<(), GitLabError> {
+    pub async fn delete_webhook(
+        &self,
+        project_id: &str,
+        webhook_id: u64,
+    ) -> Result<(), GitLabError> {
         let url = format!(
             "{}/projects/{}/webhooks/{}",
             self.base_url, project_id, webhook_id
