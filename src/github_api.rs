@@ -153,10 +153,8 @@ impl GitHubClient {
         repo: &str,
     ) -> Result<Vec<Webhook>, GitHubError> {
         let mut all_webhooks = Vec::new();
-        let mut next_url: Option<String> = Some(format!(
-            "{}/repos/{}/{}/hooks",
-            self.base_url, owner, repo
-        ));
+        let mut next_url: Option<String> =
+            Some(format!("{}/repos/{}/{}/hooks", self.base_url, owner, repo));
 
         while let Some(url) = next_url {
             let response = self
