@@ -158,6 +158,26 @@ max_body_size = 1048576   # 1MB default
 | `GITHUB_TOKEN` | GitHub auth for webhook management and git operations | When `platform = "github"` |
 | `GITLAB_TOKEN` | GitLab auth for webhook management and git operations | When `platform = "gitlab"` |
 
+### Token Permissions
+
+The tokens used for webhook management must have the correct permissions/scopes, otherwise the GitHub or GitLab API will return 404 (GitHub) or 401/403 (GitLab) even if the repository exists.
+
+**GitHub Classic Token (Personal Access Token):**
+
+- `repo` (full repository access) — required for cloning/pushing
+- `admin:repo_hook` (read/write) — required for webhook management
+- Or simply enable the full `repo` scope which includes `admin:repo_hook`
+
+**GitHub Fine-grained Token:**
+
+- **Repository permissions → Administration**: Read and Write — required for webhook management
+- **Repository permissions → Contents**: Read — required for git operations
+- Note: Fine-grained tokens use `Bearer` authentication (which Yoke now sends). Using a fine-grained token without the Administration permission will cause 404 responses on the webhooks endpoints.
+
+**GitLab Token:**
+
+- `api` scope — required for all webhook management and git operations
+
 ## Webhook Management
 
 The `webhooks` subcommand provides a unified CLI for managing repository webhooks across GitHub and GitLab. It reads the `platform` and `repos` settings from `config.toml` and authenticates using `GITHUB_TOKEN` or `GITLAB_TOKEN`.

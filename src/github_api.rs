@@ -107,7 +107,7 @@ impl GitHubClient {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::AUTHORIZATION,
-            format!("token {}", self.token)
+            format!("Bearer {}", self.token)
                 .parse()
                 .expect("header value should be valid"),
         );
