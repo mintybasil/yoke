@@ -67,7 +67,7 @@ async fn test_webhooks_list_empty() {
     let url = server.url();
 
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/webhooks")
+        .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body("[]")
@@ -89,7 +89,7 @@ async fn test_webhooks_list_with_hooks() {
 
     let body = r#"[{"id":1,"url":"https://0.0.0.0:8644/webhook","secret":"mysecret1234","events":["issues"],"active":true}]"#;
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/webhooks")
+        .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(body)
@@ -111,7 +111,7 @@ async fn test_webhooks_remove_no_matching() {
 
     let body = r#"[{"id":1,"url":"https://other.example.com/hook","secret":"sec","events":["push"],"active":true}]"#;
     let mock = server
-        .mock("GET", "/repos/test-owner/test-repo/webhooks")
+        .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(body)
@@ -142,7 +142,7 @@ async fn test_webhooks_remove_matching() {
 
     let body = r#"[{"id":42,"url":"https://0.0.0.0:8644/webhook","secret":"sec","events":["issues"],"active":true}]"#;
     let list_mock = server
-        .mock("GET", "/repos/test-owner/test-repo/webhooks")
+        .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(body)
@@ -180,7 +180,7 @@ async fn test_webhooks_add_creates_new() {
 
     let list_body = r#"[{"id":1,"url":"https://other.example.com/hook","secret":"sec","events":["push"],"active":true}]"#;
     let list_mock = server
-        .mock("GET", "/repos/test-owner/test-repo/webhooks")
+        .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(list_body)
@@ -223,7 +223,7 @@ async fn test_webhooks_add_updates_existing() {
 
     let list_body = r#"[{"id":42,"url":"https://0.0.0.0:8644/webhook","secret":"old-secret","events":["push"],"active":true}]"#;
     let list_mock = server
-        .mock("GET", "/repos/test-owner/test-repo/webhooks")
+        .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(list_body)
@@ -339,7 +339,7 @@ async fn test_webhooks_add_api_error_on_list() {
     let url = server.url();
 
     let list_mock = server
-        .mock("GET", "/repos/test-owner/test-repo/webhooks")
+        .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(401)
         .create_async()
         .await;
@@ -369,7 +369,7 @@ async fn test_webhooks_remove_api_error() {
     let url = server.url();
 
     let list_mock = server
-        .mock("GET", "/repos/test-owner/test-repo/webhooks")
+        .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(500)
         .create_async()
         .await;
@@ -398,7 +398,7 @@ async fn test_webhooks_remove_delete_error() {
 
     let list_body = r#"[{"id":42,"url":"https://0.0.0.0:8644/webhook","secret":"sec","events":["issues"],"active":true}]"#;
     let list_mock = server
-        .mock("GET", "/repos/test-owner/test-repo/webhooks")
+        .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(list_body)
