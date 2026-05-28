@@ -116,7 +116,7 @@ max_body_size = 1048576                # 1MB default
 
 ### Workflow Files
 
-Workflow files live in the `--workflows` directory (default: `.`). Each file is a self-contained workflow definition:
+Workflow files live in the `--workflows` directory (default: `./workflows`). Each file is a self-contained workflow definition:
 
 ```toml
 # What events trigger this workflow
@@ -541,7 +541,7 @@ yoke [OPTIONS]
 
 Options:
   --config <FILE>              Path to config.toml (default: ./config.toml)
-  --workflows <DIR>            Directory containing workflow TOML files (default: .)
+  --workflows <DIR>            Directory containing workflow TOML files (default: ./workflows)
   --host <ADDR>                Server bind address (overrides config.toml)
   --port <PORT>                Server listen port (overrides config.toml)
 ```

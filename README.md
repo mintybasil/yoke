@@ -43,7 +43,7 @@ webhook_secret = "your-webhook-secret"
 
 ### 3. Create a workflow
 
-Create a `.toml` file in your workflows directory (default: current directory):
+Create a `.toml` file in your workflows directory (default: `./workflows`):
 
 ```toml
 [trigger]
@@ -188,7 +188,7 @@ Removes all Yoke webhooks (matched by URL) from each configured repository.
 
 ## Workflows
 
-Workflows are defined in `.toml` files in a directory (default: current directory; override with `--workflows`). Each file specifies a trigger, optional git configuration, and a sequence of steps to execute.
+Workflows are defined in `.toml` files in a directory (default: `./workflows`; override with `--workflows`). Each file specifies a trigger, optional git configuration, and a sequence of steps to execute.
 
 ### Example workflow
 
@@ -296,7 +296,7 @@ yoke webhooks <SUBCOMMAND>
 
 Options:
   --config <PATH>       Path to config.toml (default: config.toml)
-  --workflows <DIR>      Directory containing workflow TOML files (default: .)
+  --workflows <DIR>      Directory containing workflow TOML files (default: ./workflows)
   --host <ADDR>          Server bind address (overrides config.toml)
   --port <PORT>          Server listen port (overrides config.toml)
   -h, --help             Print help

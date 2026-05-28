@@ -90,7 +90,7 @@ yoke webhooks <SUBCOMMAND>
 
 Options:
   --config <PATH>       Path to config.toml (default: config.toml)
-  --workflows <DIR>      Directory containing workflow TOML files (default: .)
+  --workflows <DIR>      Directory containing workflow TOML files (default: ./workflows)
   --host <ADDR>          Server bind address (overrides config.toml)
   --port <PORT>          Server listen port (overrides config.toml)
 
