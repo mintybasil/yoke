@@ -365,11 +365,13 @@ pub struct RemoveSummary {
 
 /// Construct the Yoke webhook URL from config server settings.
 ///
-/// Format: `https://{host}:{port}/webhook`
+/// Uses `webhook_host` (the external hostname) rather than `host` (the bind
+/// address) so that the registered webhook URL resolves from the internet.
+/// Format: `https://{webhook_host}:{port}/webhook`
 fn yoke_webhook_url(config: &Config) -> String {
     format!(
         "https://{}:{}/webhook",
-        config.server.host, config.server.port
+        config.server.webhook_host, config.server.port
     )
 }
 

@@ -18,6 +18,10 @@ pub struct Cli {
     #[arg(long)]
     pub host: Option<String>,
 
+    /// External hostname for webhook URLs (overrides config.toml webhook_host)
+    #[arg(long)]
+    pub webhook_host: Option<String>,
+
     /// Server listen port (overrides config.toml)
     #[arg(long)]
     pub port: Option<u16>,
@@ -108,7 +112,14 @@ mod tests {
     fn test_no_overrides() {
         let cli = Cli::parse_from::<_, &str>([]);
         assert!(cli.host.is_none());
+        assert!(cli.webhook_host.is_none());
         assert!(cli.port.is_none());
+    }
+
+    #[test]
+    fn test_webhook_host_override() {
+        let cli = Cli::parse_from(["yoke", "--webhook-host", "yoke.example.com"]);
+        assert_eq!(cli.webhook_host, Some("yoke.example.com".to_string()));
     }
 
     #[test]

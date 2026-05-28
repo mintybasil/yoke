@@ -65,10 +65,17 @@ fn default_workdir() -> String {
 }
 
 /// HTTP server settings. `webhook_secret` is the only required field.
+///
+/// - `host` is the bind address for the TCP listener (e.g. `"0.0.0.0"`).
+/// - `webhook_host` is the external hostname used in webhook registration URLs
+///   (e.g. `"yoke.example.com"`). Defaults to `"0.0.0.0"` for backward compatibility,
+///   but should be set to the public-facing hostname in production.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
+    #[serde(default = "default_webhook_host")]
+    pub webhook_host: String,
     #[serde(default = "default_port")]
     pub port: u16,
     pub webhook_secret: String,
@@ -77,6 +84,10 @@ pub struct ServerConfig {
 }
 
 fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_webhook_host() -> String {
     "0.0.0.0".to_string()
 }
 
@@ -331,6 +342,7 @@ max_body_size = 1048576
         assert_eq!(config.runtime.max_concurrent, 2);
         assert_eq!(config.runtime.workdir, "/tmp/.yoke");
         assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.webhook_host, "0.0.0.0");
         assert_eq!(config.server.port, 8644);
         assert_eq!(config.server.webhook_secret, "secret");
         assert_eq!(config.server.max_body_size, 1_048_576);
@@ -353,6 +365,7 @@ webhook_secret = "secret"
         assert_eq!(config.runtime.max_concurrent, 0);
         assert!(!config.runtime.workdir.is_empty());
         assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.webhook_host, "0.0.0.0");
         assert_eq!(config.server.port, 8644);
         assert_eq!(config.server.max_body_size, 1_048_576);
     }
@@ -676,6 +689,7 @@ webhook_secret = "secret"
             runtime: RuntimeConfig::default(),
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
+                webhook_host: "0.0.0.0".to_string(),
                 port: 8644,
                 webhook_secret: "secret".to_string(),
                 max_body_size: 1_048_576,

@@ -22,6 +22,7 @@ fn test_config() -> Config {
         runtime: yoke::config::RuntimeConfig::default(),
         server: ServerConfig {
             host: "0.0.0.0".to_string(),
+            webhook_host: "0.0.0.0".to_string(),
             port: 8644,
             webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
@@ -271,6 +272,7 @@ async fn test_webhooks_add_empty_repos() {
         runtime: yoke::config::RuntimeConfig::default(),
         server: ServerConfig {
             host: "0.0.0.0".to_string(),
+            webhook_host: "0.0.0.0".to_string(),
             port: 8644,
             webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
@@ -309,6 +311,7 @@ async fn test_webhooks_remove_empty_repos() {
         runtime: yoke::config::RuntimeConfig::default(),
         server: ServerConfig {
             host: "0.0.0.0".to_string(),
+            webhook_host: "0.0.0.0".to_string(),
             port: 8644,
             webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
