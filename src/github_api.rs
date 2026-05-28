@@ -154,7 +154,7 @@ impl GitHubClient {
     ) -> Result<Vec<Webhook>, GitHubError> {
         let mut all_webhooks = Vec::new();
         let mut next_url: Option<String> = Some(format!(
-            "{}/repos/{}/{}/webhooks",
+            "{}/repos/{}/{}/hooks",
             self.base_url, owner, repo
         ));
 
@@ -329,7 +329,7 @@ mod tests {
         ]"#;
 
         server
-            .mock("GET", "/repos/owner/repo/webhooks")
+            .mock("GET", "/repos/owner/repo/hooks")
             .with_status(200)
             .with_body(mock_response)
             .create_async()
@@ -350,7 +350,7 @@ mod tests {
         let url = server.url();
 
         server
-            .mock("GET", "/repos/owner/repo/webhooks")
+            .mock("GET", "/repos/owner/repo/hooks")
             .with_status(200)
             .with_body("[]")
             .create_async()
@@ -372,18 +372,18 @@ mod tests {
             r#"[{ "id": 2, "url": "u2", "secret": null, "events": ["push"], "active": false }]"#;
 
         server
-            .mock("GET", "/repos/owner/repo/webhooks")
+            .mock("GET", "/repos/owner/repo/hooks")
             .with_status(200)
             .with_header(
                 "link",
-                &format!(r#"<{}/repos/owner/repo/webhooks?page=2>; rel="next""#, url),
+                &format!(r#"<{}/repos/owner/repo/hooks?page=2>; rel="next""#, url),
             )
             .with_body(page1)
             .create_async()
             .await;
 
         server
-            .mock("GET", "/repos/owner/repo/webhooks?page=2")
+            .mock("GET", "/repos/owner/repo/hooks?page=2")
             .with_status(200)
             .with_body(page2)
             .create_async()
@@ -404,7 +404,7 @@ mod tests {
         let url = server.url();
 
         server
-            .mock("GET", "/repos/owner/repo/webhooks")
+            .mock("GET", "/repos/owner/repo/hooks")
             .with_status(401)
             .create_async()
             .await;
@@ -421,7 +421,7 @@ mod tests {
         let url = server.url();
 
         server
-            .mock("GET", "/repos/owner/repo/webhooks")
+            .mock("GET", "/repos/owner/repo/hooks")
             .with_status(404)
             .create_async()
             .await;
@@ -438,7 +438,7 @@ mod tests {
         let url = server.url();
 
         server
-            .mock("GET", "/repos/owner/repo/webhooks")
+            .mock("GET", "/repos/owner/repo/hooks")
             .with_status(403)
             .create_async()
             .await;
@@ -621,7 +621,7 @@ mod tests {
 
         // 1. List returns empty
         server
-            .mock("GET", "/repos/owner/repo/webhooks")
+            .mock("GET", "/repos/owner/repo/hooks")
             .with_status(200)
             .with_body("[]")
             .create_async()
@@ -658,7 +658,7 @@ mod tests {
         let url = server.url();
 
         server
-            .mock("GET", "/repos/owner/repo/webhooks")
+            .mock("GET", "/repos/owner/repo/hooks")
             .with_status(200)
             .with_body(
                 r#"[{ "id": 123, "url": "u1", "secret": null, "events": [], "active": true }]"#,
@@ -699,7 +699,7 @@ mod tests {
 
         // Repo A: Existing (Update)
         server
-            .mock("GET", "/repos/owner/repoA/webhooks")
+            .mock("GET", "/repos/owner/repoA/hooks")
             .with_status(200)
             .with_body(r#"[{"id":1, "url":"u1", "secret":null, "events":[], "active":true}]"#)
             .create_async()
@@ -713,7 +713,7 @@ mod tests {
 
         // Repo B: Missing (Create)
         server
-            .mock("GET", "/repos/owner/repoB/webhooks")
+            .mock("GET", "/repos/owner/repoB/hooks")
             .with_status(200)
             .with_body("[]")
             .create_async()
