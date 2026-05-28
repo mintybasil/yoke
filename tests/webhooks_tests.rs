@@ -50,11 +50,8 @@ prompt_template = "Plan the issue"
 
 /// Build a WebhookClient that talks to the mockito server instead of real GitHub.
 fn mock_github_client(mock_url: &str) -> WebhookClient {
-    let gh_client = GitHubWebhookClient::new_with_base_url(
-        "test-token".to_string(),
-        "test-owner".to_string(),
-        mock_url.to_string(),
-    );
+    let gh_client =
+        GitHubWebhookClient::new_with_base_url("test-token".to_string(), mock_url.to_string());
     WebhookClient::Github(gh_client)
 }
 
