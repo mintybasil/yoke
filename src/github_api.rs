@@ -43,12 +43,27 @@ pub struct Webhook {
     pub active: bool,
 }
 
+/// Nested configuration passed inside the `config` key of the GitHub webhook API.
+///
+/// GitHub's API requires `url` and `secret` inside a `config` object,
+/// not at the top level. See: <https://docs.github.com/rest/repos/webhooks#create-a-repository-webhook>
+#[derive(Debug, Clone, Serialize)]
+pub struct WebhookConfigInner {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    pub content_type: String,
+}
+
 /// Configuration for creating or updating a GitHub webhook.
+///
+/// Serializes to the JSON shape GitHub expects:
+/// `{"config":{"url":"...","secret":"...","content_type":"json"},"events":[...],"active":true}`
 #[derive(Debug, Clone, Serialize)]
 pub struct WebhookConfig {
-    pub url: String,
-    pub secret: String,
+    pub config: WebhookConfigInner,
     pub events: Vec<String>,
+    pub active: bool,
 }
 
 /// Summary of a webhook orchestration operation across one or more repositories.
@@ -312,7 +327,7 @@ impl GitHubClient {
         let mut summary = WebhookOrchestrationSummary::default();
         let webhooks = self.list_webhooks(owner, repo).await?;
 
-        if let Some(existing) = self.find_webhook_by_url(&webhooks, &config.url) {
+        if let Some(existing) = self.find_webhook_by_url(&webhooks, &config.config.url) {
             self.update_webhook(owner, repo, existing.id, config)
                 .await?;
             summary.add_updated();
@@ -502,9 +517,13 @@ mod tests {
 
         let client = GitHubClient::new("test-token".to_string(), Some(url));
         let config = WebhookConfig {
-            url: "http://example.com/webhook".to_string(),
-            secret: "secret123".to_string(),
+            config: WebhookConfigInner {
+                url: "http://example.com/webhook".to_string(),
+                secret: Some("secret123".to_string()),
+                content_type: "json".to_string(),
+            },
             events: vec!["push".to_string()],
+            active: true,
         };
         let result = client
             .create_webhook("owner", "repo", &config)
@@ -530,9 +549,13 @@ mod tests {
 
         let client = GitHubClient::new("test-token".to_string(), Some(url));
         let config = WebhookConfig {
-            url: "http://example.com/webhook".to_string(),
-            secret: "new-secret".to_string(),
+            config: WebhookConfigInner {
+                url: "http://example.com/webhook".to_string(),
+                secret: Some("new-secret".to_string()),
+                content_type: "json".to_string(),
+            },
             events: vec!["push".to_string(), "pull_request".to_string()],
+            active: true,
         };
         let result = client
             .update_webhook("owner", "repo", 456, &config)
@@ -547,9 +570,13 @@ mod tests {
     async fn test_create_webhook_empty_events_validation() {
         let client = GitHubClient::new("test-token".to_string(), None);
         let config = WebhookConfig {
-            url: "http://example.com/webhook".to_string(),
-            secret: "s".to_string(),
+            config: WebhookConfigInner {
+                url: "http://example.com/webhook".to_string(),
+                secret: Some("s".to_string()),
+                content_type: "json".to_string(),
+            },
             events: vec![],
+            active: true,
         };
         let result = client.create_webhook("owner", "repo", &config).await;
 
@@ -575,9 +602,13 @@ mod tests {
 
         let client = GitHubClient::new("test-token".to_string(), Some(url));
         let config = WebhookConfig {
-            url: "http://example.com/webhook".to_string(),
-            secret: "s".to_string(),
+            config: WebhookConfigInner {
+                url: "http://example.com/webhook".to_string(),
+                secret: Some("s".to_string()),
+                content_type: "json".to_string(),
+            },
             events: vec!["push".to_string()],
+            active: true,
         };
         let result = client.create_webhook("owner", "repo", &config).await;
 
@@ -600,9 +631,13 @@ mod tests {
 
         let client = GitHubClient::new("test-token".to_string(), Some(url));
         let config = WebhookConfig {
-            url: "http://example.com/webhook".to_string(),
-            secret: "s".to_string(),
+            config: WebhookConfigInner {
+                url: "http://example.com/webhook".to_string(),
+                secret: Some("s".to_string()),
+                content_type: "json".to_string(),
+            },
             events: vec!["push".to_string()],
+            active: true,
         };
         let result = client.update_webhook("owner", "repo", 999, &config).await;
 
@@ -613,9 +648,13 @@ mod tests {
     async fn test_update_webhook_empty_events_validation() {
         let client = GitHubClient::new("test-token".to_string(), None);
         let config = WebhookConfig {
-            url: "http://example.com/webhook".to_string(),
-            secret: "s".to_string(),
+            config: WebhookConfigInner {
+                url: "http://example.com/webhook".to_string(),
+                secret: Some("s".to_string()),
+                content_type: "json".to_string(),
+            },
             events: vec![],
+            active: true,
         };
         let result = client.update_webhook("owner", "repo", 999, &config).await;
 
@@ -757,9 +796,13 @@ mod tests {
 
         let client = GitHubClient::new("token".to_string(), Some(url));
         let config = WebhookConfig {
-            url: "u1".into(),
-            secret: "s".into(),
+            config: WebhookConfigInner {
+                url: "u1".into(),
+                secret: Some("s".into()),
+                content_type: "json".into(),
+            },
             events: vec!["push".into()],
+            active: true,
         };
 
         let summary = client
@@ -795,9 +838,13 @@ mod tests {
 
         let client = GitHubClient::new("token".to_string(), Some(url));
         let config = WebhookConfig {
-            url: "u1".into(),
-            secret: "s".into(),
+            config: WebhookConfigInner {
+                url: "u1".into(),
+                secret: Some("s".into()),
+                content_type: "json".into(),
+            },
             events: vec!["push".into()],
+            active: true,
         };
 
         let summary = client
@@ -845,9 +892,13 @@ mod tests {
 
         let client = GitHubClient::new("token".to_string(), Some(url));
         let config = WebhookConfig {
-            url: "u1".into(),
-            secret: "s".into(),
+            config: WebhookConfigInner {
+                url: "u1".into(),
+                secret: Some("s".into()),
+                content_type: "json".into(),
+            },
             events: vec!["push".into()],
+            active: true,
         };
         let repos = vec![
             ("owner".into(), "repoA".into()),

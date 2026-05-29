@@ -133,9 +133,13 @@ impl GitHubWebhookClient {
         config: &WebhookConfig,
     ) -> Result<WebhookInfo, WebhookError> {
         let gh_config = github_api::WebhookConfig {
-            url: config.url.clone(),
-            secret: config.secret.clone().unwrap_or_default(),
+            config: github_api::WebhookConfigInner {
+                url: config.url.clone(),
+                secret: config.secret.clone(),
+                content_type: "json".to_string(),
+            },
             events: config.events.clone(),
+            active: true,
         };
         let webhook = self.client.create_webhook(owner, repo, &gh_config).await?;
         Ok(WebhookInfo::from(webhook))
@@ -150,9 +154,13 @@ impl GitHubWebhookClient {
         config: &WebhookConfig,
     ) -> Result<WebhookInfo, WebhookError> {
         let gh_config = github_api::WebhookConfig {
-            url: config.url.clone(),
-            secret: config.secret.clone().unwrap_or_default(),
+            config: github_api::WebhookConfigInner {
+                url: config.url.clone(),
+                secret: config.secret.clone(),
+                content_type: "json".to_string(),
+            },
             events: config.events.clone(),
+            active: true,
         };
         let webhook = self
             .client
