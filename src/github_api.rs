@@ -21,7 +21,10 @@ pub enum GitHubError {
     /// GitHub rate limit exceeded (HTTP 403).
     #[error("Rate limit exceeded")]
     RateLimited,
-    /// Any other API error with an HTTP status code.
+    /// Invalid webhook configuration (e.g., empty events list).
+    #[error("Invalid webhook configuration: {0}")]
+    ValidationError(String),
+    /// Any other API error with an HTTP status code and response body.
     #[error("API error: {0}")]
     ApiError(String),
 }
@@ -118,13 +121,17 @@ impl GitHubClient {
         headers
     }
 
-    /// Map an HTTP status code to a [`GitHubError`].
-    fn map_status(status: reqwest::StatusCode) -> GitHubError {
+    /// Map an HTTP status code and response body to a [`GitHubError`].
+    ///
+    /// Includes the response body in the error message for non-specific status
+    /// codes, making debugging API errors easier. Well-known status codes (401,
+    /// 404, 403) are still mapped to their dedicated error variants.
+    fn map_status_with_body(status: reqwest::StatusCode, body: &str) -> GitHubError {
         match status {
             reqwest::StatusCode::UNAUTHORIZED => GitHubError::Unauthorized,
             reqwest::StatusCode::NOT_FOUND => GitHubError::NotFound,
             reqwest::StatusCode::FORBIDDEN => GitHubError::RateLimited,
-            other => GitHubError::ApiError(format!("Unexpected status: {}", other)),
+            other => GitHubError::ApiError(format!("{} - {}", other, body)),
         }
     }
 
@@ -165,7 +172,12 @@ impl GitHubClient {
                 .await?;
 
             if response.status() != reqwest::StatusCode::OK {
-                return Err(Self::map_status(response.status()));
+                let status = response.status();
+                let body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "could not read body".to_string());
+                return Err(Self::map_status_with_body(status, &body));
             }
 
             // Capture pagination before consuming the body.
@@ -185,6 +197,12 @@ impl GitHubClient {
         repo: &str,
         config: &WebhookConfig,
     ) -> Result<Webhook, GitHubError> {
+        if config.events.is_empty() {
+            return Err(GitHubError::ValidationError(
+                "at least one event must be specified".to_string(),
+            ));
+        }
+
         let url = format!("{}/repos/{}/{}/hooks", self.base_url, owner, repo);
 
         let response = self
@@ -198,7 +216,12 @@ impl GitHubClient {
         if response.status() != reqwest::StatusCode::OK
             && response.status() != reqwest::StatusCode::CREATED
         {
-            return Err(Self::map_status(response.status()));
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "could not read body".to_string());
+            return Err(Self::map_status_with_body(status, &body));
         }
 
         response.json().await.map_err(GitHubError::RequestError)
@@ -212,6 +235,12 @@ impl GitHubClient {
         webhook_id: u64,
         config: &WebhookConfig,
     ) -> Result<Webhook, GitHubError> {
+        if config.events.is_empty() {
+            return Err(GitHubError::ValidationError(
+                "at least one event must be specified".to_string(),
+            ));
+        }
+
         let url = format!(
             "{}/repos/{}/{}/hooks/{}",
             self.base_url, owner, repo, webhook_id
@@ -226,7 +255,12 @@ impl GitHubClient {
             .await?;
 
         if response.status() != reqwest::StatusCode::OK {
-            return Err(Self::map_status(response.status()));
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "could not read body".to_string());
+            return Err(Self::map_status_with_body(status, &body));
         }
 
         response.json().await.map_err(GitHubError::RequestError)
@@ -254,7 +288,12 @@ impl GitHubClient {
         if response.status() != reqwest::StatusCode::NO_CONTENT
             && response.status() != reqwest::StatusCode::OK
         {
-            return Err(Self::map_status(response.status()));
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "could not read body".to_string());
+            return Err(Self::map_status_with_body(status, &body));
         }
 
         Ok(())
@@ -505,17 +544,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_webhook_conflict() {
-        let mut server = Server::new_async().await;
-        let url = server.url();
-
-        server
-            .mock("POST", "/repos/owner/repo/hooks")
-            .with_status(422)
-            .create_async()
-            .await;
-
-        let client = GitHubClient::new("test-token".to_string(), Some(url));
+    async fn test_create_webhook_empty_events_validation() {
+        let client = GitHubClient::new("test-token".to_string(), None);
         let config = WebhookConfig {
             url: "http://example.com/webhook".to_string(),
             secret: "s".to_string(),
@@ -524,7 +554,35 @@ mod tests {
         let result = client.create_webhook("owner", "repo", &config).await;
 
         assert!(
-            matches!(result, Err(GitHubError::ApiError(msg)) if msg.contains("Unexpected status: 422"))
+            matches!(result, Err(GitHubError::ValidationError(msg)) if msg.contains("at least one event"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_webhook_422_with_body() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let error_body = r#"{"message":"Validation Failed","errors":[{"resource":"Hook","code":"custom","message":"Hook already exists on this repository"}]}"#;
+
+        server
+            .mock("POST", "/repos/owner/repo/hooks")
+            .with_status(422)
+            .with_header("content-type", "application/json")
+            .with_body(error_body)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let config = WebhookConfig {
+            url: "http://example.com/webhook".to_string(),
+            secret: "s".to_string(),
+            events: vec!["push".to_string()],
+        };
+        let result = client.create_webhook("owner", "repo", &config).await;
+
+        assert!(
+            matches!(result, Err(GitHubError::ApiError(msg)) if msg.contains("422") && msg.contains("Validation Failed"))
         );
     }
 
@@ -536,6 +594,7 @@ mod tests {
         server
             .mock("PATCH", "/repos/owner/repo/hooks/999")
             .with_status(404)
+            .with_body("{\"message\":\"Not Found\"}")
             .create_async()
             .await;
 
@@ -543,11 +602,26 @@ mod tests {
         let config = WebhookConfig {
             url: "http://example.com/webhook".to_string(),
             secret: "s".to_string(),
-            events: vec![],
+            events: vec!["push".to_string()],
         };
         let result = client.update_webhook("owner", "repo", 999, &config).await;
 
         assert!(matches!(result, Err(GitHubError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_update_webhook_empty_events_validation() {
+        let client = GitHubClient::new("test-token".to_string(), None);
+        let config = WebhookConfig {
+            url: "http://example.com/webhook".to_string(),
+            secret: "s".to_string(),
+            events: vec![],
+        };
+        let result = client.update_webhook("owner", "repo", 999, &config).await;
+
+        assert!(
+            matches!(result, Err(GitHubError::ValidationError(msg)) if msg.contains("at least one event"))
+        );
     }
 
     #[test]
@@ -610,6 +684,52 @@ mod tests {
         assert!(matches!(result, Err(GitHubError::NotFound)));
     }
 
+    #[tokio::test]
+    async fn test_delete_webhook_422_with_body() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let error_body = r#"{"message":"Validation Failed","errors":[{"resource":"Hook","code":"custom","message":"Hook is in an invalid state"}]}"#;
+
+        server
+            .mock("DELETE", "/repos/owner/repo/hooks/123")
+            .with_status(422)
+            .with_header("content-type", "application/json")
+            .with_body(error_body)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.delete_webhook("owner", "repo", 123).await;
+
+        assert!(
+            matches!(result, Err(GitHubError::ApiError(msg)) if msg.contains("422") && msg.contains("Validation Failed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_webhooks_422_with_body() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let error_body = r#"{"message":"Validation Failed","errors":[{"resource":"Hook","code":"custom","message":"Invalid request"}]}"#;
+
+        server
+            .mock("GET", "/repos/owner/repo/hooks")
+            .with_status(422)
+            .with_header("content-type", "application/json")
+            .with_body(error_body)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.list_webhooks("owner", "repo").await;
+
+        assert!(
+            matches!(result, Err(GitHubError::ApiError(msg)) if msg.contains("422") && msg.contains("Validation Failed"))
+        );
+    }
+
     // -- ensure_webhook tests -------------------------------------------------
 
     #[tokio::test]
@@ -639,7 +759,7 @@ mod tests {
         let config = WebhookConfig {
             url: "u1".into(),
             secret: "s".into(),
-            events: vec![],
+            events: vec!["push".into()],
         };
 
         let summary = client
@@ -668,7 +788,7 @@ mod tests {
             .mock("PATCH", "/repos/owner/repo/hooks/123")
             .with_status(200)
             .with_body(
-                r#"{ "id": 123, "url": "u1", "secret": null, "events": [], "active": true }"#,
+                r#"{ "id": 123, "url": "u1", "secret": null, "events": ["push"], "active": true }"#,
             )
             .create_async()
             .await;
@@ -677,7 +797,7 @@ mod tests {
         let config = WebhookConfig {
             url: "u1".into(),
             secret: "s".into(),
-            events: vec![],
+            events: vec!["push".into()],
         };
 
         let summary = client
@@ -727,7 +847,7 @@ mod tests {
         let config = WebhookConfig {
             url: "u1".into(),
             secret: "s".into(),
-            events: vec![],
+            events: vec!["push".into()],
         };
         let repos = vec![
             ("owner".into(), "repoA".into()),
