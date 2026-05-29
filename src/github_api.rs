@@ -45,7 +45,7 @@ pub struct GithubWebhookConfig {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
-    #[serde(rename = "content_type", default)]
+    #[serde(default)]
     pub content_type: Option<String>,
 }
 
@@ -390,8 +390,8 @@ mod tests {
         let mut server = Server::new_async().await;
         let url = server.url();
 
-        let mock_response = r#"[
-            { "id": 123, "url": "https://api.github.com/repos/owner/repo/hooks/123", "secret": "s3cret", "events": ["push"], "active": true }
+let mock_response = r#"[
+            { "id": 123, "url": "https://api.github.com/repos/owner/repo/hooks/123", "config": { "url": "https://example.com/hook", "content_type": "json" }, "events": ["push"], "active": true }
         ]"#;
 
         server
@@ -433,9 +433,9 @@ mod tests {
         let mut server = Server::new_async().await;
         let url = server.url();
 
-        let page1 = r#"[{ "id": 1, "url": "u1", "secret": null, "events": [], "active": true }]"#;
+        let page1 = r#"[{ "id": 1, "url": "u1", "config": { "url": "u1", "content_type": "json" }, "events": [], "active": true }]"#;
         let page2 =
-            r#"[{ "id": 2, "url": "u2", "secret": null, "events": ["push"], "active": false }]"#;
+            r#"[{ "id": 2, "url": "u2", "config": { "url": "u2", "content_type": "json" }, "events": ["push"], "active": false }]"#;
 
         server
             .mock("GET", "/repos/owner/repo/hooks")
@@ -520,7 +520,7 @@ mod tests {
         let mut server = Server::new_async().await;
         let url = server.url();
 
-        let mock_response = r#"{ "id": 456, "url": "https://api.github.com/repos/owner/repo/hooks/456", "secret": null, "events": ["push"], "active": true }"#;
+        let mock_response = r#"{ "id": 456, "url": "https://api.github.com/repos/owner/repo/hooks/456", "config": { "url": "http://example.com/webhook", "content_type": "json" }, "events": ["push"], "active": true }"#;
 
         server
             .mock("POST", "/repos/owner/repo/hooks")
@@ -552,7 +552,7 @@ mod tests {
         let mut server = Server::new_async().await;
         let url = server.url();
 
-        let mock_response = r#"{ "id": 456, "url": "https://api.github.com/repos/owner/repo/hooks/456", "secret": null, "events": ["push", "pull_request"], "active": true }"#;
+        let mock_response = r#"{ "id": 456, "url": "https://api.github.com/repos/owner/repo/hooks/456", "config": { "url": "http://example.com/webhook", "content_type": "json" }, "events": ["push", "pull_request"], "active": true }"#;
 
         server
             .mock("PATCH", "/repos/owner/repo/hooks/456")
@@ -811,7 +811,7 @@ mod tests {
             .mock("POST", "/repos/owner/repo/hooks")
             .with_status(201)
             .with_body(
-                r#"{ "id": 123, "url": "u1", "secret": null, "events": [], "active": true }"#,
+                r#"{ "id": 123, "url": "https://api.github.com/repos/owner/repo/hooks/123", "config": { "url": "u1", "content_type": "json" }, "events": [], "active": true }"#,
             )
             .create_async()
             .await;
@@ -844,7 +844,7 @@ mod tests {
             .mock("GET", "/repos/owner/repo/hooks")
             .with_status(200)
             .with_body(
-                r#"[{ "id": 123, "url": "u1", "secret": null, "events": [], "active": true }]"#,
+                r#"[{ "id": 123, "url": "https://api.github.com/repos/owner/repo/hooks/123", "config": { "url": "u1", "content_type": "json" }, "events": [], "active": true }]"#,
             )
             .create_async()
             .await;
@@ -853,7 +853,7 @@ mod tests {
             .mock("PATCH", "/repos/owner/repo/hooks/123")
             .with_status(200)
             .with_body(
-                r#"{ "id": 123, "url": "u1", "secret": null, "events": ["push"], "active": true }"#,
+                r#"{ "id": 123, "url": "https://api.github.com/repos/owner/repo/hooks/123", "config": { "url": "u1", "content_type": "json" }, "events": ["push"], "active": true }"#,
             )
             .create_async()
             .await;
@@ -888,13 +888,13 @@ mod tests {
         server
             .mock("GET", "/repos/owner/repoA/hooks")
             .with_status(200)
-            .with_body(r#"[{"id":1, "url":"u1", "secret":null, "events":[], "active":true}]"#)
+            .with_body(r#"[{"id":1, "url":"https://api.github.com/repos/owner/repoA/hooks/1", "config":{"url":"u1", "content_type":"json"}, "events":[], "active":true}]"#)
             .create_async()
             .await;
         server
             .mock("PATCH", "/repos/owner/repoA/hooks/1")
             .with_status(200)
-            .with_body(r#"{ "id": 1, "url": "u1", "secret": null, "events": [], "active": true }"#)
+            .with_body(r#"{ "id": 1, "url": "https://api.github.com/repos/owner/repoA/hooks/1", "config": { "url": "u1", "content_type": "json" }, "events": [], "active": true }"#)
             .create_async()
             .await;
 
@@ -908,7 +908,7 @@ mod tests {
         server
             .mock("POST", "/repos/owner/repoB/hooks")
             .with_status(201)
-            .with_body(r#"{ "id": 2, "url": "u1", "secret": null, "events": [], "active": true }"#)
+            .with_body(r#"{ "id": 2, "url": "https://api.github.com/repos/owner/repoB/hooks/2", "config": { "url": "u1", "content_type": "json" }, "events": [], "active": true }"#)
             .create_async()
             .await;
 
