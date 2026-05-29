@@ -430,15 +430,23 @@ pub async fn webhooks_list(config: &Config, client: &WebhookClient) -> Result<()
                     tracing::info!("No webhooks found");
                 }
                 for hook in hooks {
-                    let yoke_tag = if hook.url == yoke_url { " (yoke)" } else { "" };
-                    tracing::info!(
-                        id = hook.id,
-                        url = %hook.url,
-                        yoke = !yoke_tag.is_empty(),
-                        events = ?hook.events,
-                        active = hook.active,
-                        "Webhook found"
-                    );
+                    if hook.url == yoke_url {
+                        tracing::info!(
+                            id = hook.id,
+                            url = %hook.url,
+                            events = ?hook.events,
+                            active = hook.active,
+                            "Webhook found"
+                        );
+                    } else {
+                        tracing::debug!(
+                            id = hook.id,
+                            url = %hook.url,
+                            events = ?hook.events,
+                            active = hook.active,
+                            "Skipping webhook, not configured for Yoke"
+                        );
+                    }
                 }
             }
             Err(e) => {

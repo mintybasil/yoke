@@ -193,9 +193,7 @@ impl TriggerType {
             | TriggerType::GitlabMergeRequestCommentMention { .. } => Some(Platform::Gitlab),
         }
     }
-}
 
-impl TriggerType {
     /// Return the platform-specific webhook event name for this trigger type.
     ///
     /// GitHub webhook events match the `X-GitHub-Event` header values.

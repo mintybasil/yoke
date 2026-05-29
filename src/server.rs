@@ -198,8 +198,6 @@ pub async fn run_server(
 
     let router = build_router(state, config);
 
-    tracing::info!("Starting server on {addr}");
-
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Run server with graceful shutdown — watch for shutdown signal
