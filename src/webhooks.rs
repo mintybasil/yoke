@@ -381,12 +381,9 @@ pub struct RemoveSummary {
 ///
 /// Uses `webhook_host` (the external hostname) rather than `host` (the bind
 /// address) so that the registered webhook URL resolves from the internet.
-/// Format: `https://{webhook_host}:{port}/webhook`
+/// Format: `https://{webhook_host}/webhook`
 fn yoke_webhook_url(config: &Config) -> String {
-    format!(
-        "https://{}:{}/webhook",
-        config.server.webhook_host, config.server.port
-    )
+    format!("https://{}/webhook", config.server.webhook_host)
 }
 
 /// List all webhooks for configured repositories in a human-readable table.
