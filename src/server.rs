@@ -198,8 +198,6 @@ pub async fn run_server(
 
     let router = build_router(state, config);
 
-    tracing::info!("Starting server on {addr}");
-
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Run server with graceful shutdown — watch for shutdown signal
@@ -245,6 +243,7 @@ mod tests {
     fn test_config() -> ServerConfig {
         ServerConfig {
             host: "0.0.0.0".to_string(),
+            webhook_host: "yoke.example.com".to_string(),
             port: 0, // not used for in-memory tests
             webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
@@ -737,6 +736,7 @@ mod tests {
         // Use a very small body limit (10 bytes) to test rejection
         let config = ServerConfig {
             host: "0.0.0.0".to_string(),
+            webhook_host: "yoke.example.com".to_string(),
             port: 0,
             webhook_secret: "test-secret".to_string(),
             max_body_size: 10,

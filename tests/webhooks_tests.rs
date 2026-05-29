@@ -22,6 +22,7 @@ fn test_config() -> Config {
         runtime: yoke::config::RuntimeConfig::default(),
         server: ServerConfig {
             host: "0.0.0.0".to_string(),
+            webhook_host: "yoke.example.com".to_string(),
             port: 8644,
             webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
@@ -50,16 +51,12 @@ prompt_template = "Plan the issue"
 
 /// Build a WebhookClient that talks to the mockito server instead of real GitHub.
 fn mock_github_client(mock_url: &str) -> WebhookClient {
-    let gh_client = GitHubWebhookClient::new_with_base_url(
-        "test-token".to_string(),
-        "test-owner".to_string(),
-        mock_url.to_string(),
-    );
+    let gh_client =
+        GitHubWebhookClient::new_with_base_url("test-token".to_string(), mock_url.to_string());
     WebhookClient::Github(gh_client)
 }
 
-// GitHub API uses /repos/{owner}/{repo}/webhooks for list
-// and /repos/{owner}/{repo}/hooks for create/update/delete.
+// GitHub API uses /repos/{owner}/{repo}/hooks for all webhook operations.
 
 #[tokio::test]
 async fn test_webhooks_list_empty() {
@@ -87,12 +84,12 @@ async fn test_webhooks_list_with_hooks() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let body = r#"[{"id":1,"url":"https://0.0.0.0:8644/webhook","secret":"mysecret1234","events":["issues"],"active":true}]"#;
+    let body = r#"{"id":1,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/1","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["issues"],"active":true}"#;
     let mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(body)
+        .with_body(format!("[{body}]"))
         .create_async()
         .await;
 
@@ -109,7 +106,7 @@ async fn test_webhooks_remove_no_matching() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let body = r#"[{"id":1,"url":"https://other.example.com/hook","secret":"sec","events":["push"],"active":true}]"#;
+    let body = r#"[{"id":1,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/1","config":{"url":"https://other.example.com/hook","content_type":"json","secret":"***"},"events":["push"],"active":true}]"#;
     let mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -140,7 +137,7 @@ async fn test_webhooks_remove_matching() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let body = r#"[{"id":42,"url":"https://0.0.0.0:8644/webhook","secret":"sec","events":["issues"],"active":true}]"#;
+    let body = r#"[{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["issues"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -178,7 +175,7 @@ async fn test_webhooks_add_creates_new() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let list_body = r#"[{"id":1,"url":"https://other.example.com/hook","secret":"sec","events":["push"],"active":true}]"#;
+    let list_body = r#"[{"id":1,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/1","config":{"url":"https://other.example.com/hook","content_type":"json","secret":"***"},"events":["push"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -187,7 +184,7 @@ async fn test_webhooks_add_creates_new() {
         .create_async()
         .await;
 
-    let create_body = r#"{"id":99,"url":"https://0.0.0.0:8644/webhook","secret":"test-secret","events":["issues"],"active":true}"#;
+    let create_body = r#"{"id":99,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/99","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["issues"],"active":true}"#;
     let create_mock = server
         .mock("POST", "/repos/test-owner/test-repo/hooks")
         .with_status(201)
@@ -221,7 +218,7 @@ async fn test_webhooks_add_updates_existing() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let list_body = r#"[{"id":42,"url":"https://0.0.0.0:8644/webhook","secret":"old-secret","events":["push"],"active":true}]"#;
+    let list_body = r#"[{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["push"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -230,7 +227,7 @@ async fn test_webhooks_add_updates_existing() {
         .create_async()
         .await;
 
-    let update_body = r#"{"id":42,"url":"https://0.0.0.0:8644/webhook","secret":"test-secret","events":["issues"],"active":true}"#;
+    let update_body = r#"{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["issues"],"active":true}"#;
     let update_mock = server
         .mock("PATCH", "/repos/test-owner/test-repo/hooks/42")
         .with_status(200)
@@ -271,6 +268,7 @@ async fn test_webhooks_add_empty_repos() {
         runtime: yoke::config::RuntimeConfig::default(),
         server: ServerConfig {
             host: "0.0.0.0".to_string(),
+            webhook_host: "yoke.example.com".to_string(),
             port: 8644,
             webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
@@ -309,6 +307,7 @@ async fn test_webhooks_remove_empty_repos() {
         runtime: yoke::config::RuntimeConfig::default(),
         server: ServerConfig {
             host: "0.0.0.0".to_string(),
+            webhook_host: "yoke.example.com".to_string(),
             port: 8644,
             webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
@@ -396,7 +395,7 @@ async fn test_webhooks_remove_delete_error() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let list_body = r#"[{"id":42,"url":"https://0.0.0.0:8644/webhook","secret":"sec","events":["issues"],"active":true}]"#;
+    let list_body = r#"[{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["issues"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)

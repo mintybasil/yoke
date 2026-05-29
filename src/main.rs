@@ -153,6 +153,9 @@ async fn main() {
     if let Some(host) = args.host {
         config.server.host = host;
     }
+    if let Some(webhook_host) = args.webhook_host {
+        config.server.webhook_host = webhook_host;
+    }
     if let Some(port) = args.port {
         config.server.port = port;
     }
@@ -256,10 +259,11 @@ async fn main() {
     // Start the HTTP server with graceful shutdown
     let drain_timeout = Duration::from_secs(config.runtime.drain_timeout_secs);
     tracing::info!(
-        "Starting server on {}:{} (drain timeout: {:?})",
-        config.server.host,
-        config.server.port,
-        drain_timeout
+        host = %config.server.host,
+        port = %config.server.port,
+        webhook_host = %config.server.webhook_host,
+        drain_timeout = %config.runtime.drain_timeout_secs,
+        "Starting server...",
     );
     if let Err(e) = server::run_server(
         &config.server,
