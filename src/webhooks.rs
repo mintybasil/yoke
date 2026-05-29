@@ -70,21 +70,20 @@ pub enum WebhookError {
 /// GitHub webhook client that wraps [`github_api::GitHubClient`].
 ///
 /// Adapts the GitHub-specific API to uniform [`WebhookInfo`] / [`WebhookConfig`] types.
+/// Owner is passed per-operation to support repos across multiple owners/orgs.
 #[derive(Debug)]
 pub struct GitHubWebhookClient {
     client: github_api::GitHubClient,
-    owner: String,
 }
 
 impl GitHubWebhookClient {
     /// Create a new GitHub webhook client.
     ///
-    /// `owner` is the GitHub user/organization name that owns the repositories.
     /// The GitHub token is passed directly (typically from the `GITHUB_TOKEN` env var).
-    pub fn new(token: String, owner: String) -> Self {
+    /// Owner is passed per-operation to support repos across multiple owners/orgs.
+    pub fn new(token: String) -> Self {
         Self {
             client: github_api::GitHubClient::new(token, None),
-            owner,
         }
     }
 
@@ -92,22 +91,26 @@ impl GitHubWebhookClient {
     ///
     /// Useful for testing against mock servers. `base_url` replaces the
     /// default `https://api.github.com`.
-    pub fn new_with_base_url(token: String, owner: String, base_url: String) -> Self {
+    pub fn new_with_base_url(token: String, base_url: String) -> Self {
         Self {
             client: github_api::GitHubClient::new(token, Some(base_url)),
-            owner,
         }
     }
 
     /// List all webhooks for a repository.
-    pub async fn list_webhooks(&self, repo: &str) -> Result<Vec<WebhookInfo>, WebhookError> {
-        let webhooks = self.client.list_webhooks(&self.owner, repo).await?;
+    pub async fn list_webhooks(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<WebhookInfo>, WebhookError> {
+        let webhooks = self.client.list_webhooks(owner, repo).await?;
         Ok(webhooks.into_iter().map(WebhookInfo::from).collect())
     }
 
     /// Create a new webhook for a repository.
     pub async fn create_webhook(
         &self,
+        owner: &str,
         repo: &str,
         config: &WebhookConfig,
     ) -> Result<WebhookInfo, WebhookError> {
@@ -116,16 +119,14 @@ impl GitHubWebhookClient {
             secret: config.secret.clone().unwrap_or_default(),
             events: config.events.clone(),
         };
-        let webhook = self
-            .client
-            .create_webhook(&self.owner, repo, &gh_config)
-            .await?;
+        let webhook = self.client.create_webhook(owner, repo, &gh_config).await?;
         Ok(WebhookInfo::from(webhook))
     }
 
     /// Update an existing webhook by ID.
     pub async fn update_webhook(
         &self,
+        owner: &str,
         repo: &str,
         id: u64,
         config: &WebhookConfig,
@@ -137,14 +138,19 @@ impl GitHubWebhookClient {
         };
         let webhook = self
             .client
-            .update_webhook(&self.owner, repo, id, &gh_config)
+            .update_webhook(owner, repo, id, &gh_config)
             .await?;
         Ok(WebhookInfo::from(webhook))
     }
 
     /// Delete a webhook by ID.
-    pub async fn delete_webhook(&self, repo: &str, id: u64) -> Result<(), WebhookError> {
-        self.client.delete_webhook(&self.owner, repo, id).await?;
+    pub async fn delete_webhook(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<(), WebhookError> {
+        self.client.delete_webhook(owner, repo, id).await?;
         Ok(())
     }
 }
@@ -276,7 +282,7 @@ impl WebhookClient {
     /// Returns a `WebhookError::Config` if the required token is missing.
     pub fn new(
         platform: &Platform,
-        owner: &str,
+        _owner: &str, // Kept for backward compat, no longer used for GitHub
         gitlab_url: Option<String>,
     ) -> Result<Self, WebhookError> {
         match platform {
@@ -284,10 +290,7 @@ impl WebhookClient {
                 let token = std::env::var("GITHUB_TOKEN").map_err(|_| {
                     WebhookError::Config("Missing required env var: GITHUB_TOKEN".to_string())
                 })?;
-                Ok(WebhookClient::Github(GitHubWebhookClient::new(
-                    token,
-                    owner.to_string(),
-                )))
+                Ok(WebhookClient::Github(GitHubWebhookClient::new(token)))
             }
             Platform::Gitlab => {
                 let token = std::env::var("GITLAB_TOKEN").map_err(|_| {
@@ -301,9 +304,13 @@ impl WebhookClient {
     }
 
     /// List all webhooks for a repository/project.
-    pub async fn list_webhooks(&self, repo: &str) -> Result<Vec<WebhookInfo>, WebhookError> {
+    pub async fn list_webhooks(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<WebhookInfo>, WebhookError> {
         match self {
-            WebhookClient::Github(c) => c.list_webhooks(repo).await,
+            WebhookClient::Github(c) => c.list_webhooks(owner, repo).await,
             WebhookClient::Gitlab(c) => c.list_webhooks(repo).await,
         }
     }
@@ -311,11 +318,12 @@ impl WebhookClient {
     /// Create a new webhook.
     pub async fn create_webhook(
         &self,
+        owner: &str,
         repo: &str,
         config: &WebhookConfig,
     ) -> Result<WebhookInfo, WebhookError> {
         match self {
-            WebhookClient::Github(c) => c.create_webhook(repo, config).await,
+            WebhookClient::Github(c) => c.create_webhook(owner, repo, config).await,
             WebhookClient::Gitlab(c) => c.create_webhook(repo, config).await,
         }
     }
@@ -323,20 +331,26 @@ impl WebhookClient {
     /// Update an existing webhook by ID.
     pub async fn update_webhook(
         &self,
+        owner: &str,
         repo: &str,
         id: u64,
         config: &WebhookConfig,
     ) -> Result<WebhookInfo, WebhookError> {
         match self {
-            WebhookClient::Github(c) => c.update_webhook(repo, id, config).await,
+            WebhookClient::Github(c) => c.update_webhook(owner, repo, id, config).await,
             WebhookClient::Gitlab(c) => c.update_webhook(repo, id, config).await,
         }
     }
 
     /// Delete a webhook by ID.
-    pub async fn delete_webhook(&self, repo: &str, id: u64) -> Result<(), WebhookError> {
+    pub async fn delete_webhook(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<(), WebhookError> {
         match self {
-            WebhookClient::Github(c) => c.delete_webhook(repo, id).await,
+            WebhookClient::Github(c) => c.delete_webhook(owner, repo, id).await,
             WebhookClient::Gitlab(c) => c.delete_webhook(repo, id).await,
         }
     }
@@ -386,7 +400,7 @@ pub async fn webhooks_list(config: &Config, client: &WebhookClient) -> Result<()
 
     for repo in &config.repos {
         let repo_display = format!("{}/{}", repo.owner, repo.repo);
-        match client.list_webhooks(&repo.repo).await {
+        match client.list_webhooks(&repo.owner, &repo.repo).await {
             Ok(hooks) => {
                 tracing::info!(repo = %repo_display, "Listing webhooks");
                 if hooks.is_empty() {
@@ -426,7 +440,7 @@ pub async fn webhooks_remove(
 
     for repo in &config.repos {
         let repo_display = format!("{}/{}", repo.owner, repo.repo);
-        let hooks = match client.list_webhooks(&repo.repo).await {
+        let hooks = match client.list_webhooks(&repo.owner, &repo.repo).await {
             Ok(h) => h,
             Err(e) => {
                 tracing::error!(repo = %repo_display, error = %e, "Error listing webhooks");
@@ -443,7 +457,10 @@ pub async fn webhooks_remove(
         }
 
         for hook in &matching {
-            match client.delete_webhook(&repo.repo, hook.id).await {
+            match client
+                .delete_webhook(&repo.owner, &repo.repo, hook.id)
+                .await
+            {
                 Ok(()) => {
                     tracing::info!(repo = %repo_display, id = hook.id, url = %hook.url, "Deleted webhook");
                     summary.deleted += 1;
@@ -503,7 +520,7 @@ pub async fn webhooks_add(
 
     for repo in &config.repos {
         let repo_display = format!("{}/{}", repo.owner, repo.repo);
-        let existing = match client.list_webhooks(&repo.repo).await {
+        let existing = match client.list_webhooks(&repo.owner, &repo.repo).await {
             Ok(hooks) => hooks,
             Err(e) => {
                 tracing::error!(repo = %repo_display, error = %e, "Error listing webhooks");
@@ -516,7 +533,7 @@ pub async fn webhooks_add(
         match matched {
             Some(hook) => {
                 match client
-                    .update_webhook(&repo.repo, hook.id, &hook_config)
+                    .update_webhook(&repo.owner, &repo.repo, hook.id, &hook_config)
                     .await
                 {
                     Ok(_) => {
@@ -529,7 +546,10 @@ pub async fn webhooks_add(
                     }
                 }
             }
-            None => match client.create_webhook(&repo.repo, &hook_config).await {
+            None => match client
+                .create_webhook(&repo.owner, &repo.repo, &hook_config)
+                .await
+            {
                 Ok(hook) => {
                     tracing::info!(repo = %repo_display, id = hook.id, url = %yoke_url, "Created webhook");
                     summary.created += 1;
