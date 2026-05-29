@@ -272,6 +272,8 @@ async fn main() {
         PathBuf::from(&config.runtime.workdir),
         drain_timeout,
         shutdown_rx,
+        state,
+        config.agents.clone(),
     )
     .await
     {
