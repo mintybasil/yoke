@@ -4,14 +4,14 @@
 //! - [`WebhookInfo`] — shared type representing a webhook across platforms
 //! - [`WebhookConfig`] — shared configuration for creating/updating webhooks
 //! - [`WebhookClient`] — enum-based dispatcher selecting the right platform implementation
-//! - [`GitHubWebhookClient`] — GitHub implementation using [`crate::github_api::GitHubClient`]
+//! - [`GitHubWebhookClient`] — GitHub implementation using [`crate::webhook::github_api::GitHubClient`]
 //! - [`GitLabWebhookClient`] — GitLab implementation using [`crate::webhook::gitlab_api::GitLabClient`]
 //! - [`webhooks_list`] — list webhooks for all configured repositories
 //! - [`webhooks_remove`] — remove webhooks matching Yoke's URL for all configured repositories
 //! - [`webhooks_add`] — idempotently create or update webhooks for all configured repositories
 
 use crate::config::{Config, Platform};
-use crate::github_api;
+use crate::webhook::github_api;
 use crate::webhook::gitlab_api;
 use crate::workflow;
 use serde::{Deserialize, Serialize};

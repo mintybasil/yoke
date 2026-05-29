@@ -3,7 +3,7 @@
 //! This module provides a [`GitLabClient`] that wraps [`reqwest::Client`] and
 //! handles Private-Token authentication, error mapping, and pagination for
 //! GitLab's project webhook endpoints. It mirrors the structure of
-//! [`crate::github_api::GitHubClient`].
+//! [`crate::webhook::github_api::GitHubClient`].
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
