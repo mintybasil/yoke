@@ -15,6 +15,7 @@ use crate::github_api;
 use crate::webhook::gitlab_api;
 use crate::workflow;
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 use std::path::Path;
 use thiserror::Error;
 
@@ -43,6 +44,23 @@ pub struct WebhookConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
     pub events: Vec<String>,
+}
+
+impl Display for WebhookConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let secret = match self.secret {
+            Some(_) => "<hidden>",
+            None => "<empty>",
+        };
+
+        write!(
+            f,
+            "{{ url: {}, secret: {}, events: {} }}",
+            self.url,
+            secret,
+            self.events.join(", ")
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -115,9 +133,13 @@ impl GitHubWebhookClient {
         config: &WebhookConfig,
     ) -> Result<WebhookInfo, WebhookError> {
         let gh_config = github_api::WebhookConfig {
-            url: config.url.clone(),
-            secret: config.secret.clone().unwrap_or_default(),
+            config: github_api::GithubWebhookConfig {
+                url: config.url.clone(),
+                secret: config.secret.clone(),
+                content_type: Some("json".to_string()),
+            },
             events: config.events.clone(),
+            active: true,
         };
         let webhook = self.client.create_webhook(owner, repo, &gh_config).await?;
         Ok(WebhookInfo::from(webhook))
@@ -132,9 +154,13 @@ impl GitHubWebhookClient {
         config: &WebhookConfig,
     ) -> Result<WebhookInfo, WebhookError> {
         let gh_config = github_api::WebhookConfig {
-            url: config.url.clone(),
-            secret: config.secret.clone().unwrap_or_default(),
+            config: github_api::GithubWebhookConfig {
+                url: config.url.clone(),
+                secret: config.secret.clone(),
+                content_type: Some("json".to_string()),
+            },
             events: config.events.clone(),
+            active: true,
         };
         let webhook = self
             .client
@@ -236,8 +262,8 @@ impl From<github_api::Webhook> for WebhookInfo {
     fn from(w: github_api::Webhook) -> Self {
         Self {
             id: w.id,
-            url: w.url,
-            secret: w.secret,
+            url: w.payload_url().to_string(),
+            secret: w.config.secret,
             events: w.events,
             active: w.active,
         }
@@ -381,12 +407,9 @@ pub struct RemoveSummary {
 ///
 /// Uses `webhook_host` (the external hostname) rather than `host` (the bind
 /// address) so that the registered webhook URL resolves from the internet.
-/// Format: `https://{webhook_host}:{port}/webhook`
+/// Format: `https://{webhook_host}/webhook`
 fn yoke_webhook_url(config: &Config) -> String {
-    format!(
-        "https://{}:{}/webhook",
-        config.server.webhook_host, config.server.port
-    )
+    format!("https://{}/webhook", config.server.webhook_host)
 }
 
 /// List all webhooks for configured repositories in a human-readable table.
@@ -407,15 +430,23 @@ pub async fn webhooks_list(config: &Config, client: &WebhookClient) -> Result<()
                     tracing::info!("No webhooks found");
                 }
                 for hook in hooks {
-                    let yoke_tag = if hook.url == yoke_url { " (yoke)" } else { "" };
-                    tracing::info!(
-                        id = hook.id,
-                        url = %hook.url,
-                        yoke = !yoke_tag.is_empty(),
-                        events = ?hook.events,
-                        active = hook.active,
-                        "Webhook found"
-                    );
+                    if hook.url == yoke_url {
+                        tracing::info!(
+                            id = hook.id,
+                            url = %hook.url,
+                            events = ?hook.events,
+                            active = hook.active,
+                            "Webhook found"
+                        );
+                    } else {
+                        tracing::debug!(
+                            id = hook.id,
+                            url = %hook.url,
+                            events = ?hook.events,
+                            active = hook.active,
+                            "Skipping webhook, not configured for Yoke"
+                        );
+                    }
                 }
             }
             Err(e) => {
@@ -555,7 +586,7 @@ pub async fn webhooks_add(
                     summary.created += 1;
                 }
                 Err(e) => {
-                    tracing::error!(repo = %repo_display, error = %e, "Error creating webhook");
+                    tracing::error!(repo = %repo_display, error = %e, hook_config = %hook_config, "Error creating webhook");
                     summary.errors += 1;
                 }
             },
@@ -584,8 +615,12 @@ mod tests {
     fn test_webhook_info_from_github() {
         let gh = github_api::Webhook {
             id: 123,
-            url: "https://example.com/hook".to_string(),
-            secret: Some("s3cret".to_string()),
+            api_url: "https://api.github.com/repos/o/r/hooks/123".to_string(),
+            config: github_api::GithubWebhookConfig {
+                url: "https://example.com/hook".to_string(),
+                content_type: Some("json".to_string()),
+                secret: Some("s3cret".to_string()),
+            },
             events: vec!["push".to_string(), "pull_request".to_string()],
             active: true,
         };

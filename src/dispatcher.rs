@@ -201,9 +201,9 @@ impl Dispatcher {
             None
         };
 
-        tracing::info!(
+        tracing::debug!(
             max_concurrent,
-            "dispatcher initialized ({})",
+            "Dispatcher initialized ({})",
             if max_concurrent == 0 {
                 "unlimited"
             } else {
@@ -470,7 +470,7 @@ impl Dispatcher {
                     repo = %event.repo_path,
                     event_id = %event.event_id,
                     workspace = %event_ws_dir.display(),
-                    "processing workflow event"
+                    "Processing workflow event"
                 );
 
                 // Log the start of workflow processing to the workspace directory
