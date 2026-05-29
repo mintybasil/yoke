@@ -15,6 +15,7 @@ use crate::github_api;
 use crate::webhook::gitlab_api;
 use crate::workflow;
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 use std::path::Path;
 use thiserror::Error;
 
@@ -43,6 +44,23 @@ pub struct WebhookConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
     pub events: Vec<String>,
+}
+
+impl Display for WebhookConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let secret = match self.secret {
+            Some(_) => "<hidden>",
+            None => "<empty>",
+        };
+
+        write!(
+            f,
+            "{{ url: {}, secret: {}, events: {} }}",
+            self.url,
+            secret,
+            self.events.join(", ")
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -552,7 +570,7 @@ pub async fn webhooks_add(
                     summary.created += 1;
                 }
                 Err(e) => {
-                    tracing::error!(repo = %repo_display, error = %e, "Error creating webhook");
+                    tracing::error!(repo = %repo_display, error = %e, hook_config = %hook_config, "Error creating webhook");
                     summary.errors += 1;
                 }
             },
