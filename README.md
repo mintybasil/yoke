@@ -150,7 +150,7 @@ max_body_size = 1048576   # 1MB default
 - `platform` — must be `"github"` or `"gitlab"`
 - `agents` — at least one agent with a unique `name` and valid `base_url`
 - `server.webhook_secret` — webhook authentication key
-- `server.webhook_host` — external hostname used in webhook registration URLs (defaults to `server.host`). Set this when binding to `0.0.0.0` internally but advertising a public hostname externally.
+- `server.webhook_host` — external hostname used in webhook registration URLs. This must be explicitly set (e.g., `yoke.example.com`) — it is the hostname that GitHub/GitLab will send webhook events to, which typically differs from the bind address (`server.host`).
 
 ### Environment Variables
 

@@ -64,17 +64,16 @@ fn default_workdir() -> String {
     "~/.yoke".to_string()
 }
 
-/// HTTP server settings. `webhook_secret` is the only required field.
+/// HTTP server settings.
 ///
 /// - `host` is the bind address for the TCP listener (e.g. `"0.0.0.0"`).
 /// - `webhook_host` is the external hostname used in webhook registration URLs
-///   (e.g. `"yoke.example.com"`). Defaults to `"0.0.0.0"` for backward compatibility,
-///   but should be set to the public-facing hostname in production.
+///   (e.g. `"yoke.example.com"`). This must be set explicitly — it determines
+///   the public-facing hostname that platforms use to deliver webhook events.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
-    #[serde(default = "default_webhook_host")]
     pub webhook_host: String,
     #[serde(default = "default_port")]
     pub port: u16,
@@ -84,10 +83,6 @@ pub struct ServerConfig {
 }
 
 fn default_host() -> String {
-    "0.0.0.0".to_string()
-}
-
-fn default_webhook_host() -> String {
     "0.0.0.0".to_string()
 }
 
@@ -323,6 +318,7 @@ workdir = "/tmp/.yoke"
 
 [server]
 host = "0.0.0.0"
+webhook_host = "yoke.example.com"
 port = 8644
 webhook_secret = "secret"
 max_body_size = 1048576
@@ -342,7 +338,7 @@ max_body_size = 1048576
         assert_eq!(config.runtime.max_concurrent, 2);
         assert_eq!(config.runtime.workdir, "/tmp/.yoke");
         assert_eq!(config.server.host, "0.0.0.0");
-        assert_eq!(config.server.webhook_host, "0.0.0.0");
+        assert_eq!(config.server.webhook_host, "yoke.example.com");
         assert_eq!(config.server.port, 8644);
         assert_eq!(config.server.webhook_secret, "secret");
         assert_eq!(config.server.max_body_size, 1_048_576);
@@ -358,6 +354,7 @@ name = "pm"
 base_url = "http://localhost:8000"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "secret"
 "#;
         let config = Config::from_str(minimal).expect("should parse minimal config");
@@ -365,7 +362,7 @@ webhook_secret = "secret"
         assert_eq!(config.runtime.max_concurrent, 0);
         assert!(!config.runtime.workdir.is_empty());
         assert_eq!(config.server.host, "0.0.0.0");
-        assert_eq!(config.server.webhook_host, "0.0.0.0");
+        assert_eq!(config.server.webhook_host, "yoke.example.com");
         assert_eq!(config.server.port, 8644);
         assert_eq!(config.server.max_body_size, 1_048_576);
     }
@@ -383,6 +380,7 @@ base_url = "http://localhost:8000"
 workdir = "~/.yoke"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "secret"
 "#;
         let config = Config::from_str(toml).expect("should parse config with tilde");
@@ -406,6 +404,7 @@ name = "pm"
 base_url = "http://localhost:8000"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
@@ -427,6 +426,7 @@ name = "pm"
 base_url = "http://localhost:8000"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
@@ -462,6 +462,7 @@ name = "pm"
 base_url = "not-a-url"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
@@ -483,6 +484,7 @@ name = "pm"
 base_url = "http://localhost:8000"
 
 [server]
+webhook_host = "yoke.example.com"
 host = "0.0.0.0"
 port = 8644
 "#;
@@ -492,6 +494,27 @@ port = 8644
         assert!(
             err_msg.contains("webhook_secret"),
             "error should mention webhook_secret, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_missing_webhook_host() {
+        let toml = r#"
+platform = "github"
+
+[[agents]]
+name = "pm"
+base_url = "http://localhost:8000"
+
+[server]
+webhook_secret = "secret"
+"#;
+        let result = Config::from_str(toml);
+        assert!(result.is_err(), "should fail without webhook_host");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("webhook_host"),
+            "error should mention webhook_host, got: {err_msg}"
         );
     }
 
@@ -506,6 +529,7 @@ name = "pm"
 base_url = "http://localhost:8000"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "gitlab-token"
 "#;
         let config = Config::from_str(toml).expect("should parse gitlab config");
@@ -530,6 +554,7 @@ name = "pm"
 base_url = "http://localhost:8000"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "token"
 "#;
         let config = Config::from_str(toml).expect("should parse gitlab section");
@@ -547,6 +572,7 @@ webhook_secret = "token"
 platform = "github"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
@@ -572,6 +598,7 @@ name = "pm"
 base_url = "http://localhost:8001"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
@@ -594,6 +621,7 @@ name = "pm"
 base_url = "http://localhost:8000"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "secret"
 "#;
         let config = Config::from_str(toml).expect("empty repos is valid");
@@ -618,6 +646,7 @@ name = "pm"
 base_url = "http://localhost:8000"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "secret"
 "#;
         let config = Config::from_str(toml).expect("should parse multiple repos");
@@ -644,6 +673,7 @@ name = "pm"
 base_url = "ftp://localhost:8000"
 
 [server]
+webhook_host = "yoke.example.com"
 webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
@@ -689,7 +719,7 @@ webhook_secret = "secret"
             runtime: RuntimeConfig::default(),
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
-                webhook_host: "0.0.0.0".to_string(),
+                webhook_host: "yoke.example.com".to_string(),
                 port: 8644,
                 webhook_secret: "secret".to_string(),
                 max_body_size: 1_048_576,
