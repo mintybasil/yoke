@@ -138,7 +138,7 @@ async fn test_webhooks_remove_matching() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let body = r#"[{"id":42,"url":"https://yoke.example.com:8644/webhook","secret":"sec","events":["issues"],"active":true}]"#;
+    let body = r#"[{"id":42,"url":"https://yoke.example.com/webhook","secret":"sec","events":["issues"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -219,7 +219,7 @@ async fn test_webhooks_add_updates_existing() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let list_body = r#"[{"id":42,"url":"https://yoke.example.com:8644/webhook","secret":"old-secret","events":["push"],"active":true}]"#;
+    let list_body = r#"[{"id":42,"url":"https://yoke.example.com/webhook","secret":"old-secret","events":["push"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -228,7 +228,7 @@ async fn test_webhooks_add_updates_existing() {
         .create_async()
         .await;
 
-    let update_body = r#"{"id":42,"url":"https://yoke.example.com:8644/webhook","secret":"test-secret","events":["issues"],"active":true}"#;
+    let update_body = r#"{"id":42,"url":"https://yoke.example.com/webhook","secret":"test-secret","events":["issues"],"active":true}"#;
     let update_mock = server
         .mock("PATCH", "/repos/test-owner/test-repo/hooks/42")
         .with_status(200)
@@ -396,7 +396,7 @@ async fn test_webhooks_remove_delete_error() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let list_body = r#"[{"id":42,"url":"https://yoke.example.com:8644/webhook","secret":"sec","events":["issues"],"active":true}]"#;
+    let list_body = r#"[{"id":42,"url":"https://yoke.example.com/webhook","secret":"sec","events":["issues"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
