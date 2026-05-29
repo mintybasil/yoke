@@ -33,14 +33,37 @@ pub enum GitHubError {
 // Data models
 // ---------------------------------------------------------------------------
 
+/// Nested config returned in GitHub's webhook response.
+///
+/// GitHub returns the payload URL and secret inside a `config` object:
+/// `{"config": {"url": "...", "content_type": "json", "secret": "..."}}`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct WebhookResponseConfig {
+    pub url: String,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub secret: Option<String>,
+}
+
 /// A GitHub repository webhook.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Webhook {
     pub id: u64,
-    pub url: String,
-    pub secret: Option<String>,
+    /// The API URL for this webhook resource (e.g. `https://api.github.com/repos/owner/repo/hooks/12345`).
+    /// This is NOT the payload delivery URL — that's in `config.url`.
+    #[serde(rename = "url")]
+    pub api_url: String,
+    pub config: WebhookResponseConfig,
     pub events: Vec<String>,
     pub active: bool,
+}
+
+impl Webhook {
+    /// The payload delivery URL that GitHub will POST events to.
+    pub fn payload_url(&self) -> &str {
+        &self.config.url
+    }
 }
 
 /// Nested configuration passed inside the `config` key of the GitHub webhook API.
@@ -115,9 +138,9 @@ impl GitHubClient {
 
     // -- Internal helpers ----------------------------------------------------
 
-    /// Find a webhook in a list by its URL. Used for idempotency checks.
+    /// Find a webhook in a list by its payload delivery URL. Used for idempotency checks.
     fn find_webhook_by_url<'a>(&self, webhooks: &'a [Webhook], url: &str) -> Option<&'a Webhook> {
-        webhooks.iter().find(|w| w.url == url)
+        webhooks.iter().find(|w| w.payload_url() == url)
     }
 
     /// Build the authentication + user-agent headers that every request needs.
@@ -669,15 +692,23 @@ mod tests {
         let webhooks = vec![
             Webhook {
                 id: 1,
-                url: "u1".to_string(),
-                secret: None,
+                api_url: "https://api.github.com/repos/o/r/hooks/1".to_string(),
+                config: WebhookResponseConfig {
+                    url: "u1".to_string(),
+                    content_type: Some("json".to_string()),
+                    secret: None,
+                },
                 events: vec![],
                 active: true,
             },
             Webhook {
                 id: 2,
-                url: "u2".to_string(),
-                secret: None,
+                api_url: "https://api.github.com/repos/o/r/hooks/2".to_string(),
+                config: WebhookResponseConfig {
+                    url: "u2".to_string(),
+                    content_type: Some("json".to_string()),
+                    secret: None,
+                },
                 events: vec![],
                 active: true,
             },

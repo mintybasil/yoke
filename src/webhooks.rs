@@ -262,8 +262,8 @@ impl From<github_api::Webhook> for WebhookInfo {
     fn from(w: github_api::Webhook) -> Self {
         Self {
             id: w.id,
-            url: w.url,
-            secret: w.secret,
+            url: w.payload_url().to_string(),
+            secret: w.config.secret,
             events: w.events,
             active: w.active,
         }
@@ -607,8 +607,12 @@ mod tests {
     fn test_webhook_info_from_github() {
         let gh = github_api::Webhook {
             id: 123,
-            url: "https://example.com/hook".to_string(),
-            secret: Some("s3cret".to_string()),
+            api_url: "https://api.github.com/repos/o/r/hooks/123".to_string(),
+            config: github_api::WebhookResponseConfig {
+                url: "https://example.com/hook".to_string(),
+                content_type: Some("json".to_string()),
+                secret: Some("s3cret".to_string()),
+            },
             events: vec!["push".to_string(), "pull_request".to_string()],
             active: true,
         };
