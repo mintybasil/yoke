@@ -390,7 +390,7 @@ mod tests {
         let mut server = Server::new_async().await;
         let url = server.url();
 
-let mock_response = r#"[
+        let mock_response = r#"[
             { "id": 123, "url": "https://api.github.com/repos/owner/repo/hooks/123", "config": { "url": "https://example.com/hook", "content_type": "json" }, "events": ["push"], "active": true }
         ]"#;
 
@@ -434,8 +434,7 @@ let mock_response = r#"[
         let url = server.url();
 
         let page1 = r#"[{ "id": 1, "url": "u1", "config": { "url": "u1", "content_type": "json" }, "events": [], "active": true }]"#;
-        let page2 =
-            r#"[{ "id": 2, "url": "u2", "config": { "url": "u2", "content_type": "json" }, "events": ["push"], "active": false }]"#;
+        let page2 = r#"[{ "id": 2, "url": "u2", "config": { "url": "u2", "content_type": "json" }, "events": ["push"], "active": false }]"#;
 
         server
             .mock("GET", "/repos/owner/repo/hooks")
