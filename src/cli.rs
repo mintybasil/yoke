@@ -18,13 +18,13 @@ pub struct Cli {
     #[arg(long)]
     pub host: Option<String>,
 
-    /// External hostname for webhook URLs (overrides config.toml webhook_host)
-    #[arg(long)]
-    pub webhook_host: Option<String>,
-
     /// Server listen port (overrides config.toml)
     #[arg(long)]
     pub port: Option<u16>,
+
+    /// External hostname for webhook URLs (overrides config.toml webhook_host)
+    #[arg(long)]
+    pub webhook_host: Option<String>,
 
     /// Subcommand to execute
     #[command(subcommand)]

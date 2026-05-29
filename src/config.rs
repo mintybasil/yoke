@@ -74,9 +74,9 @@ fn default_workdir() -> String {
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
-    pub webhook_host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    pub webhook_host: String,
     pub webhook_secret: String,
     #[serde(default = "default_max_body_size")]
     pub max_body_size: u64,

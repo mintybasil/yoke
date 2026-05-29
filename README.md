@@ -37,8 +37,8 @@ workdir = "~/.yoke"
 
 [server]
 host = "0.0.0.0"
-webhook_host = "yoke.example.com"
 port = 8644
+webhook_host = "yoke.example.com"
 webhook_secret = "your-webhook-secret"
 ```
 
@@ -136,8 +136,8 @@ drain_timeout_secs = 30  # seconds to wait for in-flight workflows on shutdown
 # Server settings
 [server]
 host = "0.0.0.0"
-webhook_host = "yoke.example.com"
 port = 8644
+webhook_host = "yoke.example.com"
 webhook_secret = "your-webhook-secret"
 max_body_size = 1048576   # 1MB default
 
@@ -321,8 +321,8 @@ Options:
   --config <PATH>       Path to config.toml (default: config.toml)
   --workflows <DIR>      Directory containing workflow TOML files (default: ./workflows)
   --host <ADDR>          Server bind address (overrides config.toml)
-  --webhook-host <HOST>  External hostname for webhook URLs (overrides config.toml webhook_host)
   --port <PORT>          Server listen port (overrides config.toml)
+  --webhook-host <HOST>  External hostname for webhook URLs (overrides config.toml webhook_host)
   -h, --help             Print help
   -V, --version          Print version
 
