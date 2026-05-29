@@ -133,10 +133,10 @@ impl GitHubWebhookClient {
         config: &WebhookConfig,
     ) -> Result<WebhookInfo, WebhookError> {
         let gh_config = github_api::WebhookConfig {
-            config: github_api::WebhookConfigInner {
+            config: github_api::GithubWebhookConfig {
                 url: config.url.clone(),
                 secret: config.secret.clone(),
-                content_type: "json".to_string(),
+                content_type: Some("json".to_string()),
             },
             events: config.events.clone(),
             active: true,
@@ -154,10 +154,10 @@ impl GitHubWebhookClient {
         config: &WebhookConfig,
     ) -> Result<WebhookInfo, WebhookError> {
         let gh_config = github_api::WebhookConfig {
-            config: github_api::WebhookConfigInner {
+            config: github_api::GithubWebhookConfig {
                 url: config.url.clone(),
                 secret: config.secret.clone(),
-                content_type: "json".to_string(),
+                content_type: Some("json".to_string()),
             },
             events: config.events.clone(),
             active: true,
@@ -608,7 +608,7 @@ mod tests {
         let gh = github_api::Webhook {
             id: 123,
             api_url: "https://api.github.com/repos/o/r/hooks/123".to_string(),
-            config: github_api::WebhookResponseConfig {
+            config: github_api::GithubWebhookConfig {
                 url: "https://example.com/hook".to_string(),
                 content_type: Some("json".to_string()),
                 secret: Some("s3cret".to_string()),
