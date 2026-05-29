@@ -229,7 +229,9 @@ pub fn parse_github_event(
                 event_type: "issues".to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::Issues(payload),
-                repository: RepositoryDetails { full_name: repo_path },
+                repository: RepositoryDetails {
+                    full_name: repo_path,
+                },
             })
         }
         "issue_comment" => {
@@ -240,7 +242,9 @@ pub fn parse_github_event(
                 event_type: "issue_comment".to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::IssueComment(payload),
-                repository: RepositoryDetails { full_name: repo_path },
+                repository: RepositoryDetails {
+                    full_name: repo_path,
+                },
             })
         }
         "pull_request_review" => {
@@ -251,7 +255,9 @@ pub fn parse_github_event(
                 event_type: "pull_request_review".to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::PullRequestReview(payload),
-                repository: RepositoryDetails { full_name: repo_path },
+                repository: RepositoryDetails {
+                    full_name: repo_path,
+                },
             })
         }
         "pull_request_review_comment" => {
@@ -262,7 +268,9 @@ pub fn parse_github_event(
                 event_type: "pull_request_review_comment".to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::PullRequestReviewComment(payload),
-                repository: RepositoryDetails { full_name: repo_path },
+                repository: RepositoryDetails {
+                    full_name: repo_path,
+                },
             })
         }
         _ => Err(GitHubWebhookError::UnknownEventType(
@@ -433,7 +441,13 @@ pub fn handle_github_webhook(
         }
         GitHubPayload::PullRequestReviewComment(p) => {
             variables.insert("pr_number".to_string(), p.pull_request.number.to_string());
-            variables.insert("review_id".to_string(), p.comment.pull_request_review_id.unwrap_or(p.comment.id).to_string());
+            variables.insert(
+                "review_id".to_string(),
+                p.comment
+                    .pull_request_review_id
+                    .unwrap_or(p.comment.id)
+                    .to_string(),
+            );
             variables.insert("comment_id".to_string(), p.comment.id.to_string());
             variables.insert(
                 "comment_body".to_string(),
