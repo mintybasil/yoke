@@ -156,6 +156,7 @@ fn build_router(state: AppState, config: &ServerConfig) -> Router {
 /// * `workdir` — Directory for persisting dispatcher state
 /// * `drain_timeout` — Maximum time to wait for in-flight workflows to complete
 /// * `shutdown_rx` — Watch channel receiver that signals graceful shutdown
+#[allow(clippy::too_many_arguments)]
 pub async fn run_server(
     config: &ServerConfig,
     platform: &Platform,
@@ -267,8 +268,13 @@ mod tests {
     fn test_state() -> (AppState, mpsc::Receiver<DispatchMessage>) {
         let (tx, rx) = mpsc::channel(100);
         let dedup_sets = crate::dispatcher::new_dedup_sets();
-        let dispatcher =
-            crate::dispatcher::Dispatcher::new(dedup_sets, 0, PathBuf::from("/tmp/yoke-test"), test_workflow_state(), test_agents());
+        let dispatcher = crate::dispatcher::Dispatcher::new(
+            dedup_sets,
+            0,
+            PathBuf::from("/tmp/yoke-test"),
+            test_workflow_state(),
+            test_agents(),
+        );
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
             dispatcher,
@@ -279,8 +285,13 @@ mod tests {
     fn test_state_github() -> (AppState, mpsc::Receiver<DispatchMessage>) {
         let (tx, rx) = mpsc::channel(100);
         let dedup_sets = crate::dispatcher::new_dedup_sets();
-        let dispatcher =
-            crate::dispatcher::Dispatcher::new(dedup_sets, 0, PathBuf::from("/tmp/yoke-test"), test_workflow_state(), test_agents());
+        let dispatcher = crate::dispatcher::Dispatcher::new(
+            dedup_sets,
+            0,
+            PathBuf::from("/tmp/yoke-test"),
+            test_workflow_state(),
+            test_agents(),
+        );
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Github, "test-secret".to_string(), tx),
             dispatcher,

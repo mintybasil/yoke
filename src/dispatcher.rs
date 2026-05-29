@@ -521,9 +521,8 @@ impl Dispatcher {
                 }
 
                 // Read the Hermes API key from the environment
-                let api_key = std::env::var("HERMES_API_KEY").map_err(|_| {
-                    "HERMES_API_KEY environment variable not set".to_string()
-                })?;
+                let api_key = std::env::var("HERMES_API_KEY")
+                    .map_err(|_| "HERMES_API_KEY environment variable not set".to_string())?;
 
                 // Run each matching workflow sequentially within this task.
                 // If multiple workflows match the same trigger, they run one after
@@ -537,19 +536,22 @@ impl Dispatcher {
 
                     // Resolve the agent for the first step to build a HermesClient.
                     // The current WorkflowRunner design uses a single client for all steps.
-                    let agent_name = workflow.steps.first()
+                    let agent_name = workflow
+                        .steps
+                        .first()
                         .map(|s| s.agent.as_str())
                         .unwrap_or("");
 
-                    let agent_config = agents.iter().find(|a| a.name == agent_name)
-                        .ok_or_else(|| {
-                            format!("agent '{}' not found in configuration", agent_name)
-                        })?;
+                    let agent_config =
+                        agents
+                            .iter()
+                            .find(|a| a.name == agent_name)
+                            .ok_or_else(|| {
+                                format!("agent '{}' not found in configuration", agent_name)
+                            })?;
 
-                    let client = HermesClient::new(
-                        agent_config.base_url.to_string(),
-                        api_key.clone(),
-                    );
+                    let client =
+                        HermesClient::new(agent_config.base_url.to_string(), api_key.clone());
 
                     // Build template variables from the event context
                     let mut variables = HashMap::new();
@@ -902,7 +904,13 @@ mod tests {
     /// Helper to create a test Dispatcher with an empty WorkflowState and no agents.
     fn test_dispatcher(dedup: SharedDedupSets, max_concurrent: usize) -> Dispatcher {
         let workflow_state = Arc::new(WorkflowState::new(vec![]));
-        Dispatcher::new(dedup, max_concurrent, PathBuf::from("/tmp/yoke-test"), workflow_state, vec![])
+        Dispatcher::new(
+            dedup,
+            max_concurrent,
+            PathBuf::from("/tmp/yoke-test"),
+            workflow_state,
+            vec![],
+        )
     }
 
     // --- DedupSets struct tests ---
