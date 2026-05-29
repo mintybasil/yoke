@@ -38,6 +38,7 @@ workdir = "~/.yoke"
 [server]
 host = "0.0.0.0"
 port = 8644
+webhook_host = "yoke.example.com"
 webhook_secret = "your-webhook-secret"
 ```
 
@@ -99,7 +100,7 @@ cargo run
 cargo run -- --config /path/to/config.toml --workflows /path/to/workflows
 ```
 
-Yoke listens for webhook events on `http://{host}:{port}/webhook`. When an issue is assigned to the specified user, the workflow runs: the `pm` agent plans, then the `swe` agent implements.
+Yoke listens for webhook events on `http://{host}:{port}/webhook`. The `webhook_host` setting determines the hostname used in webhook registration URLs, which may differ from the bind address (`host`) — for example, binding to `0.0.0.0` locally while advertising `yoke.example.com` in webhook URLs. 
 
 ## Configuration
 
@@ -136,6 +137,7 @@ drain_timeout_secs = 30  # seconds to wait for in-flight workflows on shutdown
 [server]
 host = "0.0.0.0"
 port = 8644
+webhook_host = "yoke.example.com"
 webhook_secret = "your-webhook-secret"
 max_body_size = 1048576   # 1MB default
 
@@ -148,6 +150,7 @@ max_body_size = 1048576   # 1MB default
 - `platform` — must be `"github"` or `"gitlab"`
 - `agents` — at least one agent with a unique `name` and valid `base_url`
 - `server.webhook_secret` — webhook authentication key
+- `server.webhook_host` — external hostname used in webhook registration URLs. This must be explicitly set (e.g., `yoke.example.com`) — it is the hostname that GitHub/GitLab will send webhook events to, which typically differs from the bind address (`server.host`).
 
 ### Environment Variables
 
@@ -319,6 +322,7 @@ Options:
   --workflows <DIR>      Directory containing workflow TOML files (default: ./workflows)
   --host <ADDR>          Server bind address (overrides config.toml)
   --port <PORT>          Server listen port (overrides config.toml)
+  --webhook-host <HOST>  External hostname for webhook URLs (overrides config.toml webhook_host)
   -h, --help             Print help
   -V, --version          Print version
 
