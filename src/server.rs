@@ -585,7 +585,8 @@ mod tests {
                 "assignee": {"login": "alice"},
                 "assignees": [{"login": "alice"}]
             },
-            "sender": {"login": "bob"}
+            "sender": {"login": "bob"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
         let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
 
@@ -623,7 +624,8 @@ mod tests {
                 "title": "Some issue",
                 "assignees": []
             },
-            "sender": {"login": "charlie"}
+            "sender": {"login": "charlie"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
         let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
 
@@ -660,7 +662,8 @@ mod tests {
             "pull_request": {
                 "number": 7
             },
-            "sender": {"login": "reviewer"}
+            "sender": {"login": "reviewer"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
         let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
 
@@ -697,7 +700,8 @@ mod tests {
             "pull_request": {
                 "number": 7
             },
-            "sender": {"login": "commenter"}
+            "sender": {"login": "commenter"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
         let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
 
@@ -732,7 +736,8 @@ mod tests {
                 "title": "Bug report",
                 "assignees": []
             },
-            "sender": {"login": "bob"}
+            "sender": {"login": "bob"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
         let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
 

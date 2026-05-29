@@ -282,8 +282,30 @@ Step `prompt_template` fields use `{{variable}}` syntax. The following variables
 | `owner` | Repository owner (namespace) |
 | `repo` | Repository name |
 | `output_dir` | Per-event workspace directory |
+| `event_id` | Unique event identifier for deduplication |
+| `repo_path` | Full repository path (`owner/repo`) |
 
-Additional variables are available depending on the trigger type. See the [Architecture Design](docs/Architecture%20Design.md#appendix-a-trigger-reference) doc for the full trigger reference including all trigger-specific variables.
+Additional variables are available depending on the trigger type:
+
+**GitHub triggers:**
+
+| Trigger | Variables |
+|---|---|
+| `github_issue_assigned` | `issue_number`, `assignee`, `issue_title`, `issue_body` |
+| `github_issue_comment_mention` | `issue_number`, `comment_id`, `comment_body` |
+| `github_pull_request_review` | `pr_number`, `review_id`, `review_body` |
+| `github_pull_request_comment_mention` | `pr_number`, `review_id`, `comment_id`, `comment_body` |
+
+**GitLab triggers:**
+
+| Trigger | Variables |
+|---|---|
+| `gitlab_issue_assigned` | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` |
+| `gitlab_issue_mention` | `issue_iid`, `note_id`, `comment_body` |
+| `gitlab_merge_request_review` | `mr_iid`, `review_id`, `review_body` |
+| `gitlab_merge_request_comment_mention` | `mr_iid`, `note_id`, `comment_body` |
+
+See the [Architecture Design](docs/Architecture%20Design.md#appendix-a-trigger-reference) doc for the full trigger reference including all trigger-specific variables.
 
 ### Trigger types
 
