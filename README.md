@@ -100,7 +100,7 @@ cargo run
 cargo run -- --config /path/to/config.toml --workflows /path/to/workflows
 ```
 
-Yoke listens for webhook events on `http://{webhook_host}:{port}/webhook`. The `webhook_host` setting determines the hostname used in webhook registration URLs, which may differ from the bind address (`host`) — for example, binding to `0.0.0.0` locally while advertising `yoke.example.com` in webhook URLs. When an issue is assigned to the specified user, the workflow runs: the `pm` agent plans, then the `swe` agent implements.
+Yoke listens for webhook events on `http://{host}:{port}/webhook`. The `webhook_host` setting determines the hostname used in webhook registration URLs, which may differ from the bind address (`host`) — for example, binding to `0.0.0.0` locally while advertising `yoke.example.com` in webhook URLs. 
 
 ## Configuration
 
