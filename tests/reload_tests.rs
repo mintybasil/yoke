@@ -30,7 +30,10 @@ async fn test_new_toml_file_detected() {
 
     match msg {
         ReloadMessage::FileChanged { path } => {
-            assert_eq!(path, file_path);
+            assert_eq!(
+                std::fs::canonicalize(&path).unwrap(),
+                std::fs::canonicalize(&file_path).unwrap()
+            );
         }
         ReloadMessage::FileRemoved { .. } => panic!("expected FileChanged, got FileRemoved"),
     }
@@ -61,7 +64,10 @@ async fn test_modified_toml_file_detected() {
 
     match msg {
         ReloadMessage::FileChanged { path } => {
-            assert_eq!(path, file_path);
+            assert_eq!(
+                std::fs::canonicalize(&path).unwrap(),
+                std::fs::canonicalize(&file_path).unwrap()
+            );
         }
         ReloadMessage::FileRemoved { .. } => panic!("expected FileChanged, got FileRemoved"),
     }
@@ -76,6 +82,9 @@ async fn test_deleted_toml_file_detected() {
     // Create file before watching starts.
     let file_path = dir_path.join("delete_me.toml");
     fs::write(&file_path, "content").unwrap();
+
+    // Canonicalize before deletion since the file won't exist after removal.
+    let canonical_file_path = std::fs::canonicalize(&file_path).unwrap();
 
     let (tx, mut rx) = mpsc::channel(32);
     let _watcher = setup_file_watcher(&dir_path, tx).unwrap();
@@ -92,7 +101,11 @@ async fn test_deleted_toml_file_detected() {
 
     match msg {
         ReloadMessage::FileRemoved { path } => {
-            assert_eq!(path, file_path);
+            // Canonicalize the parent dir (file no longer exists) and rejoin.
+            let canonical_path = std::fs::canonicalize(path.parent().unwrap())
+                .unwrap()
+                .join(path.file_name().unwrap());
+            assert_eq!(canonical_path, canonical_file_path);
         }
         ReloadMessage::FileChanged { .. } => {
             // Some platforms emit a MODIFY event before REMOVE; that's also acceptable
