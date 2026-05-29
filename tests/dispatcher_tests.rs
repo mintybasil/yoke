@@ -9,14 +9,26 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use yoke::dispatcher::{
     DispatchMessage, Dispatcher, build_dedup_key, extract_event_id, load_persistence,
     new_dedup_sets,
 };
+use yoke::reload::WorkflowState;
 use yoke::webhook::TriggerEvent;
 use yoke::workflow::TriggerType;
+
+/// Create a Dispatcher for tests with an empty workflow state and no agents.
+fn test_dispatcher(
+    dedup: yoke::dispatcher::SharedDedupSets,
+    max_concurrent: usize,
+    workdir: PathBuf,
+) -> Dispatcher {
+    let workflow_state = Arc::new(WorkflowState::new(vec![]));
+    Dispatcher::new(dedup, max_concurrent, workdir, workflow_state, vec![])
+}
 
 // --- Helper functions ---
 
@@ -47,7 +59,7 @@ fn make_workdir() -> tempfile::TempDir {
 async fn test_full_dispatch_flow_completes_and_persists() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -102,7 +114,7 @@ async fn test_full_dispatch_flow_completes_and_persists() {
 async fn test_duplicate_event_rejected() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -147,7 +159,7 @@ async fn test_concurrency_limit() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Limit to 1 concurrent workflow
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 1, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 1, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -199,7 +211,7 @@ async fn test_concurrency_limit() {
 async fn test_completed_events_persisted_to_disk() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -252,7 +264,7 @@ async fn test_completed_events_persisted_to_disk() {
 async fn test_graceful_shutdown_drains_in_flight() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -298,7 +310,7 @@ async fn test_graceful_shutdown_drains_in_flight() {
 async fn test_dispatcher_stops_when_channel_closed() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -337,7 +349,7 @@ async fn test_dispatcher_stops_when_channel_closed() {
 async fn test_multiple_different_events_processed() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -395,7 +407,7 @@ async fn test_multiple_different_events_processed() {
 async fn test_on_workflow_complete_success() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     // Manually mark an event as in-flight
     {
@@ -430,7 +442,7 @@ async fn test_on_workflow_complete_success() {
 async fn test_on_workflow_complete_failure() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     // Manually mark an event as in-flight
     {
@@ -468,7 +480,7 @@ async fn test_dispatcher_active_count_with_concurrent_events() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Use concurrency limit of 2 so the semaphore is in play
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
 
     // Use run_with_permit directly since spawn_workflow is fire-and-forget
     // and active_count is decremented in run_with_permit
@@ -493,7 +505,7 @@ async fn test_dispatcher_active_count_with_concurrent_events() {
 async fn test_gitlab_event_dispatched() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -533,7 +545,7 @@ async fn test_gitlab_event_dispatched() {
 async fn test_unlimited_throughput() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(2000);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -592,7 +604,7 @@ async fn test_concurrency_stress_with_semaphore() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Limit to 4 concurrent workflows
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 4, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 4, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(200);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -639,7 +651,7 @@ async fn test_concurrency_stress_with_semaphore() {
 async fn test_failure_state_transition_via_on_workflow_complete() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     // Mark event as in-flight, then fail it
     {
@@ -688,7 +700,7 @@ async fn test_failure_state_transition_via_on_workflow_complete() {
 async fn test_permits_released_after_completion() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);

@@ -25,7 +25,7 @@
 //! `completed.json` and `failed.json` from the work directory, gracefully
 //! handling missing or corrupted files.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,9 +35,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
+use crate::config::AgentConfig;
+use crate::harness::HermesClient;
 use crate::logging;
+use crate::reload::WorkflowState;
+use crate::runner::WorkflowRunner;
 use crate::webhook::TriggerEvent;
-use crate::workflow::TriggerType;
+use crate::workflow::{TriggerType, Workflow};
 use tracing::instrument;
 
 /// A record of a permanently failed event, persisted to disk.
@@ -185,6 +189,10 @@ pub struct Dispatcher {
     max_concurrent: usize,
     /// Directory for persisting completed/failed dedup state.
     workdir: PathBuf,
+    /// Hot-reloadable workflow state for matching events to workflows.
+    workflow_state: Arc<WorkflowState>,
+    /// Agent configurations for constructing HermesClient instances.
+    agents: Vec<AgentConfig>,
 }
 
 impl Dispatcher {
@@ -194,7 +202,17 @@ impl Dispatcher {
     /// unlimited. Otherwise, a semaphore with `max_concurrent` permits is
     /// allocated. The `workdir` path is used for persisting completed/failed
     /// dedup state to disk.
-    pub fn new(dedup_sets: SharedDedupSets, max_concurrent: usize, workdir: PathBuf) -> Self {
+    ///
+    /// The `workflow_state` provides hot-reloadable workflow definitions used
+    /// to match incoming events to workflow configurations. The `agents` list
+    /// provides the Hermes API configurations for constructing clients.
+    pub fn new(
+        dedup_sets: SharedDedupSets,
+        max_concurrent: usize,
+        workdir: PathBuf,
+        workflow_state: Arc<WorkflowState>,
+        agents: Vec<AgentConfig>,
+    ) -> Self {
         let semaphore = if max_concurrent > 0 {
             Some(Arc::new(Semaphore::new(max_concurrent)))
         } else {
@@ -217,6 +235,8 @@ impl Dispatcher {
             active_count: Arc::new(AtomicUsize::new(0)),
             max_concurrent,
             workdir,
+            workflow_state,
+            agents,
         }
     }
 
@@ -446,6 +466,8 @@ impl Dispatcher {
         // Clone what we need for the spawned task
         let dedup_sets = self.dedup_sets.clone();
         let workdir = self.workdir.clone();
+        let workflow_state = self.workflow_state.clone();
+        let agents = self.agents.clone();
 
         // Build the per-event workspace directory
         let owner = parse_owner(&event.repo_path);
@@ -462,8 +484,6 @@ impl Dispatcher {
         }
 
         tokio::spawn(async move {
-            // TODO: Replace with actual workflow runner invocation when implemented.
-            // For now, log the event type and mark as completed.
             let result = async {
                 tracing::info!(
                     trigger_type = ?event.trigger_type,
@@ -473,9 +493,7 @@ impl Dispatcher {
                     "Processing workflow event"
                 );
 
-                // Log the start of workflow processing to the workspace directory
-                // This demonstrates the logging integration; actual step-by-step
-                // logging will be wired in when the workflow runner is implemented.
+                // Log the start of workflow processing
                 if let Err(e) = logging::write_log_file(
                     0,
                     "Start",
@@ -490,8 +508,81 @@ impl Dispatcher {
                     tracing::warn!(%key, error = %e, "failed to write start log file");
                 }
 
-                // Simulate minimal processing — the actual WorkflowRunner will
-                // be integrated in a future issue.
+                // Find matching workflows from the hot-reloadable state
+                let workflows = workflow_state.load();
+                let matching = find_matching_workflows(&workflows, &event.trigger_type);
+
+                if matching.is_empty() {
+                    tracing::warn!(
+                        trigger_type = %event.trigger_type.label(),
+                        "no matching workflow found for trigger type, skipping"
+                    );
+                    return Ok(());
+                }
+
+                // Read the Hermes API key from the environment
+                let api_key = std::env::var("HERMES_API_KEY")
+                    .map_err(|_| "HERMES_API_KEY environment variable not set".to_string())?;
+
+                // Run each matching workflow sequentially within this task.
+                // If multiple workflows match the same trigger, they run one after
+                // another in the same workspace directory.
+                for (_path, workflow) in matching {
+                    tracing::info!(
+                        workflow_path = %_path,
+                        steps = workflow.steps.len(),
+                        "running matching workflow"
+                    );
+
+                    // Resolve the agent for the first step to build a HermesClient.
+                    // The current WorkflowRunner design uses a single client for all steps.
+                    let agent_name = workflow
+                        .steps
+                        .first()
+                        .map(|s| s.agent.as_str())
+                        .unwrap_or("");
+
+                    let agent_config =
+                        agents
+                            .iter()
+                            .find(|a| a.name == agent_name)
+                            .ok_or_else(|| {
+                                format!("agent '{}' not found in configuration", agent_name)
+                            })?;
+
+                    let client =
+                        HermesClient::new(agent_config.base_url.to_string(), api_key.clone());
+
+                    // Build template variables from the event context
+                    let mut variables = HashMap::new();
+                    variables.insert("owner".to_string(), owner.clone());
+                    variables.insert("repo".to_string(), repo.clone());
+                    variables.insert("output_dir".to_string(), event_ws_dir.display().to_string());
+                    variables.insert("event_id".to_string(), event_id.clone());
+                    variables.insert("repo_path".to_string(), event.repo_path.clone());
+
+                    let mut runner = WorkflowRunner::new(
+                        workflow.clone(),
+                        variables,
+                        event_ws_dir.clone(),
+                        client,
+                    );
+
+                    if let Err(e) = runner.run().await {
+                        tracing::error!(
+                            workflow_path = %_path,
+                            error = %e,
+                            "workflow execution failed"
+                        );
+                        return Err(format!("Workflow '{}' failed: {}", _path, e));
+                    }
+
+                    tracing::info!(
+                        workflow_path = %_path,
+                        "workflow completed successfully"
+                    );
+                }
+
                 Ok::<(), String>(())
             }
             .await;
@@ -789,10 +880,38 @@ pub fn load_persistence(workdir: &Path) -> DedupSets {
     }
 }
 
+/// Find workflows whose trigger type matches the incoming event's trigger type.
+///
+/// Matching is based on exact comparison between the workflow's `trigger.type`
+/// string and `TriggerType::label()`.
+fn find_matching_workflows(
+    workflows: &Arc<Vec<(String, Workflow)>>,
+    trigger_type: &TriggerType,
+) -> Vec<(String, Workflow)> {
+    let label = trigger_type.label();
+    workflows
+        .iter()
+        .filter(|(_, wf)| wf.trigger.r#type == label)
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::workflow::TriggerType;
+
+    /// Helper to create a test Dispatcher with an empty WorkflowState and no agents.
+    fn test_dispatcher(dedup: SharedDedupSets, max_concurrent: usize) -> Dispatcher {
+        let workflow_state = Arc::new(WorkflowState::new(vec![]));
+        Dispatcher::new(
+            dedup,
+            max_concurrent,
+            PathBuf::from("/tmp/yoke-test"),
+            workflow_state,
+            vec![],
+        )
+    }
 
     // --- DedupSets struct tests ---
 
@@ -1533,7 +1652,7 @@ mod tests {
     #[test]
     fn test_dispatcher_new_unlimited() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 0, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = test_dispatcher(dedup, 0);
         assert_eq!(dispatcher.max_concurrent(), 0);
         assert_eq!(dispatcher.active_count(), 0);
     }
@@ -1541,7 +1660,7 @@ mod tests {
     #[test]
     fn test_dispatcher_new_limited() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = test_dispatcher(dedup, 2);
         assert_eq!(dispatcher.max_concurrent(), 2);
         assert_eq!(dispatcher.active_count(), 0);
     }
@@ -1549,7 +1668,7 @@ mod tests {
     #[tokio::test]
     async fn test_acquire_permit_unlimited_returns_none() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 0, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = test_dispatcher(dedup, 0);
         let permit = dispatcher.acquire_permit().await.unwrap();
         assert!(permit.is_none(), "unlimited mode should return None permit");
     }
@@ -1557,7 +1676,7 @@ mod tests {
     #[tokio::test]
     async fn test_acquire_permit_limited_returns_some() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = test_dispatcher(dedup, 2);
         let permit = dispatcher.acquire_permit().await.unwrap();
         assert!(permit.is_some(), "limited mode should return Some permit");
         assert_eq!(dispatcher.active_count(), 1);
@@ -1566,7 +1685,7 @@ mod tests {
     #[tokio::test]
     async fn test_permit_released_on_drop() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = test_dispatcher(dedup, 2);
 
         // Acquire a permit via run_with_permit and verify active count
         let active = Arc::new(AtomicUsize::new(0));
@@ -1583,7 +1702,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_with_permit_unlimited() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 0, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = test_dispatcher(dedup, 0);
 
         let result = dispatcher.run_with_permit(async { 42 }).await;
         assert_eq!(result, 42);
@@ -1593,7 +1712,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_with_permit_limited() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = test_dispatcher(dedup, 2);
 
         let result = dispatcher.run_with_permit(async { 42 }).await;
         assert_eq!(result, 42);
@@ -1607,7 +1726,7 @@ mod tests {
     #[tokio::test]
     async fn test_semaphore_limits_concurrency() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = test_dispatcher(dedup, 2);
 
         let active_count = Arc::new(AtomicUsize::new(0));
         let max_observed = Arc::new(AtomicUsize::new(0));
@@ -1652,7 +1771,7 @@ mod tests {
     #[test]
     fn test_dispatcher_clone_shares_state() {
         let dedup = new_dedup_sets();
-        let dispatcher = Dispatcher::new(dedup, 2, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = test_dispatcher(dedup, 2);
         let clone = dispatcher.clone();
 
         // Both should share the same max_concurrent

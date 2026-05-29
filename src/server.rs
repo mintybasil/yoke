@@ -7,13 +7,15 @@ use axum::{
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::config::{Platform, ServerConfig};
+use crate::config::{AgentConfig, Platform, ServerConfig};
 use crate::dispatcher::{Dispatcher, new_dedup_sets};
+use crate::reload::WorkflowState;
 use crate::webhook;
 use tracing::instrument;
 
@@ -154,6 +156,7 @@ fn build_router(state: AppState, config: &ServerConfig) -> Router {
 /// * `workdir` — Directory for persisting dispatcher state
 /// * `drain_timeout` — Maximum time to wait for in-flight workflows to complete
 /// * `shutdown_rx` — Watch channel receiver that signals graceful shutdown
+#[allow(clippy::too_many_arguments)]
 pub async fn run_server(
     config: &ServerConfig,
     platform: &Platform,
@@ -161,6 +164,8 @@ pub async fn run_server(
     workdir: PathBuf,
     drain_timeout: Duration,
     shutdown_rx: watch::Receiver<bool>,
+    workflow_state: Arc<WorkflowState>,
+    agents: Vec<AgentConfig>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{}:{}", config.host, config.port)
         .parse()
@@ -174,7 +179,7 @@ pub async fn run_server(
     let (tx, rx) = tokio::sync::mpsc::channel(100);
 
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets, max_concurrent, workdir);
+    let dispatcher = Dispatcher::new(dedup_sets, max_concurrent, workdir, workflow_state, agents);
 
     // Spawn dispatcher run loop as a background task, passing drain_timeout
     let dispatcher_handle = tokio::spawn({
@@ -240,6 +245,14 @@ mod tests {
 
     type HmacSha256 = Hmac<Sha256>;
 
+    fn test_workflow_state() -> std::sync::Arc<crate::reload::WorkflowState> {
+        std::sync::Arc::new(crate::reload::WorkflowState::new(vec![]))
+    }
+
+    fn test_agents() -> Vec<AgentConfig> {
+        vec![]
+    }
+
     fn test_config() -> ServerConfig {
         ServerConfig {
             host: "0.0.0.0".to_string(),
@@ -253,8 +266,13 @@ mod tests {
     fn test_state() -> (AppState, mpsc::Receiver<DispatchMessage>) {
         let (tx, rx) = mpsc::channel(100);
         let dedup_sets = crate::dispatcher::new_dedup_sets();
-        let dispatcher =
-            crate::dispatcher::Dispatcher::new(dedup_sets, 0, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = crate::dispatcher::Dispatcher::new(
+            dedup_sets,
+            0,
+            PathBuf::from("/tmp/yoke-test"),
+            test_workflow_state(),
+            test_agents(),
+        );
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
             dispatcher,
@@ -265,8 +283,13 @@ mod tests {
     fn test_state_github() -> (AppState, mpsc::Receiver<DispatchMessage>) {
         let (tx, rx) = mpsc::channel(100);
         let dedup_sets = crate::dispatcher::new_dedup_sets();
-        let dispatcher =
-            crate::dispatcher::Dispatcher::new(dedup_sets, 0, PathBuf::from("/tmp/yoke-test"));
+        let dispatcher = crate::dispatcher::Dispatcher::new(
+            dedup_sets,
+            0,
+            PathBuf::from("/tmp/yoke-test"),
+            test_workflow_state(),
+            test_agents(),
+        );
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Github, "test-secret".to_string(), tx),
             dispatcher,
@@ -791,6 +814,8 @@ mod tests {
                 crate::dispatcher::new_dedup_sets(),
                 0,
                 PathBuf::from("/tmp/yoke-test"),
+                test_workflow_state(),
+                test_agents(),
             ),
         };
         let app = build_router(state, &config);
