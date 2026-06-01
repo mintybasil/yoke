@@ -58,6 +58,7 @@ pub struct GitHubEvent {
     pub event_type: String,
     pub action: String,
     pub payload: GitHubPayload,
+    pub repository: RepositoryDetails,
 }
 
 /// The parsed payload variants for known GitHub event types.
@@ -75,6 +76,7 @@ pub struct IssuesPayload {
     pub action: String,
     pub issue: IssueDetails,
     pub sender: SenderDetails,
+    pub repository: RepositoryDetails,
 }
 
 /// Payload for GitHub `issue_comment` events.
@@ -84,6 +86,7 @@ pub struct IssueCommentPayload {
     pub comment: CommentDetails,
     pub issue: IssueDetails,
     pub sender: SenderDetails,
+    pub repository: RepositoryDetails,
 }
 
 /// Payload for GitHub `pull_request_review` events.
@@ -93,6 +96,7 @@ pub struct PullRequestReviewPayload {
     pub review: ReviewDetails,
     pub pull_request: PullRequestDetails,
     pub sender: SenderDetails,
+    pub repository: RepositoryDetails,
 }
 
 /// Payload for GitHub `pull_request_review_comment` events.
@@ -102,11 +106,19 @@ pub struct PullRequestReviewCommentPayload {
     pub comment: ReviewCommentDetails,
     pub pull_request: PullRequestDetails,
     pub sender: SenderDetails,
+    pub repository: RepositoryDetails,
 }
 
 // ---------------------------------------------------------------------------
 // Nested data structs
 // ---------------------------------------------------------------------------
+
+/// Repository details extracted from the top-level `repository` field in
+/// GitHub webhook payloads. Used to derive `repo_path` as `owner/name`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RepositoryDetails {
+    pub full_name: String,
+}
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct IssueDetails {
@@ -212,37 +224,53 @@ pub fn parse_github_event(
         "issues" => {
             let payload: IssuesPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
+            let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
                 event_type: "issues".to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::Issues(payload),
+                repository: RepositoryDetails {
+                    full_name: repo_path,
+                },
             })
         }
         "issue_comment" => {
             let payload: IssueCommentPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
+            let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
                 event_type: "issue_comment".to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::IssueComment(payload),
+                repository: RepositoryDetails {
+                    full_name: repo_path,
+                },
             })
         }
         "pull_request_review" => {
             let payload: PullRequestReviewPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
+            let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
                 event_type: "pull_request_review".to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::PullRequestReview(payload),
+                repository: RepositoryDetails {
+                    full_name: repo_path,
+                },
             })
         }
         "pull_request_review_comment" => {
             let payload: PullRequestReviewCommentPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
+            let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
                 event_type: "pull_request_review_comment".to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::PullRequestReviewComment(payload),
+                repository: RepositoryDetails {
+                    full_name: repo_path,
+                },
             })
         }
         _ => Err(GitHubWebhookError::UnknownEventType(
@@ -361,11 +389,8 @@ pub fn handle_github_webhook(
         ))
     })?;
 
-    // Step 5: Build result
-    // Note: GitHub webhook payloads don't include repo info in a simple format.
-    // The repo info would come from the webhook URL path or repository object.
-    // For now, use placeholder values — this will be wired up when dispatcher is added.
-    let repo_path = String::new();
+    // Step 5: Build result with trigger-specific variables and repo_path
+    let repo_path = event.repository.full_name.clone();
     let event_id = match &event.payload {
         GitHubPayload::Issues(p) => format!("issue-{}", p.issue.number),
         GitHubPayload::IssueComment(p) => {
@@ -379,10 +404,63 @@ pub fn handle_github_webhook(
         }
     };
 
+    // Extract trigger-specific variables from the payload
+    let mut variables = std::collections::HashMap::new();
+    match &event.payload {
+        GitHubPayload::Issues(p) => {
+            variables.insert("issue_number".to_string(), p.issue.number.to_string());
+            variables.insert(
+                "assignee".to_string(),
+                p.issue
+                    .assignee
+                    .as_ref()
+                    .map(|a| a.login.clone())
+                    .unwrap_or_default(),
+            );
+            variables.insert("issue_title".to_string(), p.issue.title.clone());
+            variables.insert(
+                "issue_body".to_string(),
+                p.issue.body.clone().unwrap_or_default(),
+            );
+        }
+        GitHubPayload::IssueComment(p) => {
+            variables.insert("issue_number".to_string(), p.issue.number.to_string());
+            variables.insert("comment_id".to_string(), p.comment.id.to_string());
+            variables.insert(
+                "comment_body".to_string(),
+                p.comment.body.clone().unwrap_or_default(),
+            );
+        }
+        GitHubPayload::PullRequestReview(p) => {
+            variables.insert("pr_number".to_string(), p.pull_request.number.to_string());
+            variables.insert("review_id".to_string(), p.review.id.to_string());
+            variables.insert(
+                "review_body".to_string(),
+                p.review.body.clone().unwrap_or_default(),
+            );
+        }
+        GitHubPayload::PullRequestReviewComment(p) => {
+            variables.insert("pr_number".to_string(), p.pull_request.number.to_string());
+            variables.insert(
+                "review_id".to_string(),
+                p.comment
+                    .pull_request_review_id
+                    .unwrap_or(p.comment.id)
+                    .to_string(),
+            );
+            variables.insert("comment_id".to_string(), p.comment.id.to_string());
+            variables.insert(
+                "comment_body".to_string(),
+                p.comment.body.clone().unwrap_or_default(),
+            );
+        }
+    }
+
     Ok(TriggerEvent {
         trigger_type,
         repo_path,
         event_id,
+        variables,
     })
 }
 
@@ -467,12 +545,14 @@ mod tests {
                 "assignee": {"login": "alice"},
                 "assignees": [{"login": "alice"}]
             },
-            "sender": {"login": "bob"}
+            "sender": {"login": "bob"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
 
         let event = parse_github_event("issues", body.as_bytes()).unwrap();
         assert_eq!(event.event_type, "issues");
         assert_eq!(event.action, "assigned");
+        assert_eq!(event.repository.full_name, "owner/repo");
 
         if let GitHubPayload::Issues(payload) = &event.payload {
             assert_eq!(payload.issue.number, 42);
@@ -497,7 +577,8 @@ mod tests {
                 "title": "Some issue",
                 "assignees": []
             },
-            "sender": {"login": "charlie"}
+            "sender": {"login": "charlie"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
 
         let event = parse_github_event("issue_comment", body.as_bytes()).unwrap();
@@ -524,7 +605,8 @@ mod tests {
             "pull_request": {
                 "number": 7
             },
-            "sender": {"login": "reviewer"}
+            "sender": {"login": "reviewer"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
 
         let event = parse_github_event("pull_request_review", body.as_bytes()).unwrap();
@@ -551,7 +633,8 @@ mod tests {
             "pull_request": {
                 "number": 7
             },
-            "sender": {"login": "commenter"}
+            "sender": {"login": "commenter"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
 
         let event = parse_github_event("pull_request_review_comment", body.as_bytes()).unwrap();
@@ -598,7 +681,8 @@ mod tests {
                 "assignee": {"login": "alice"},
                 "assignees": [{"login": "alice"}]
             },
-            "sender": {"login": "bob"}
+            "sender": {"login": "bob"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
 
         let event = parse_github_event("issues", body.as_bytes()).unwrap();
@@ -621,7 +705,8 @@ mod tests {
                 "title": "Some issue",
                 "assignees": []
             },
-            "sender": {"login": "charlie"}
+            "sender": {"login": "charlie"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
 
         let event = parse_github_event("issue_comment", body.as_bytes()).unwrap();
@@ -646,7 +731,8 @@ mod tests {
             "pull_request": {
                 "number": 7
             },
-            "sender": {"login": "reviewer"}
+            "sender": {"login": "reviewer"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
 
         let event = parse_github_event("pull_request_review", body.as_bytes()).unwrap();
@@ -671,7 +757,8 @@ mod tests {
             "pull_request": {
                 "number": 7
             },
-            "sender": {"login": "commenter"}
+            "sender": {"login": "commenter"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
 
         let event = parse_github_event("pull_request_review_comment", body.as_bytes()).unwrap();
@@ -693,7 +780,8 @@ mod tests {
                 "title": "Bug report",
                 "assignees": []
             },
-            "sender": {"login": "bob"}
+            "sender": {"login": "bob"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
 
         let event = parse_github_event("issues", body.as_bytes()).unwrap();
@@ -757,7 +845,8 @@ mod tests {
                 "assignee": {"login": "alice"},
                 "assignees": [{"login": "alice"}]
             },
-            "sender": {"login": "bob"}
+            "sender": {"login": "bob"},
+            "repository": {"full_name": "mintybasil/yoke"}
         }"#;
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
@@ -770,6 +859,9 @@ mod tests {
             TriggerType::GithubIssueAssigned { .. }
         ));
         assert_eq!(event.event_id, "issue-42");
+        assert_eq!(event.repo_path, "mintybasil/yoke");
+        assert_eq!(event.variables.get("issue_number").unwrap(), "42");
+        assert_eq!(event.variables.get("issue_title").unwrap(), "Bug");
     }
 
     #[test]
@@ -786,7 +878,8 @@ mod tests {
                 "title": "Some issue",
                 "assignees": []
             },
-            "sender": {"login": "charlie"}
+            "sender": {"login": "charlie"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
@@ -799,6 +892,7 @@ mod tests {
             TriggerType::GithubIssueCommentMention { .. }
         ));
         assert_eq!(event.event_id, "issue-42-comment-12345");
+        assert_eq!(event.variables.get("comment_id").unwrap(), "12345");
     }
 
     #[test]
@@ -812,7 +906,8 @@ mod tests {
                 "user": {"login": "reviewer"}
             },
             "pull_request": {"number": 7},
-            "sender": {"login": "reviewer"}
+            "sender": {"login": "reviewer"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
@@ -825,6 +920,8 @@ mod tests {
             TriggerType::GithubPullRequestReview { .. }
         ));
         assert_eq!(event.event_id, "pr-7-review-999");
+        assert_eq!(event.variables.get("pr_number").unwrap(), "7");
+        assert_eq!(event.variables.get("review_id").unwrap(), "999");
     }
 
     #[test]
@@ -838,7 +935,8 @@ mod tests {
                 "pull_request_review_id": 999
             },
             "pull_request": {"number": 7},
-            "sender": {"login": "commenter"}
+            "sender": {"login": "commenter"},
+            "repository": {"full_name": "owner/repo"}
         }"#;
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
@@ -852,12 +950,13 @@ mod tests {
             TriggerType::GithubPullRequestCommentMention { .. }
         ));
         assert_eq!(event.event_id, "pr-7-comment-555");
+        assert_eq!(event.variables.get("comment_id").unwrap(), "555");
     }
 
     #[test]
     fn test_handle_github_webhook_invalid_signature_returns_unauthorized() {
         let secret = "secret";
-        let body = r#"{"action":"assigned","issue":{"number":1,"title":"t","assignees":[]},"sender":{"login":"a"}}"#;
+        let body = r#"{"action":"assigned","issue":{"number":1,"title":"t","assignees":[]},"sender":{"login":"a"},"repository":{"full_name":"owner/repo"}}"#;
         let wrong_sig = "sha256=0000000000000000000000000000000000000000000000000000000000000000";
 
         let result = handle_github_webhook(wrong_sig, "issues", body.as_bytes(), secret);
@@ -880,7 +979,7 @@ mod tests {
     fn test_handle_github_webhook_no_matching_action_returns_no_matching_trigger() {
         let secret = "secret";
         // issues + action "opened" should not map to any trigger
-        let body = r#"{"action":"opened","issue":{"number":1,"title":"t","assignees":[]},"sender":{"login":"a"}}"#;
+        let body = r#"{"action":"opened","issue":{"number":1,"title":"t","assignees":[]},"sender":{"login":"a"},"repository":{"full_name":"owner/repo"}}"#;
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
 

@@ -25,7 +25,7 @@
 //! `completed.json` and `failed.json` from the work directory, gracefully
 //! handling missing or corrupted files.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -554,7 +554,11 @@ impl Dispatcher {
                         HermesClient::new(agent_config.base_url.to_string(), api_key.clone());
 
                     // Build template variables from the event context
-                    let mut variables = HashMap::new();
+                    // Start with trigger-specific variables (from the webhook payload),
+                    // then overlay global context variables. Global keys take precedence
+                    // over trigger-specific keys to avoid accidental shadowing of
+                    // well-known variables like `owner` and `repo`.
+                    let mut variables = event.variables.clone();
                     variables.insert("owner".to_string(), owner.clone());
                     variables.insert("repo".to_string(), repo.clone());
                     variables.insert("output_dir".to_string(), event_ws_dir.display().to_string());
@@ -1160,6 +1164,7 @@ mod tests {
             trigger_type,
             repo_path: "owner/repo".to_string(),
             event_id: event_id.to_string(),
+            variables: std::collections::HashMap::new(),
         }
     }
 
