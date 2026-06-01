@@ -29,21 +29,22 @@ pub enum RunnerError {
     Execution(String),
 }
 
-/// Build the context-aware `instructions` string for the Hermes API.
+/// Build context-aware `instructions` for the Hermes API.
 ///
 /// When local file access is enabled (`git.clone` or `git.worktree` is true),
-/// the instructions include the workspace directory path and an explicit `cd`
-/// directive. When both are false (no local file access), a simple step name
-/// is used instead.
-fn build_instructions(workflow: &Workflow, workspace_dir: &Path, step_name: &str) -> String {
+/// returns `Some(instructions)` containing the workspace directory path and an
+/// explicit `cd` directive. When both are false (no local file access), returns
+/// `None` — the `instructions` field is omitted from the API request entirely,
+/// since the step name is already passed as the prompt (`input`).
+fn build_instructions(workflow: &Workflow, workspace_dir: &Path) -> Option<String> {
     if workflow.git.clone || workflow.git.worktree {
         let path = workspace_dir.to_string_lossy();
-        format!(
+        Some(format!(
             "All work is in: {}. Always run `cd {}` as your first action before any file or terminal operations. Reference all file paths relative to this directory.",
             path, path
-        )
+        ))
     } else {
-        format!("Execute step: {}", step_name)
+        None
     }
 }
 
@@ -92,10 +93,13 @@ impl WorkflowRunner {
         let prompt = crate::template::render(&step.prompt_template, &self.variables)?;
 
         // 3. Build context-aware instructions based on git config
-        let instructions = build_instructions(&self.workflow, &self.workspace_dir, &step.name);
+        let instructions = build_instructions(&self.workflow, &self.workspace_dir);
 
         // 4. Call Hermes API
-        let result = self.client.execute_step(&instructions, &prompt).await?;
+        let result = self
+            .client
+            .execute_step(instructions.as_deref(), &prompt)
+            .await?;
 
         // 5. Post-hooks
         self.run_hooks(&step.post_hooks)?;
@@ -171,8 +175,10 @@ mod tests {
             },
         );
         let workspace_dir = PathBuf::from("/var/lib/yoke/mintybasil/yoke/42");
-        let instructions = build_instructions(&workflow, &workspace_dir, "Plan");
+        let instructions = build_instructions(&workflow, &workspace_dir);
 
+        assert!(instructions.is_some());
+        let instructions = instructions.unwrap();
         assert!(instructions.contains("/var/lib/yoke/mintybasil/yoke/42"));
         assert!(instructions.contains("cd /var/lib/yoke/mintybasil/yoke/42"));
         assert!(instructions.contains("All work is in:"));
@@ -190,8 +196,10 @@ mod tests {
             },
         );
         let workspace_dir = PathBuf::from("/var/lib/yoke/mintybasil/yoke/42/worktree-1");
-        let instructions = build_instructions(&workflow, &workspace_dir, "Implement");
+        let instructions = build_instructions(&workflow, &workspace_dir);
 
+        assert!(instructions.is_some());
+        let instructions = instructions.unwrap();
         assert!(instructions.contains("/var/lib/yoke/mintybasil/yoke/42/worktree-1"));
         assert!(instructions.contains("cd /var/lib/yoke/mintybasil/yoke/42/worktree-1"));
     }
@@ -207,8 +215,10 @@ mod tests {
             },
         );
         let workspace_dir = PathBuf::from("/var/lib/yoke/org/repo/100");
-        let instructions = build_instructions(&workflow, &workspace_dir, "Review");
+        let instructions = build_instructions(&workflow, &workspace_dir);
 
+        assert!(instructions.is_some());
+        let instructions = instructions.unwrap();
         assert!(instructions.contains("/var/lib/yoke/org/repo/100"));
         assert!(instructions.contains("cd /var/lib/yoke/org/repo/100"));
     }
@@ -224,11 +234,9 @@ mod tests {
             },
         );
         let workspace_dir = PathBuf::from("/var/lib/yoke/org/repo/42");
-        let instructions = build_instructions(&workflow, &workspace_dir, "Plan");
+        let instructions = build_instructions(&workflow, &workspace_dir);
 
-        assert_eq!(instructions, "Execute step: Plan");
-        assert!(!instructions.contains("cd"));
-        assert!(!instructions.contains("All work is in:"));
+        assert!(instructions.is_none());
     }
 
     // --- Existing tests ---

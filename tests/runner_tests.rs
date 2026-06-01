@@ -22,7 +22,7 @@ use tokio::net::TcpListener;
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct MockRequest {
-    instructions: String,
+    instructions: Option<String>,
     input: String,
     store: bool,
 }
@@ -110,7 +110,10 @@ async fn start_mock_server_with_capture(response_text: &str) -> (String, Arc<Mut
             let text = text.clone();
             let captured = captured_clone.clone();
             async move {
-                captured.lock().unwrap().push(body.instructions.clone());
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(body.instructions.clone().unwrap_or_default());
                 let response = MockResponse {
                     output: vec![MockContentBlock {
                         block_type: "output_text".to_string(),
@@ -485,7 +488,9 @@ async fn test_instructions_include_workspace_dir_when_git_enabled() {
     let result = runner.run().await;
     assert!(result.is_ok());
 
-    let instructions = &captured.lock().unwrap()[0];
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let instructions = captured[0].as_str();
     assert!(instructions.contains(workspace_dir.to_string_lossy().as_ref()));
     assert!(instructions.contains("cd"));
     assert!(instructions.contains("All work is in:"));
@@ -493,9 +498,9 @@ async fn test_instructions_include_workspace_dir_when_git_enabled() {
 }
 
 #[tokio::test]
-async fn test_instructions_omit_workspace_dir_when_git_disabled() {
-    // When both git.clone and git.worktree are false, instructions should
-    // be the simple "Execute step: {name}" format without workspace path.
+async fn test_instructions_omitted_when_git_disabled() {
+    // When both git.clone and git.worktree are false, the instructions
+    // field should be omitted (None) from the API request entirely.
     let (base_url, captured) = start_mock_server_with_capture("Done").await;
     let client = HermesClient::new(base_url, "test-key".to_string());
 
@@ -521,10 +526,10 @@ async fn test_instructions_omit_workspace_dir_when_git_disabled() {
     let result = runner.run().await;
     assert!(result.is_ok());
 
-    let instructions = &captured.lock().unwrap()[0];
-    assert_eq!(instructions, "Execute step: Plan");
-    assert!(!instructions.contains("cd"));
-    assert!(!instructions.contains("All work is in:"));
+    // When instructions is None, the capture mock server pushes empty string
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert!(captured[0].is_empty());
 }
 
 #[tokio::test]
@@ -556,7 +561,9 @@ async fn test_instructions_include_workspace_dir_with_worktree() {
     let result = runner.run().await;
     assert!(result.is_ok());
 
-    let instructions = &captured.lock().unwrap()[0];
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let instructions = captured[0].as_str();
     assert!(instructions.contains(workspace_dir.to_string_lossy().as_ref()));
     assert!(instructions.contains("cd"));
     assert!(instructions.contains("All work is in:"));
