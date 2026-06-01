@@ -165,6 +165,14 @@ async fn main() {
         config.server.webhook_secret = secret;
     }
 
+    // Validate that a webhook secret is available from either config or env var
+    if config.server.webhook_secret.is_empty() {
+        tracing::error!(
+            "Webhook secret must be provided via config.toml or WEBHOOK_SECRET env var"
+        );
+        std::process::exit(1);
+    }
+
     // Validate required environment variables before starting
     if let Err(e) = config::validate_env_vars(&config.platform) {
         tracing::error!(error = %e, "Configuration error");

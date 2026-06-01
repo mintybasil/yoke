@@ -157,7 +157,7 @@ max_body_size = 1048576   # 1MB default
 | Variable | Purpose | Required |
 |---|---|---|
 | `HERMES_API_KEY` | Bearer token for Hermes REST API | Always |
-| `WEBHOOK_SECRET` | Webhook authentication key (overrides `server.webhook_secret` in config) | Always |
+| `WEBHOOK_SECRET` | Webhook authentication key (overrides `server.webhook_secret` in config) | No (config fallback) |
 | `GITHUB_TOKEN` | GitHub auth for webhook management and git operations | When `platform = "github"` |
 | `GITLAB_TOKEN` | GitLab auth for webhook management and git operations | When `platform = "gitlab"` |
 

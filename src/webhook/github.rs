@@ -768,7 +768,7 @@ mod tests {
             trigger,
             TriggerType::GithubPullRequestCommentMention { .. }
         ));
-        assert_eq!(trigger.label(), "github_pull_request_review_comment");
+        assert_eq!(trigger.label(), "github_pull_request_comment_mention");
     }
 
     #[test]
