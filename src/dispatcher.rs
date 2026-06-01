@@ -545,8 +545,6 @@ impl Dispatcher {
                     variables.insert("event_id".to_string(), event_id.clone());
                     variables.insert("repo_path".to_string(), event.repo_path.clone());
 
-                    // Pass agents and api_key to the runner so it resolves the correct
-                    // agent per step instead of using a single client for all steps.
                     let mut runner = WorkflowRunner::new(
                         workflow.clone(),
                         variables,
