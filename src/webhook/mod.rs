@@ -1,4 +1,5 @@
 pub mod github;
+pub mod github_api;
 pub mod gitlab;
 pub mod gitlab_api;
 

@@ -2,7 +2,6 @@ pub mod cli;
 pub mod config;
 pub mod dispatcher;
 pub mod git;
-pub mod github_api;
 pub mod harness;
 pub mod hooks;
 pub mod logging;
