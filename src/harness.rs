@@ -3,7 +3,7 @@
 //! This module provides a high-level HTTP client (`HermesClient`) that:
 //! - Sends POST requests to the `/v1/responses` endpoint of a Hermes Agent API
 //! - Authenticates via `HERMES_API_KEY` as a Bearer token
-//! - Builds request payloads with `instructions`, `input`, and `store` fields
+//! - Builds request payloads with `instructions` (optional), `input`, and `store` fields
 //! - Parses responses to extract `output_text` content blocks
 //! - Writes non-2xx error details to a `.error` file in the current directory
 
@@ -18,7 +18,11 @@ use thiserror::Error;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HermesRequest {
     /// The system-level instructions for the agent.
-    pub instructions: String,
+    ///
+    /// When present, this is sent as the `instructions` field in the API request.
+    /// When `None`, the field is omitted from the JSON payload entirely.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     /// The user input / prompt for the agent.
     pub input: String,
     /// Whether to persist the conversation on the server side.
@@ -104,7 +108,7 @@ impl HermesClient {
 
     /// Execute a single agent step by sending a request to the Hermes API.
     ///
-    /// 1. Builds a `HermesRequest` from the given `instructions` and `input`.
+    /// 1. Builds a `HermesRequest` from the given `instructions` (optional) and `input`.
     /// 2. Sends a POST to `{base_url}/v1/responses` with Bearer token auth.
     /// 3. On success, parses the response and extracts `output_text` blocks.
     /// 4. On failure (non-2xx), writes status and body to a `.error` file
@@ -114,7 +118,7 @@ impl HermesClient {
     /// body, and raw response body for audit logging.
     pub async fn execute_step(
         &self,
-        instructions: &str,
+        instructions: Option<&str>,
         input: &str,
     ) -> Result<StepResult, HarnessError> {
         self.execute_step_with_error_path(instructions, input, None)
@@ -130,12 +134,12 @@ impl HermesClient {
     /// body, and raw response body for audit logging.
     pub async fn execute_step_with_error_path(
         &self,
-        instructions: &str,
+        instructions: Option<&str>,
         input: &str,
         error_path: Option<&Path>,
     ) -> Result<StepResult, HarnessError> {
         let request = HermesRequest {
-            instructions: instructions.to_string(),
+            instructions: instructions.map(|s| s.to_string()),
             input: input.to_string(),
             store: true,
         };
@@ -196,7 +200,7 @@ mod tests {
     #[test]
     fn test_hermes_request_serialization() {
         let request = HermesRequest {
-            instructions: "You are an expert software engineer.".to_string(),
+            instructions: Some("You are an expert software engineer.".to_string()),
             input: "Fix the bug in main.rs".to_string(),
             store: true,
         };
@@ -208,6 +212,23 @@ mod tests {
             parsed["instructions"],
             "You are an expert software engineer."
         );
+        assert_eq!(parsed["input"], "Fix the bug in main.rs");
+        assert_eq!(parsed["store"], true);
+    }
+
+    #[test]
+    fn test_hermes_request_instructions_omitted_when_none() {
+        let request = HermesRequest {
+            instructions: None,
+            input: "Fix the bug in main.rs".to_string(),
+            store: true,
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // When instructions is None, the field should not appear in JSON
+        assert!(parsed.get("instructions").is_none());
         assert_eq!(parsed["input"], "Fix the bug in main.rs");
         assert_eq!(parsed["store"], true);
     }
@@ -246,15 +267,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
     fn test_step_result_fields() {
         let result = StepResult {
             extracted_message: "Hello".to_string(),
-            raw_request: "{\"instructions\":\"test\"}".to_string(),
-            raw_response: "{\"output\":[]}".to_string(),
+            raw_request: r#"{"instructions":"test","input":"","store":true}"#.to_string(),
+            raw_response: r#"{"output":[]}"#.to_string(),
         };
         assert_eq!(result.extracted_message, "Hello");
-        assert_eq!(result.raw_request, "{\"instructions\":\"test\"}");
-        assert_eq!(result.raw_response, "{\"output\":[]}");
+        assert_eq!(
+            result.raw_request,
+            r#"{"instructions":"test","input":"","store":true}"#
+        );
+        assert_eq!(result.raw_response, r#"{"output":[]}"#);
     }
 
     #[test]

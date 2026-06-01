@@ -7,6 +7,7 @@
 //! built with `axum` that returns canned responses.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use yoke::harness::HermesClient;
 use yoke::hooks::Hook;
@@ -21,7 +22,7 @@ use tokio::net::TcpListener;
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct MockRequest {
-    instructions: String,
+    instructions: Option<String>,
     input: String,
     store: bool,
 }
@@ -52,6 +53,13 @@ fn test_workflow(steps: Vec<Step>) -> Workflow {
         git: GitConfig::default(),
         steps,
     }
+}
+
+/// Build a `Workflow` with custom `GitConfig` for testing instructions.
+fn test_workflow_with_git(steps: Vec<Step>, git: GitConfig) -> Workflow {
+    let mut workflow = test_workflow(steps);
+    workflow.git = git;
+    workflow
 }
 
 /// Start a mock Hermes API server that returns the given text in each response.
@@ -85,6 +93,50 @@ async fn start_mock_server(response_text: &str) -> String {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     format!("http://127.0.0.1:{port}")
+}
+
+/// Start a mock server that captures the `instructions` field from each request.
+///
+/// Returns `(base_url, captured_instructions)` where `captured_instructions`
+/// can be inspected after the workflow run.
+async fn start_mock_server_with_capture(response_text: &str) -> (String, Arc<Mutex<Vec<String>>>) {
+    let text = response_text.to_string();
+    let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_clone = captured.clone();
+
+    let app = Router::new().route(
+        "/v1/responses",
+        post(move |body: Json<MockRequest>| {
+            let text = text.clone();
+            let captured = captured_clone.clone();
+            async move {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(body.instructions.clone().unwrap_or_default());
+                let response = MockResponse {
+                    output: vec![MockContentBlock {
+                        block_type: "output_text".to_string(),
+                        text,
+                    }],
+                };
+                Json(response)
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let port = addr.port();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    // Brief delay to let the server start
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    (format!("http://127.0.0.1:{port}"), captured)
 }
 
 #[tokio::test]
@@ -403,4 +455,116 @@ async fn test_hook_failure_between_steps_stops_workflow() {
         }
         other => panic!("expected Execution error for Step2, got {other:?}"),
     }
+}
+
+// --- Context-aware instructions integration tests ---
+
+#[tokio::test]
+async fn test_instructions_include_workspace_dir_when_git_enabled() {
+    // When git.clone or git.worktree is true, instructions should contain
+    // the workspace directory path and a cd directive.
+    let (base_url, captured) = start_mock_server_with_capture("Done").await;
+    let client = HermesClient::new(base_url, "test-key".to_string());
+
+    let dir = tempfile::tempdir().unwrap();
+    let workspace_dir = dir.path().to_path_buf();
+
+    let workflow = test_workflow_with_git(
+        vec![Step {
+            name: "Plan".to_string(),
+            agent: "pm".to_string(),
+            prompt_template: "Plan the issue".to_string(),
+            pre_hooks: vec![],
+            post_hooks: vec![],
+        }],
+        GitConfig {
+            clone: true,
+            worktree: false,
+            default_branch: "main".to_string(),
+        },
+    );
+
+    let mut runner = WorkflowRunner::new(workflow, HashMap::new(), workspace_dir.clone(), client);
+    let result = runner.run().await;
+    assert!(result.is_ok());
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let instructions = captured[0].as_str();
+    assert!(instructions.contains(workspace_dir.to_string_lossy().as_ref()));
+    assert!(instructions.contains("cd"));
+    assert!(instructions.contains("All work is in:"));
+    assert!(instructions.contains("Reference all file paths relative to this directory"));
+}
+
+#[tokio::test]
+async fn test_instructions_omitted_when_git_disabled() {
+    // When both git.clone and git.worktree are false, the instructions
+    // field should be omitted (None) from the API request entirely.
+    let (base_url, captured) = start_mock_server_with_capture("Done").await;
+    let client = HermesClient::new(base_url, "test-key".to_string());
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let workflow = test_workflow_with_git(
+        vec![Step {
+            name: "Plan".to_string(),
+            agent: "pm".to_string(),
+            prompt_template: "Plan the issue".to_string(),
+            pre_hooks: vec![],
+            post_hooks: vec![],
+        }],
+        GitConfig {
+            clone: false,
+            worktree: false,
+            default_branch: "main".to_string(),
+        },
+    );
+
+    let mut runner =
+        WorkflowRunner::new(workflow, HashMap::new(), dir.path().to_path_buf(), client);
+    let result = runner.run().await;
+    assert!(result.is_ok());
+
+    // When instructions is None, the capture mock server pushes empty string
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert!(captured[0].is_empty());
+}
+
+#[tokio::test]
+async fn test_instructions_include_workspace_dir_with_worktree() {
+    // When git.worktree is true (even without git.clone), instructions should
+    // still include the workspace directory path and cd directive.
+    let (base_url, captured) = start_mock_server_with_capture("Done").await;
+    let client = HermesClient::new(base_url, "test-key".to_string());
+
+    let dir = tempfile::tempdir().unwrap();
+    let workspace_dir = dir.path().to_path_buf();
+
+    let workflow = test_workflow_with_git(
+        vec![Step {
+            name: "Implement".to_string(),
+            agent: "swe".to_string(),
+            prompt_template: "Implement the plan".to_string(),
+            pre_hooks: vec![],
+            post_hooks: vec![],
+        }],
+        GitConfig {
+            clone: false,
+            worktree: true,
+            default_branch: "main".to_string(),
+        },
+    );
+
+    let mut runner = WorkflowRunner::new(workflow, HashMap::new(), workspace_dir.clone(), client);
+    let result = runner.run().await;
+    assert!(result.is_ok());
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    let instructions = captured[0].as_str();
+    assert!(instructions.contains(workspace_dir.to_string_lossy().as_ref()));
+    assert!(instructions.contains("cd"));
+    assert!(instructions.contains("All work is in:"));
 }
