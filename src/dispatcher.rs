@@ -36,7 +36,6 @@ use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::config::AgentConfig;
-use crate::harness::HermesClient;
 use crate::logging;
 use crate::reload::WorkflowState;
 use crate::runner::WorkflowRunner;
@@ -534,25 +533,6 @@ impl Dispatcher {
                         "running matching workflow"
                     );
 
-                    // Resolve the agent for the first step to build a HermesClient.
-                    // The current WorkflowRunner design uses a single client for all steps.
-                    let agent_name = workflow
-                        .steps
-                        .first()
-                        .map(|s| s.agent.as_str())
-                        .unwrap_or("");
-
-                    let agent_config =
-                        agents
-                            .iter()
-                            .find(|a| a.name == agent_name)
-                            .ok_or_else(|| {
-                                format!("agent '{}' not found in configuration", agent_name)
-                            })?;
-
-                    let client =
-                        HermesClient::new(agent_config.base_url.to_string(), api_key.clone());
-
                     // Build template variables from the event context
                     // Start with trigger-specific variables (from the webhook payload),
                     // then overlay global context variables. Global keys take precedence
@@ -565,11 +545,14 @@ impl Dispatcher {
                     variables.insert("event_id".to_string(), event_id.clone());
                     variables.insert("repo_path".to_string(), event.repo_path.clone());
 
+                    // Pass agents and api_key to the runner so it resolves the correct
+                    // agent per step instead of using a single client for all steps.
                     let mut runner = WorkflowRunner::new(
                         workflow.clone(),
                         variables,
                         event_ws_dir.clone(),
-                        client,
+                        agents.clone(),
+                        api_key.clone(),
                     );
 
                     if let Err(e) = runner.run().await {

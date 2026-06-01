@@ -4,10 +4,16 @@
 //! in `prompt_template` using the `template` module, validating state via the
 //! `hooks` module, and invoking the `HermesClient` for agent execution.
 //! A fail-fast error strategy is employed — the first error stops the workflow.
+//!
+//! Each step declares its own `agent` field. The runner resolves the correct
+//! `AgentConfig` by name for each step and creates a `HermesClient` on-the-fly,
+//! allowing different steps in a single workflow to target different Hermes
+//! API instances.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::config::AgentConfig;
 use crate::harness::HermesClient;
 use crate::workflow::Workflow;
 use tracing::instrument;
@@ -27,12 +33,21 @@ pub enum RunnerError {
     /// A step failed during execution.
     #[error("Execution failed: {0}")]
     Execution(String),
+    /// Agent referenced by a step was not found in the available configuration.
+    #[error("Unknown agent '{agent}' referenced in step '{step}'")]
+    UnknownAgent {
+        /// The agent name that was not found.
+        agent: String,
+        /// The step that referenced the unknown agent.
+        step: String,
+    },
 }
 
 /// Orchestrates execution of a `Workflow` within a specific workspace.
 ///
-/// The runner iterates through each `Step` in the workflow, running pre-hooks,
-/// rendering the prompt template, calling the Hermes API, and running post-hooks.
+/// The runner iterates through each `Step` in the workflow, resolving the
+/// agent for each step, running pre-hooks, rendering the prompt template,
+/// calling the Hermes API, and running post-hooks.
 /// On the first error, execution stops (fail-fast).
 pub struct WorkflowRunner {
     /// The workflow definition to execute.
@@ -41,32 +56,58 @@ pub struct WorkflowRunner {
     pub variables: HashMap<String, String>,
     /// The workspace directory where files are read/written (hooks, logs, etc.).
     pub workspace_dir: PathBuf,
-    /// The Hermes API client for executing agent steps.
-    pub client: HermesClient,
+    /// Available agent configurations for per-step resolution.
+    pub agents: Vec<AgentConfig>,
+    /// The API key for authenticating with Hermes API instances.
+    pub api_key: String,
 }
 
 impl WorkflowRunner {
-    /// Create a new `WorkflowRunner` with the given workflow, variables, workspace, and client.
+    /// Create a new `WorkflowRunner` with the given workflow, variables, workspace,
+    /// agent configurations, and API key.
     pub fn new(
         workflow: Workflow,
         variables: HashMap<String, String>,
         workspace_dir: PathBuf,
-        client: HermesClient,
+        agents: Vec<AgentConfig>,
+        api_key: String,
     ) -> Self {
         Self {
             workflow,
             variables,
             workspace_dir,
-            client,
+            agents,
+            api_key,
         }
     }
 
-    /// Execute a single workflow step: pre-hooks → template render → API call → post-hooks.
-    #[instrument(skip(self), fields(step = %step.name))]
+    /// Resolve an `AgentConfig` by name from the available agents list.
+    ///
+    /// Returns `Err(RunnerError::UnknownAgent)` if no agent with the given name exists.
+    fn resolve_agent(
+        &self,
+        agent_name: &str,
+        step_name: &str,
+    ) -> Result<&AgentConfig, RunnerError> {
+        self.agents
+            .iter()
+            .find(|a| a.name == agent_name)
+            .ok_or_else(|| RunnerError::UnknownAgent {
+                agent: agent_name.to_string(),
+                step: step_name.to_string(),
+            })
+    }
+
+    /// Execute a single workflow step: resolve agent → pre-hooks → template render → API call → post-hooks.
+    #[instrument(skip(self), fields(step = %step.name, agent = %step.agent))]
     pub async fn execute_step(
         &self,
         step: &crate::workflow::Step,
     ) -> Result<crate::harness::StepResult, RunnerError> {
+        // 0. Resolve the agent for this step and create a client
+        let agent_config = self.resolve_agent(&step.agent, &step.name)?;
+        let client = HermesClient::new(agent_config.base_url.to_string(), self.api_key.clone());
+
         // 1. Pre-hooks
         self.run_hooks(&step.pre_hooks)?;
 
@@ -75,7 +116,7 @@ impl WorkflowRunner {
 
         // 3. Call Hermes API
         let instructions = format!("Execute step: {}", step.name);
-        let result = self.client.execute_step(&instructions, &prompt).await?;
+        let result = client.execute_step(&instructions, &prompt).await?;
 
         // 4. Post-hooks
         self.run_hooks(&step.post_hooks)?;
@@ -131,6 +172,13 @@ mod tests {
         }
     }
 
+    fn test_agents() -> Vec<AgentConfig> {
+        vec![AgentConfig {
+            name: "pm".to_string(),
+            base_url: url::Url::parse("http://localhost:8000").unwrap(),
+        }]
+    }
+
     #[test]
     fn test_runner_error_display() {
         let err = RunnerError::Execution("something went wrong".to_string());
@@ -141,6 +189,14 @@ mod tests {
         };
         let err = RunnerError::Hook(hook_err);
         assert!(format!("{err}").contains("plan.md"));
+
+        let unknown_agent_err = RunnerError::UnknownAgent {
+            agent: "ghost".to_string(),
+            step: "Plan".to_string(),
+        };
+        let msg = format!("{unknown_agent_err}");
+        assert!(msg.contains("ghost"));
+        assert!(msg.contains("Plan"));
     }
 
     #[test]
@@ -148,18 +204,68 @@ mod tests {
         let workflow = test_workflow(vec![]);
         let variables = HashMap::new();
         let workspace_dir = PathBuf::from("/tmp/yoke-test");
-        let client = HermesClient::new("http://localhost:8000".to_string(), "test-key".to_string());
+        let agents = test_agents();
+        let api_key = "test-key".to_string();
 
-        let runner = WorkflowRunner::new(workflow, variables, workspace_dir.clone(), client);
+        let runner =
+            WorkflowRunner::new(workflow, variables, workspace_dir.clone(), agents, api_key);
         assert_eq!(runner.workflow.steps.len(), 0);
         assert_eq!(runner.workspace_dir, workspace_dir);
+        assert_eq!(runner.agents.len(), 1);
+        assert_eq!(runner.api_key, "test-key");
+    }
+
+    #[test]
+    fn test_resolve_agent_found() {
+        let workflow = test_workflow(vec![]);
+        let agents = test_agents();
+        let runner = WorkflowRunner::new(
+            workflow,
+            HashMap::new(),
+            PathBuf::from("/tmp"),
+            agents,
+            "key".to_string(),
+        );
+
+        let result = runner.resolve_agent("pm", "Plan");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name, "pm");
+    }
+
+    #[test]
+    fn test_resolve_agent_not_found() {
+        let workflow = test_workflow(vec![]);
+        let agents = test_agents();
+        let runner = WorkflowRunner::new(
+            workflow,
+            HashMap::new(),
+            PathBuf::from("/tmp"),
+            agents,
+            "key".to_string(),
+        );
+
+        let result = runner.resolve_agent("ghost", "Plan");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RunnerError::UnknownAgent { agent, step } => {
+                assert_eq!(agent, "ghost");
+                assert_eq!(step, "Plan");
+            }
+            other => panic!("expected UnknownAgent error, got {other:?}"),
+        }
     }
 
     #[test]
     fn test_run_hooks_empty() {
         let workflow = test_workflow(vec![]);
-        let client = HermesClient::new("http://localhost:8000".to_string(), "test-key".to_string());
-        let runner = WorkflowRunner::new(workflow, HashMap::new(), PathBuf::from("/tmp"), client);
+        let agents = test_agents();
+        let runner = WorkflowRunner::new(
+            workflow,
+            HashMap::new(),
+            PathBuf::from("/tmp"),
+            agents,
+            "key".to_string(),
+        );
 
         // Empty hooks list should succeed
         assert!(runner.run_hooks(&[]).is_ok());
@@ -171,9 +277,14 @@ mod tests {
         std::fs::write(dir.path().join("plan.md"), "content").unwrap();
 
         let workflow = test_workflow(vec![]);
-        let client = HermesClient::new("http://localhost:8000".to_string(), "test-key".to_string());
-        let runner =
-            WorkflowRunner::new(workflow, HashMap::new(), dir.path().to_path_buf(), client);
+        let agents = test_agents();
+        let runner = WorkflowRunner::new(
+            workflow,
+            HashMap::new(),
+            dir.path().to_path_buf(),
+            agents,
+            "key".to_string(),
+        );
 
         let hooks = vec![Hook::FileNotEmpty {
             path: "plan.md".to_string(),
@@ -186,9 +297,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let workflow = test_workflow(vec![]);
-        let client = HermesClient::new("http://localhost:8000".to_string(), "test-key".to_string());
-        let runner =
-            WorkflowRunner::new(workflow, HashMap::new(), dir.path().to_path_buf(), client);
+        let agents = test_agents();
+        let runner = WorkflowRunner::new(
+            workflow,
+            HashMap::new(),
+            dir.path().to_path_buf(),
+            agents,
+            "key".to_string(),
+        );
 
         let hooks = vec![Hook::FileNotEmpty {
             path: "missing.md".to_string(),
@@ -207,9 +323,14 @@ mod tests {
         std::fs::write(dir.path().join("output.md"), "implementation plan").unwrap();
 
         let workflow = test_workflow(vec![]);
-        let client = HermesClient::new("http://localhost:8000".to_string(), "test-key".to_string());
-        let runner =
-            WorkflowRunner::new(workflow, HashMap::new(), dir.path().to_path_buf(), client);
+        let agents = test_agents();
+        let runner = WorkflowRunner::new(
+            workflow,
+            HashMap::new(),
+            dir.path().to_path_buf(),
+            agents,
+            "key".to_string(),
+        );
 
         let hooks = vec![Hook::FileContains {
             path: "output.md".to_string(),
@@ -225,9 +346,14 @@ mod tests {
         std::fs::write(dir.path().join("file1.txt"), "content").unwrap();
 
         let workflow = test_workflow(vec![]);
-        let client = HermesClient::new("http://localhost:8000".to_string(), "test-key".to_string());
-        let runner =
-            WorkflowRunner::new(workflow, HashMap::new(), dir.path().to_path_buf(), client);
+        let agents = test_agents();
+        let runner = WorkflowRunner::new(
+            workflow,
+            HashMap::new(),
+            dir.path().to_path_buf(),
+            agents,
+            "key".to_string(),
+        );
 
         let hooks = vec![
             Hook::FileNotEmpty {

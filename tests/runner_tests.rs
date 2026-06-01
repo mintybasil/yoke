@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use yoke::harness::HermesClient;
+use yoke::config::AgentConfig;
 use yoke::hooks::Hook;
 use yoke::runner::{RunnerError, WorkflowRunner};
 use yoke::workflow::{GitConfig, Step, Trigger, Workflow};
@@ -16,6 +16,7 @@ use yoke::workflow::{GitConfig, Step, Trigger, Workflow};
 use axum::{Json, Router, routing::post};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use url::Url;
 
 /// Matches the Hermes API request body format.
 #[derive(Debug, Deserialize)]
@@ -87,10 +88,21 @@ async fn start_mock_server(response_text: &str) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+/// Build agent configs for the given mock server base URLs.
+fn make_agents(agent_urls: &[(&str, &str)]) -> Vec<AgentConfig> {
+    agent_urls
+        .iter()
+        .map(|(name, url)| AgentConfig {
+            name: name.to_string(),
+            base_url: Url::parse(url).unwrap(),
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn test_workflow_execution_two_steps() {
     let base_url = start_mock_server("Step completed").await;
-    let client = HermesClient::new(base_url, "test-key".to_string());
+    let agents = make_agents(&[("pm", &base_url), ("swe", &base_url)]);
 
     let dir = tempfile::tempdir().unwrap();
     let workflow = test_workflow(vec![
@@ -113,7 +125,13 @@ async fn test_workflow_execution_two_steps() {
     let mut variables = HashMap::new();
     variables.insert("issue_number".to_string(), "42".to_string());
 
-    let mut runner = WorkflowRunner::new(workflow, variables, dir.path().to_path_buf(), client);
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
 
     let result = runner.run().await;
     assert!(result.is_ok());
@@ -122,7 +140,7 @@ async fn test_workflow_execution_two_steps() {
 #[tokio::test]
 async fn test_template_variables_substituted() {
     let base_url = start_mock_server("Done").await;
-    let client = HermesClient::new(base_url, "test-key".to_string());
+    let agents = make_agents(&[("pm", &base_url)]);
 
     let dir = tempfile::tempdir().unwrap();
     let workflow = test_workflow(vec![Step {
@@ -138,7 +156,13 @@ async fn test_template_variables_substituted() {
     variables.insert("repo".to_string(), "yoke".to_string());
     variables.insert("issue_number".to_string(), "37".to_string());
 
-    let mut runner = WorkflowRunner::new(workflow, variables, dir.path().to_path_buf(), client);
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
 
     let result = runner.run().await;
     assert!(result.is_ok());
@@ -147,7 +171,7 @@ async fn test_template_variables_substituted() {
 #[tokio::test]
 async fn test_unknown_variable_fails() {
     let base_url = start_mock_server("Done").await;
-    let client = HermesClient::new(base_url, "test-key".to_string());
+    let agents = make_agents(&[("pm", &base_url)]);
 
     let dir = tempfile::tempdir().unwrap();
     let workflow = test_workflow(vec![Step {
@@ -160,7 +184,13 @@ async fn test_unknown_variable_fails() {
 
     let variables = HashMap::new(); // empty — no unknown_var
 
-    let mut runner = WorkflowRunner::new(workflow, variables, dir.path().to_path_buf(), client);
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
 
     let result = runner.run().await;
     assert!(result.is_err());
@@ -176,7 +206,7 @@ async fn test_unknown_variable_fails() {
 #[tokio::test]
 async fn test_pre_hook_failure_prevents_step() {
     let base_url = start_mock_server("Done").await;
-    let client = HermesClient::new(base_url, "test-key".to_string());
+    let agents = make_agents(&[("pm", &base_url)]);
 
     let dir = tempfile::tempdir().unwrap();
     // Don't create plan.md — pre-hook should fail
@@ -192,8 +222,13 @@ async fn test_pre_hook_failure_prevents_step() {
 
     let variables = HashMap::new();
 
-    let mut runner = WorkflowRunner::new(workflow, variables, dir.path().to_path_buf(), client);
-
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
     let result = runner.run().await;
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -208,7 +243,7 @@ async fn test_pre_hook_failure_prevents_step() {
 #[tokio::test]
 async fn test_post_hook_failure_marks_step_failed() {
     let base_url = start_mock_server("Done").await;
-    let client = HermesClient::new(base_url, "test-key".to_string());
+    let agents = make_agents(&[("pm", &base_url)]);
 
     let dir = tempfile::tempdir().unwrap();
     // Create plan.md but not output.md — post-hook should fail
@@ -229,7 +264,13 @@ async fn test_post_hook_failure_marks_step_failed() {
 
     let variables = HashMap::new();
 
-    let mut runner = WorkflowRunner::new(workflow, variables, dir.path().to_path_buf(), client);
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
 
     let result = runner.run().await;
     assert!(result.is_err());
@@ -245,7 +286,7 @@ async fn test_post_hook_failure_marks_step_failed() {
 #[tokio::test]
 async fn test_fail_fast_on_first_step_error() {
     let base_url = start_mock_server("Done").await;
-    let client = HermesClient::new(base_url, "test-key".to_string());
+    let agents = make_agents(&[("pm", &base_url), ("swe", &base_url)]);
 
     let dir = tempfile::tempdir().unwrap();
 
@@ -268,7 +309,13 @@ async fn test_fail_fast_on_first_step_error() {
 
     let variables = HashMap::new();
 
-    let mut runner = WorkflowRunner::new(workflow, variables, dir.path().to_path_buf(), client);
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
 
     let result = runner.run().await;
     assert!(result.is_err());
@@ -285,7 +332,7 @@ async fn test_fail_fast_on_first_step_error() {
 #[tokio::test]
 async fn test_pre_and_post_hooks_pass() {
     let base_url = start_mock_server("Done").await;
-    let client = HermesClient::new(base_url, "test-key".to_string());
+    let agents = make_agents(&[("pm", &base_url)]);
 
     let dir = tempfile::tempdir().unwrap();
     // Create files needed by hooks
@@ -307,7 +354,13 @@ async fn test_pre_and_post_hooks_pass() {
 
     let variables = HashMap::new();
 
-    let mut runner = WorkflowRunner::new(workflow, variables, dir.path().to_path_buf(), client);
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
 
     let result = runner.run().await;
     assert!(result.is_ok());
@@ -317,7 +370,7 @@ async fn test_pre_and_post_hooks_pass() {
 async fn test_steps_execute_in_order() {
     // Use a mock server that echoes the instruction text so we can verify order
     let base_url = start_mock_server("Completed").await;
-    let client = HermesClient::new(base_url, "test-key".to_string());
+    let agents = make_agents(&[("pm", &base_url), ("swe", &base_url)]);
 
     let dir = tempfile::tempdir().unwrap();
 
@@ -347,7 +400,13 @@ async fn test_steps_execute_in_order() {
 
     let variables = HashMap::new();
 
-    let mut runner = WorkflowRunner::new(workflow, variables, dir.path().to_path_buf(), client);
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
 
     // If all three steps run successfully, we know they executed in order
     // (fail-fast would stop at the first failure)
@@ -358,7 +417,7 @@ async fn test_steps_execute_in_order() {
 #[tokio::test]
 async fn test_hook_failure_between_steps_stops_workflow() {
     let base_url = start_mock_server("Done").await;
-    let client = HermesClient::new(base_url, "test-key".to_string());
+    let agents = make_agents(&[("pm", &base_url), ("swe", &base_url)]);
 
     let dir = tempfile::tempdir().unwrap();
 
@@ -391,7 +450,13 @@ async fn test_hook_failure_between_steps_stops_workflow() {
 
     let variables = HashMap::new();
 
-    let mut runner = WorkflowRunner::new(workflow, variables, dir.path().to_path_buf(), client);
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
 
     let result = runner.run().await;
     assert!(result.is_err());
@@ -403,4 +468,133 @@ async fn test_hook_failure_between_steps_stops_workflow() {
         }
         other => panic!("expected Execution error for Step2, got {other:?}"),
     }
+}
+
+// --- Per-step agent resolution tests ---
+
+#[tokio::test]
+async fn test_multi_agent_workflow_uses_different_base_urls() {
+    // Start two separate mock servers on different ports
+    let base_url_pm = start_mock_server("PM response").await;
+    let base_url_swe = start_mock_server("SWE response").await;
+
+    let agents = make_agents(&[("pm", &base_url_pm), ("swe", &base_url_swe)]);
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // Workflow with two steps using different agents
+    let workflow = test_workflow(vec![
+        Step {
+            name: "Plan".to_string(),
+            agent: "pm".to_string(),
+            prompt_template: "Plan the issue".to_string(),
+            pre_hooks: vec![],
+            post_hooks: vec![],
+        },
+        Step {
+            name: "Implement".to_string(),
+            agent: "swe".to_string(),
+            prompt_template: "Implement the plan".to_string(),
+            pre_hooks: vec![],
+            post_hooks: vec![],
+        },
+    ]);
+
+    let variables = HashMap::new();
+
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
+
+    let result = runner.run().await;
+    assert!(result.is_ok());
+    // Both steps completed — each resolved to its own agent's base_url
+}
+
+#[tokio::test]
+async fn test_unknown_agent_returns_clear_error() {
+    let base_url = start_mock_server("Done").await;
+    // Only configure "pm" agent, but the step references "ghost"
+    let agents = make_agents(&[("pm", &base_url)]);
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let workflow = test_workflow(vec![Step {
+        name: "Mystery".to_string(),
+        agent: "ghost".to_string(),
+        prompt_template: "Do something".to_string(),
+        pre_hooks: vec![],
+        post_hooks: vec![],
+    }]);
+
+    let variables = HashMap::new();
+
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
+
+    let result = runner.run().await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        RunnerError::Execution(msg) => {
+            // The UnknownAgent error is wrapped by Execution, so we check for
+            // the key identifiers in the message
+            assert!(
+                msg.contains("ghost"),
+                "error should mention the agent name 'ghost', got: {msg}"
+            );
+            assert!(
+                msg.contains("Mystery"),
+                "error should mention the step name 'Mystery', got: {msg}"
+            );
+        }
+        other => panic!("expected Execution error for unknown agent, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_single_agent_workflow_still_works() {
+    // Verify backward compatibility: single-agent workflows still work
+    let base_url = start_mock_server("Done").await;
+    let agents = make_agents(&[("pm", &base_url)]);
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let workflow = test_workflow(vec![
+        Step {
+            name: "Plan".to_string(),
+            agent: "pm".to_string(),
+            prompt_template: "Plan the issue".to_string(),
+            pre_hooks: vec![],
+            post_hooks: vec![],
+        },
+        Step {
+            name: "Review".to_string(),
+            agent: "pm".to_string(),
+            prompt_template: "Review the plan".to_string(),
+            pre_hooks: vec![],
+            post_hooks: vec![],
+        },
+    ]);
+
+    let variables = HashMap::new();
+
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
+
+    let result = runner.run().await;
+    assert!(result.is_ok());
 }
