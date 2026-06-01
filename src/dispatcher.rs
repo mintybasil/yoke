@@ -539,7 +539,7 @@ impl Dispatcher {
                 }
 
                 // Read the Hermes API key from the environment
-                let api_key = std::env::var(crate::constants::env::HERMES_API_KEY)
+                let api_key = std::env::var(crate::config::env::HERMES_API_KEY)
                     .map_err(|_| "HERMES_API_KEY environment variable not set".to_string())?;
 
                 // Run each matching workflow sequentially within this task.

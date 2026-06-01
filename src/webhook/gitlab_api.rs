@@ -282,8 +282,7 @@ pub fn find_webhook_by_url<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants;
-    use mockito::Server;
+        use mockito::Server;
 
     // -- WebhookConfig serialization tests ------------------------------------
 
@@ -295,8 +294,8 @@ mod tests {
             push_disabled: Some(false),
             active: Some(true),
             events: Some(vec![
-                constants::webhook_events::GITLAB_PUSH.to_string(),
-                constants::webhook_events::GITLAB_MERGE_REQUESTS.to_string(),
+                crate::webhook::gitlab::GITLAB_PUSH.to_string(),
+                crate::webhook::gitlab::GITLAB_MERGE_REQUESTS.to_string(),
             ]),
         };
         let json = serde_json::to_value(&config).unwrap();
@@ -306,8 +305,8 @@ mod tests {
         assert_eq!(json["active"], true);
         let events = json["events"].as_array().unwrap();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0], constants::webhook_events::GITLAB_PUSH);
-        assert_eq!(events[1], constants::webhook_events::GITLAB_MERGE_REQUESTS);
+        assert_eq!(events[0], crate::webhook::gitlab::GITLAB_PUSH);
+        assert_eq!(events[1], crate::webhook::gitlab::GITLAB_MERGE_REQUESTS);
     }
 
     #[test]
@@ -356,7 +355,7 @@ mod tests {
             token: Some("secret123".to_string()),
             push_disabled: Some(false),
             active: Some(true),
-            events: Some(vec![constants::webhook_events::GITLAB_PUSH.to_string()]),
+            events: Some(vec![crate::webhook::gitlab::GITLAB_PUSH.to_string()]),
         };
         let result = client.create_webhook("1", &config).await.unwrap();
 
@@ -419,8 +418,8 @@ mod tests {
             push_disabled: Some(true),
             active: Some(true),
             events: Some(vec![
-                constants::webhook_events::GITLAB_PUSH.to_string(),
-                constants::webhook_events::GITLAB_MERGE_REQUESTS.to_string(),
+                crate::webhook::gitlab::GITLAB_PUSH.to_string(),
+                crate::webhook::gitlab::GITLAB_MERGE_REQUESTS.to_string(),
             ]),
         };
         let result = client.update_webhook("1", 456, &config).await.unwrap();

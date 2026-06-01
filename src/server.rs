@@ -15,11 +15,23 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::{AgentConfig, Platform, ServerConfig};
-use crate::constants;
 use crate::dispatcher::{Dispatcher, new_dedup_sets};
 use crate::reload::WorkflowState;
 use crate::webhook;
 use tracing::instrument;
+
+
+/// HTTP header names for webhook authentication and event identification.
+pub mod headers {
+    /// GitHub HMAC-SHA256 signature header.
+    pub const GITHUB_SIGNATURE: &str = "X-Hub-Signature-256";
+    /// GitHub event type header.
+    pub const GITHUB_EVENT: &str = "X-GitHub-Event";
+    /// GitLab webhook token header.
+    pub const GITLAB_TOKEN: &str = "X-Gitlab-Token";
+    /// GitLab event type header.
+    pub const GITLAB_EVENT: &str = "X-Gitlab-Event";
+}
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -65,7 +77,7 @@ async fn webhook_handler(
     let (token_header, event_header) = match state.webhook_handler.platform {
         Platform::Github => {
             // GitHub uses X-Hub-Signature-256 for HMAC and X-GitHub-Event for type
-            let sig = match headers.get(constants::headers::GITHUB_SIGNATURE) {
+            let sig = match headers.get(headers::GITHUB_SIGNATURE) {
                 Some(v) => match v.to_str() {
                     Ok(s) => s.to_string(),
                     Err(_) => {
@@ -78,7 +90,7 @@ async fn webhook_handler(
                     return StatusCode::UNAUTHORIZED;
                 }
             };
-            let evt = match headers.get(constants::headers::GITHUB_EVENT) {
+            let evt = match headers.get(headers::GITHUB_EVENT) {
                 Some(v) => match v.to_str() {
                     Ok(s) => s.to_string(),
                     Err(_) => {
@@ -96,12 +108,12 @@ async fn webhook_handler(
         Platform::Gitlab => {
             // GitLab uses X-Gitlab-Token for auth and X-Gitlab-Event for type
             let token = headers
-                .get(constants::headers::GITLAB_TOKEN)
+                .get(headers::GITLAB_TOKEN)
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
             let evt = headers
-                .get(constants::headers::GITLAB_EVENT)
+                .get(headers::GITLAB_EVENT)
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
@@ -383,8 +395,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITLAB_TOKEN, "test-secret")
-                    .header(constants::headers::GITLAB_EVENT, "Issue Hook")
+                    .header(headers::GITLAB_TOKEN, "test-secret")
+                    .header(headers::GITLAB_EVENT, "Issue Hook")
                     .header("Content-Type", "application/json")
                     .body(Body::from(issue_payload.to_string()))
                     .unwrap(),
@@ -406,8 +418,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITLAB_TOKEN, "wrong-secret")
-                    .header(constants::headers::GITLAB_EVENT, "Issue Hook")
+                    .header(headers::GITLAB_TOKEN, "wrong-secret")
+                    .header(headers::GITLAB_EVENT, "Issue Hook")
                     .header("Content-Type", "application/json")
                     .body(Body::from(r#"{"object_kind":"issue","object_attributes":{"id":1},"project":{"id":1,"path_with_namespace":"o/r"}}"#))
                     .unwrap(),
@@ -466,8 +478,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITLAB_TOKEN, "test-secret")
-                    .header(constants::headers::GITLAB_EVENT, "Issue Hook")
+                    .header(headers::GITLAB_TOKEN, "test-secret")
+                    .header(headers::GITLAB_EVENT, "Issue Hook")
                     .header("Content-Type", "application/json")
                     .body(Body::from(payload.to_string()))
                     .unwrap(),
@@ -490,8 +502,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITLAB_TOKEN, "test-secret")
-                    .header(constants::headers::GITLAB_EVENT, "Issue Hook")
+                    .header(headers::GITLAB_TOKEN, "test-secret")
+                    .header(headers::GITLAB_EVENT, "Issue Hook")
                     .header("Content-Type", "application/json")
                     .body(Body::from("not json"))
                     .unwrap(),
@@ -516,7 +528,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITHUB_EVENT, "issues")
+                    .header(headers::GITHUB_EVENT, "issues")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -539,8 +551,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITHUB_SIGNATURE, "sha256=bad_signature")
-                    .header(constants::headers::GITHUB_EVENT, "issues")
+                    .header(headers::GITHUB_SIGNATURE, "sha256=bad_signature")
+                    .header(headers::GITHUB_EVENT, "issues")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -565,8 +577,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITHUB_SIGNATURE, sig)
-                    .header(constants::headers::GITHUB_EVENT, "push")
+                    .header(headers::GITHUB_SIGNATURE, sig)
+                    .header(headers::GITHUB_EVENT, "push")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -603,8 +615,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITHUB_SIGNATURE, sig)
-                    .header(constants::headers::GITHUB_EVENT, "issues")
+                    .header(headers::GITHUB_SIGNATURE, sig)
+                    .header(headers::GITHUB_EVENT, "issues")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -642,8 +654,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITHUB_SIGNATURE, sig)
-                    .header(constants::headers::GITHUB_EVENT, "issue_comment")
+                    .header(headers::GITHUB_SIGNATURE, sig)
+                    .header(headers::GITHUB_EVENT, "issue_comment")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -680,8 +692,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITHUB_SIGNATURE, sig)
-                    .header(constants::headers::GITHUB_EVENT, "pull_request_review")
+                    .header(headers::GITHUB_SIGNATURE, sig)
+                    .header(headers::GITHUB_EVENT, "pull_request_review")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -718,9 +730,9 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITHUB_SIGNATURE, sig)
+                    .header(headers::GITHUB_SIGNATURE, sig)
                     .header(
-                        constants::headers::GITHUB_EVENT,
+                        headers::GITHUB_EVENT,
                         "pull_request_review_comment",
                     )
                     .header("content-type", "application/json")
@@ -757,8 +769,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITHUB_SIGNATURE, sig)
-                    .header(constants::headers::GITHUB_EVENT, "issues")
+                    .header(headers::GITHUB_SIGNATURE, sig)
+                    .header(headers::GITHUB_EVENT, "issues")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -857,8 +869,8 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/webhook")
-                    .header(constants::headers::GITLAB_TOKEN, "test-secret")
-                    .header(constants::headers::GITLAB_EVENT, "Issue Hook")
+                    .header(headers::GITLAB_TOKEN, "test-secret")
+                    .header(headers::GITLAB_EVENT, "Issue Hook")
                     .header("content-type", "application/json")
                     .body(Body::from(issue_payload.to_string()))
                     .unwrap(),

@@ -383,8 +383,7 @@ impl GitHubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants;
-    use mockito::Server;
+        use mockito::Server;
 
     #[tokio::test]
     async fn test_list_webhooks_success() {
@@ -409,7 +408,7 @@ mod tests {
         assert_eq!(result[0].id, 123);
         assert_eq!(
             result[0].events,
-            vec![constants::webhook_events::GITHUB_PUSH.to_string()]
+            vec![crate::webhook::github::GITHUB_PUSH.to_string()]
         );
         assert!(result[0].active);
     }
@@ -583,8 +582,8 @@ mod tests {
         assert_eq!(
             result.events,
             vec![
-                constants::webhook_events::GITHUB_PUSH.to_string(),
-                constants::webhook_events::GITHUB_PULL_REQUEST.to_string()
+                crate::webhook::github::GITHUB_PUSH.to_string(),
+                crate::webhook::github::GITHUB_PULL_REQUEST.to_string()
             ]
         );
     }
@@ -832,7 +831,7 @@ mod tests {
                 secret: Some("s".into()),
                 content_type: Some("json".into()),
             },
-            events: vec![constants::webhook_events::GITHUB_PUSH.into()],
+            events: vec![crate::webhook::github::GITHUB_PUSH.into()],
             active: true,
         };
 
@@ -874,7 +873,7 @@ mod tests {
                 secret: Some("s".into()),
                 content_type: Some("json".into()),
             },
-            events: vec![constants::webhook_events::GITHUB_PUSH.into()],
+            events: vec![crate::webhook::github::GITHUB_PUSH.into()],
             active: true,
         };
 
@@ -928,7 +927,7 @@ mod tests {
                 secret: Some("s".into()),
                 content_type: Some("json".into()),
             },
-            events: vec![constants::webhook_events::GITHUB_PUSH.into()],
+            events: vec![crate::webhook::github::GITHUB_PUSH.into()],
             active: true,
         };
         let repos = vec![

@@ -10,7 +10,6 @@ use yoke::cli;
 use yoke::cli::{Command, WebhooksSubcommand};
 use yoke::config;
 use yoke::config::Config;
-use yoke::constants;
 use yoke::reload;
 use yoke::reload::WorkflowState;
 use yoke::server;
@@ -162,7 +161,7 @@ async fn main() {
     }
 
     // Allow WEBHOOK_SECRET env var to override config.toml value
-    if let Ok(secret) = std::env::var(constants::env::WEBHOOK_SECRET) {
+    if let Ok(secret) = std::env::var(yoke::config::env::WEBHOOK_SECRET) {
         config.server.webhook_secret = secret;
     }
 

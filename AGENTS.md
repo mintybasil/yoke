@@ -7,14 +7,13 @@ src/
   lib.rs       — Library root (pub mod re-exports for integration tests; includes webhooks module)
   main.rs      — CLI entrypoint (initializes tracing subscriber, loads config, loads workflows, validates agents & triggers, starts server; handles `webhooks` subcommand)
   cli.rs       — CLI argument parsing (clap derive) with `webhooks` subcommand support
-  constants.rs  — Centralized string constants for env vars, trigger types, webhook events, and HTTP headers
-  config.rs    — Configuration parsing, validation, and error types
+  config.rs    — Configuration parsing, validation, error types, and env var name constants (env module)
   dispatcher.rs — Concurrency control (Dispatcher + Semaphore), deduplication (DedupSets, SharedDedupSets), persistence, and workspace directory management
   harness.rs   — Hermes API client harness (HermesClient, request/response types, StepResult, error handling)
   logging.rs   — Workflow step logging: write `.prompt` and `.log` files per agent step
   reload.rs    — File watcher for workflow hot-reload (notify crate, debouncing, ReloadMessage types, WorkflowState, reload_workflows)
-  server.rs    — axum HTTP server with health, readiness, and unified webhook endpoint
-  workflow.rs  — Workflow TOML parsing, validation (including template variable validation), and error types
+  server.rs    — axum HTTP server with health, readiness, webhook endpoint, and HTTP header constants (headers module)
+  workflow.rs  — Workflow TOML parsing, validation (including template variable validation), error types, and trigger type string constants (triggers module)
   git.rs        — Git repository operations (clone, pull, worktree, auth callbacks, dirty-check)
   github_api.rs — GitHub REST API client (GitHubClient, Webhook, WebhookConfig, WebhookOrchestrationSummary, GitHubError with ValidationError variant, list/create/update/delete webhooks, find_webhook_by_url, ensure_webhook, orchestrate_webhooks, map_status_with_body for response body capture in errors)
   webhooks.rs  — Unified webhook management (WebhookClient enum, GitHubWebhookClient, GitLabWebhookClient, WebhookInfo, WebhookConfig, WebhookError, AddSummary, RemoveSummary, webhooks_list/webhooks_remove/webhooks_add handlers) — CLI subcommand handler for `yoke webhooks`
@@ -23,8 +22,8 @@ src/
   runner.rs    — Workflow runner: sequential step execution with template vars, hooks, and fail-fast
   webhook/     — Webhook handling modules
     mod.rs       — Shared types (TriggerEvent, WebhookError) and dispatch to platform handler
-    github.rs   — GitHub webhook: HMAC-SHA256 verification, event parsing, trigger mapping
-    gitlab.rs   — GitLab webhook: token verification, payload parsing, event mapping
+    github.rs   — GitHub webhook: HMAC-SHA256 verification, event parsing, trigger mapping, and GitHub event type string constants
+    gitlab.rs   — GitLab webhook: token verification, payload parsing, event mapping, and GitLab event type string constants
     gitlab_api.rs — GitLab REST API client (GitLabClient, GitLabWebhook, WebhookConfig, list/create/update/delete_webhooks, find_webhook_by_url, error types)
 tests/
   dispatcher_tests.rs — Integration tests for dispatcher (full dispatch flow, dedup, concurrency, shutdown, persistence)

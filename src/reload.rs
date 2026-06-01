@@ -240,8 +240,7 @@ pub fn reload_workflows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants;
-
+    
     #[test]
     fn test_is_toml_event_with_toml_extension() {
         let event = Event {
@@ -424,7 +423,7 @@ mod tests {
         let wf = Workflow {
             path: "test.toml".to_string(),
             trigger: crate::workflow::Trigger {
-                r#type: constants::triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
+                r#type: crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -449,7 +448,7 @@ mod tests {
         let wf1 = Workflow {
             path: "a.toml".to_string(),
             trigger: crate::workflow::Trigger {
-                r#type: constants::triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
+                r#type: crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -466,7 +465,7 @@ mod tests {
         let wf2 = Workflow {
             path: "b.toml".to_string(),
             trigger: crate::workflow::Trigger {
-                r#type: constants::triggers::GITHUB_ISSUE_COMMENT_MENTION.to_string(),
+                r#type: crate::workflow::triggers::GITHUB_ISSUE_COMMENT_MENTION.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -546,7 +545,7 @@ prompt_template = "Plan the issue"
         assert_eq!(workflows.len(), 1);
         assert_eq!(
             workflows[0].1.trigger.r#type,
-            constants::triggers::GITHUB_ISSUE_ASSIGNED
+            crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED
         );
     }
 

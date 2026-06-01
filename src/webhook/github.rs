@@ -2,10 +2,23 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-use crate::constants;
 use crate::workflow::TriggerType;
 
 use super::{TriggerEvent, WebhookError};
+
+
+/// GitHub webhook event type strings (X-GitHub-Event header values).
+pub const GITHUB_PUSH: &str = "push";
+/// GitHub pull request event type.
+pub const GITHUB_PULL_REQUEST: &str = "pull_request";
+/// GitHub issues event type.
+pub const GITHUB_ISSUES: &str = "issues";
+/// GitHub issue comment event type.
+pub const GITHUB_ISSUE_COMMENT: &str = "issue_comment";
+/// GitHub pull request review event type.
+pub const GITHUB_PULL_REQUEST_REVIEW: &str = "pull_request_review";
+/// GitHub pull request review comment event type.
+pub const GITHUB_PULL_REQUEST_REVIEW_COMMENT: &str = "pull_request_review_comment";
 
 /// HMAC-SHA256 type alias.
 type HmacSha256 = Hmac<Sha256>;
@@ -222,12 +235,12 @@ pub fn parse_github_event(
     body: &[u8],
 ) -> Result<GitHubEvent, GitHubWebhookError> {
     match event_header {
-        constants::webhook_events::GITHUB_ISSUES => {
+        GITHUB_ISSUES => {
             let payload: IssuesPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
             let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
-                event_type: constants::webhook_events::GITHUB_ISSUES.to_string(),
+                event_type: GITHUB_ISSUES.to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::Issues(payload),
                 repository: RepositoryDetails {
@@ -235,12 +248,12 @@ pub fn parse_github_event(
                 },
             })
         }
-        constants::webhook_events::GITHUB_ISSUE_COMMENT => {
+        GITHUB_ISSUE_COMMENT => {
             let payload: IssueCommentPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
             let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
-                event_type: constants::webhook_events::GITHUB_ISSUE_COMMENT.to_string(),
+                event_type: GITHUB_ISSUE_COMMENT.to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::IssueComment(payload),
                 repository: RepositoryDetails {
@@ -248,12 +261,12 @@ pub fn parse_github_event(
                 },
             })
         }
-        constants::webhook_events::GITHUB_PULL_REQUEST_REVIEW => {
+        GITHUB_PULL_REQUEST_REVIEW => {
             let payload: PullRequestReviewPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
             let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
-                event_type: constants::webhook_events::GITHUB_PULL_REQUEST_REVIEW.to_string(),
+                event_type: GITHUB_PULL_REQUEST_REVIEW.to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::PullRequestReview(payload),
                 repository: RepositoryDetails {
@@ -261,12 +274,12 @@ pub fn parse_github_event(
                 },
             })
         }
-        constants::webhook_events::GITHUB_PULL_REQUEST_REVIEW_COMMENT => {
+        GITHUB_PULL_REQUEST_REVIEW_COMMENT => {
             let payload: PullRequestReviewCommentPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
             let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
-                event_type: constants::webhook_events::GITHUB_PULL_REQUEST_REVIEW_COMMENT
+                event_type: GITHUB_PULL_REQUEST_REVIEW_COMMENT
                     .to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::PullRequestReviewComment(payload),
@@ -291,7 +304,7 @@ pub fn parse_github_event(
 /// type (e.g. an `issues` event with action `opened` instead of `assigned`).
 pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
     match (&event.event_type as &str, event.action.as_str()) {
-        (constants::webhook_events::GITHUB_ISSUES, "assigned") => {
+        (GITHUB_ISSUES, "assigned") => {
             let payload = match &event.payload {
                 GitHubPayload::Issues(p) => p,
                 _ => return None,
@@ -301,7 +314,7 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 allowed_users: None,
             })
         }
-        (constants::webhook_events::GITHUB_ISSUE_COMMENT, "created") => {
+        (GITHUB_ISSUE_COMMENT, "created") => {
             let _payload = match &event.payload {
                 GitHubPayload::IssueComment(p) => p,
                 _ => return None,
@@ -313,7 +326,7 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 allowed_users: None,
             })
         }
-        (constants::webhook_events::GITHUB_PULL_REQUEST_REVIEW, "submitted") => {
+        (GITHUB_PULL_REQUEST_REVIEW, "submitted") => {
             let _payload = match &event.payload {
                 GitHubPayload::PullRequestReview(p) => p,
                 _ => return None,
@@ -322,7 +335,7 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 allowed_users: None,
             })
         }
-        (constants::webhook_events::GITHUB_PULL_REQUEST_REVIEW_COMMENT, "created") => {
+        (GITHUB_PULL_REQUEST_REVIEW_COMMENT, "created") => {
             let payload = match &event.payload {
                 GitHubPayload::PullRequestReviewComment(p) => p,
                 _ => return None,
@@ -654,16 +667,16 @@ mod tests {
 
     #[test]
     fn test_parse_unknown_event_type() {
-        let result = parse_github_event(constants::webhook_events::GITHUB_PUSH, b"{}");
+        let result = parse_github_event(GITHUB_PUSH, b"{}");
         assert!(matches!(
             result,
-            Err(GitHubWebhookError::UnknownEventType(ref t)) if t == constants::webhook_events::GITHUB_PUSH
+            Err(GitHubWebhookError::UnknownEventType(ref t)) if t == GITHUB_PUSH
         ));
     }
 
     #[test]
     fn test_parse_invalid_json() {
-        let result = parse_github_event(constants::webhook_events::GITHUB_ISSUES, b"not json");
+        let result = parse_github_event(GITHUB_ISSUES, b"not json");
         assert!(matches!(
             result,
             Err(GitHubWebhookError::PayloadParseError(_))
@@ -691,7 +704,7 @@ mod tests {
         let trigger = map_to_trigger_event(&event).unwrap();
 
         assert!(matches!(trigger, TriggerType::GithubIssueAssigned { .. }));
-        assert_eq!(trigger.label(), constants::triggers::GITHUB_ISSUE_ASSIGNED);
+        assert_eq!(trigger.label(), crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED);
     }
 
     #[test]
@@ -720,7 +733,7 @@ mod tests {
         ));
         assert_eq!(
             trigger.label(),
-            constants::triggers::GITHUB_ISSUE_COMMENT_MENTION
+            crate::workflow::triggers::GITHUB_ISSUE_COMMENT_MENTION
         );
     }
 
@@ -749,7 +762,7 @@ mod tests {
         ));
         assert_eq!(
             trigger.label(),
-            constants::triggers::GITHUB_PULL_REQUEST_REVIEW
+            crate::workflow::triggers::GITHUB_PULL_REQUEST_REVIEW
         );
     }
 
@@ -778,7 +791,7 @@ mod tests {
         ));
         assert_eq!(
             trigger.label(),
-            constants::triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION
+            crate::workflow::triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION
         );
     }
 
@@ -803,7 +816,7 @@ mod tests {
     #[test]
     fn test_map_unsupported_event_type_returns_err() {
         // "push" events don't map to any trigger
-        let result = parse_github_event(constants::webhook_events::GITHUB_PUSH, b"{}");
+        let result = parse_github_event(GITHUB_PUSH, b"{}");
         assert!(result.is_err());
     }
 
@@ -864,7 +877,7 @@ mod tests {
 
         let result = handle_github_webhook(
             &signature,
-            constants::webhook_events::GITHUB_ISSUES,
+            GITHUB_ISSUES,
             payload,
             secret,
         );
@@ -902,7 +915,7 @@ mod tests {
 
         let result = handle_github_webhook(
             &signature,
-            constants::webhook_events::GITHUB_ISSUE_COMMENT,
+            GITHUB_ISSUE_COMMENT,
             payload,
             secret,
         );
@@ -935,7 +948,7 @@ mod tests {
 
         let result = handle_github_webhook(
             &signature,
-            constants::webhook_events::GITHUB_PULL_REQUEST_REVIEW,
+            GITHUB_PULL_REQUEST_REVIEW,
             payload,
             secret,
         );
@@ -969,7 +982,7 @@ mod tests {
 
         let result = handle_github_webhook(
             &signature,
-            constants::webhook_events::GITHUB_PULL_REQUEST_REVIEW_COMMENT,
+            GITHUB_PULL_REQUEST_REVIEW_COMMENT,
             payload,
             secret,
         );
@@ -991,7 +1004,7 @@ mod tests {
 
         let result = handle_github_webhook(
             wrong_sig,
-            constants::webhook_events::GITHUB_ISSUES,
+            GITHUB_ISSUES,
             body.as_bytes(),
             secret,
         );
@@ -1008,7 +1021,7 @@ mod tests {
         // which maps to NoMatchingTrigger
         let result = handle_github_webhook(
             &signature,
-            constants::webhook_events::GITHUB_PUSH,
+            GITHUB_PUSH,
             body,
             secret,
         );
@@ -1025,7 +1038,7 @@ mod tests {
 
         let result = handle_github_webhook(
             &signature,
-            constants::webhook_events::GITHUB_ISSUES,
+            GITHUB_ISSUES,
             payload,
             secret,
         );
@@ -1051,7 +1064,7 @@ mod tests {
 
         let result = handle_github_webhook(
             bad_sig,
-            constants::webhook_events::GITHUB_ISSUES,
+            GITHUB_ISSUES,
             body,
             secret,
         );

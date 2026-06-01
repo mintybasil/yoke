@@ -185,7 +185,7 @@ mod tests {
         Workflow {
             path: "test.toml".to_string(),
             trigger: Trigger {
-                r#type: crate::constants::triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
+                r#type: crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
