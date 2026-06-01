@@ -115,8 +115,9 @@ pub fn render(template: &str, vars: &HashMap<String, String>) -> Result<String, 
         match segment {
             Segment::Literal(text) => result.push_str(text),
             Segment::Var(name) => {
-                let value =
-                    vars.get(*name).ok_or_else(|| TemplateError::UnknownVariable {
+                let value = vars
+                    .get(*name)
+                    .ok_or_else(|| TemplateError::UnknownVariable {
                         name: name.to_string(),
                     })?;
                 result.push_str(value);
