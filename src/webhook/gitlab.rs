@@ -11,6 +11,7 @@
 //! - `Note Hook` on MergeRequest → `GitlabMergeRequestReview`
 //! - `Note Hook` with `type: DiffNote` on MergeRequest → `GitlabMergeRequestCommentMention`
 
+use crate::constants;
 use crate::workflow::TriggerType;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -220,8 +221,8 @@ pub fn parse_gitlab_event(payload: &[u8]) -> Result<GitLabEvent, String> {
         .map_err(|e| format!("Failed to parse GitLab payload: {e}"))?;
 
     match p.object_kind.as_str() {
-        "issue" => Ok(GitLabEvent::IssueHook(p)),
-        "note" => Ok(GitLabEvent::NoteHook(p)),
+        constants::webhook_events::GITLAB_ISSUE => Ok(GitLabEvent::IssueHook(p)),
+        constants::webhook_events::GITLAB_NOTE => Ok(GitLabEvent::NoteHook(p)),
         other => Err(format!("Unsupported object_kind: {other}")),
     }
 }
@@ -360,7 +361,7 @@ mod tests {
 
     fn sample_issue_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "issue".to_string(),
+            object_kind: crate::constants::webhook_events::GITLAB_ISSUE.to_string(),
             event_type: Some("Issue Hook".to_string()),
             object_attributes: GitLabObjectAttributes {
                 id: 42,
@@ -380,7 +381,7 @@ mod tests {
 
     fn sample_note_on_issue_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "note".to_string(),
+            object_kind: crate::constants::webhook_events::GITLAB_NOTE.to_string(),
             event_type: Some("Note Hook".to_string()),
             object_attributes: GitLabObjectAttributes {
                 id: 100,
@@ -400,7 +401,7 @@ mod tests {
 
     fn sample_note_on_mr_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "note".to_string(),
+            object_kind: crate::constants::webhook_events::GITLAB_NOTE.to_string(),
             event_type: Some("Note Hook".to_string()),
             object_attributes: GitLabObjectAttributes {
                 id: 200,
@@ -420,7 +421,7 @@ mod tests {
 
     fn sample_diff_note_on_mr_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "note".to_string(),
+            object_kind: crate::constants::webhook_events::GITLAB_NOTE.to_string(),
             event_type: Some("Note Hook".to_string()),
             object_attributes: {
                 let mut p = sample_note_on_mr_payload().object_attributes;
@@ -459,7 +460,10 @@ mod tests {
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(event, GitLabEvent::IssueHook(_)));
-        assert_eq!(event.object_kind(), "issue");
+        assert_eq!(
+            event.object_kind(),
+            crate::constants::webhook_events::GITLAB_ISSUE
+        );
     }
 
     #[test]

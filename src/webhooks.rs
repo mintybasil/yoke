@@ -11,6 +11,7 @@
 //! - [`webhooks_add`] — idempotently create or update webhooks for all configured repositories
 
 use crate::config::{Config, Platform};
+use crate::constants;
 use crate::github_api;
 use crate::webhook::gitlab_api;
 use crate::workflow;
@@ -313,13 +314,13 @@ impl WebhookClient {
     ) -> Result<Self, WebhookError> {
         match platform {
             Platform::Github => {
-                let token = std::env::var("GITHUB_TOKEN").map_err(|_| {
+                let token = std::env::var(constants::env::GITHUB_TOKEN).map_err(|_| {
                     WebhookError::Config("Missing required env var: GITHUB_TOKEN".to_string())
                 })?;
                 Ok(WebhookClient::Github(GitHubWebhookClient::new(token)))
             }
             Platform::Gitlab => {
-                let token = std::env::var("GITLAB_TOKEN").map_err(|_| {
+                let token = std::env::var(constants::env::GITLAB_TOKEN).map_err(|_| {
                     WebhookError::Config("Missing required env var: GITLAB_TOKEN".to_string())
                 })?;
                 Ok(WebhookClient::Gitlab(GitLabWebhookClient::new(
@@ -621,14 +622,23 @@ mod tests {
                 content_type: Some("json".to_string()),
                 secret: Some("s3cret".to_string()),
             },
-            events: vec!["push".to_string(), "pull_request".to_string()],
+            events: vec![
+                constants::webhook_events::GITHUB_PUSH.to_string(),
+                constants::webhook_events::GITHUB_PULL_REQUEST.to_string(),
+            ],
             active: true,
         };
         let info = WebhookInfo::from(gh);
         assert_eq!(info.id, 123);
         assert_eq!(info.url, "https://example.com/hook");
         assert_eq!(info.secret, Some("s3cret".to_string()));
-        assert_eq!(info.events, vec!["push", "pull_request"]);
+        assert_eq!(
+            info.events,
+            vec![
+                constants::webhook_events::GITHUB_PUSH.to_string(),
+                constants::webhook_events::GITHUB_PULL_REQUEST.to_string()
+            ]
+        );
         assert!(info.active);
     }
 
@@ -658,7 +668,7 @@ mod tests {
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["url"], "https://example.com/hook");
         assert_eq!(json["secret"], "my-secret");
-        assert_eq!(json["events"][0], "push");
+        assert_eq!(json["events"][0], constants::webhook_events::GITHUB_PUSH);
     }
 
     #[test]
@@ -674,24 +684,24 @@ mod tests {
 
     #[test]
     fn test_webhook_client_new_github_missing_token() {
-        unsafe { std::env::remove_var("GITHUB_TOKEN") };
+        unsafe { std::env::remove_var(constants::env::GITHUB_TOKEN) };
         let result = WebhookClient::new(&Platform::Github, "owner", None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("GITHUB_TOKEN"),
+            err.to_string().contains(constants::env::GITHUB_TOKEN),
             "Error should mention GITHUB_TOKEN, got: {err}"
         );
     }
 
     #[test]
     fn test_webhook_client_new_gitlab_missing_token() {
-        unsafe { std::env::remove_var("GITLAB_TOKEN") };
+        unsafe { std::env::remove_var(constants::env::GITLAB_TOKEN) };
         let result = WebhookClient::new(&Platform::Gitlab, "owner", None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("GITLAB_TOKEN"),
+            err.to_string().contains(constants::env::GITLAB_TOKEN),
             "Error should mention GITLAB_TOKEN, got: {err}"
         );
     }

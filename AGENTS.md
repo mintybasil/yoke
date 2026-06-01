@@ -7,6 +7,7 @@ src/
   lib.rs       — Library root (pub mod re-exports for integration tests; includes webhooks module)
   main.rs      — CLI entrypoint (initializes tracing subscriber, loads config, loads workflows, validates agents & triggers, starts server; handles `webhooks` subcommand)
   cli.rs       — CLI argument parsing (clap derive) with `webhooks` subcommand support
+  constants.rs  — Centralized string constants for env vars, trigger types, webhook events, and HTTP headers
   config.rs    — Configuration parsing, validation, and error types
   dispatcher.rs — Concurrency control (Dispatcher + Semaphore), deduplication (DedupSets, SharedDedupSets), persistence, and workspace directory management
   harness.rs   — Hermes API client harness (HermesClient, request/response types, StepResult, error handling)

@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod config;
+pub mod constants;
 pub mod dispatcher;
 pub mod git;
 pub mod github_api;
