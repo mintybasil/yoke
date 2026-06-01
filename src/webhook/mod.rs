@@ -19,6 +19,10 @@ pub struct TriggerEvent {
     pub repo_path: String,
     /// A unique event ID for deduplication (e.g. "issue-42").
     pub event_id: String,
+    /// Trigger-specific template variables extracted from the webhook payload.
+    /// These are merged with global variables in the dispatcher before
+    /// being passed to the workflow runner for template rendering.
+    pub variables: std::collections::HashMap<String, String>,
 }
 
 /// Errors that can occur during webhook processing.

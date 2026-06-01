@@ -8,7 +8,7 @@ use yoke::harness::{ContentBlock, HermesClient, HermesRequest, HermesResponse};
 #[test]
 fn test_hermes_request_serialization() {
     let request = HermesRequest {
-        instructions: "You are an expert.".to_string(),
+        instructions: Some("You are an expert.".to_string()),
         input: "Do the thing.".to_string(),
         store: true,
     };
@@ -139,7 +139,7 @@ fn test_error_file_unauthorized() {
 #[test]
 fn test_hermes_request_store_true() {
     let request = HermesRequest {
-        instructions: "Plan the implementation.".to_string(),
+        instructions: Some("Plan the implementation.".to_string()),
         input: "Issue #42".to_string(),
         store: true,
     };

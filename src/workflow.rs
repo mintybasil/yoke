@@ -5,6 +5,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Platform;
 
+/// Trigger type string labels used in workflow TOML `trigger.type` fields
+/// and the [`TriggerType`] enum.
+pub mod triggers {
+    // GitHub trigger types
+    /// GitHub: issue assigned.
+    pub const GITHUB_ISSUE_ASSIGNED: &str = "github_issue_assigned";
+    /// GitHub: issue comment mention.
+    pub const GITHUB_ISSUE_COMMENT_MENTION: &str = "github_issue_comment_mention";
+    /// GitHub: pull request review.
+    pub const GITHUB_PULL_REQUEST_REVIEW: &str = "github_pull_request_review";
+    /// GitHub: pull request review comment mention.
+    pub const GITHUB_PULL_REQUEST_COMMENT_MENTION: &str = "github_pull_request_comment_mention";
+
+    // GitLab trigger types
+    /// GitLab: issue assigned.
+    pub const GITLAB_ISSUE_ASSIGNED: &str = "gitlab_issue_assigned";
+    /// GitLab: issue mention.
+    pub const GITLAB_ISSUE_MENTION: &str = "gitlab_issue_mention";
+    /// GitLab: merge request review.
+    pub const GITLAB_MERGE_REQUEST_REVIEW: &str = "gitlab_merge_request_review";
+    /// GitLab: merge request review comment (maps to merge_request_comment_mention).
+    pub const GITLAB_MERGE_REQUEST_REVIEW_COMMENT: &str = "gitlab_merge_request_review_comment";
+}
+
 /// A complete workflow definition loaded from a `.toml` file.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Workflow {
@@ -118,34 +142,36 @@ impl TriggerType {
     /// Returns `None` if the trigger type string is not recognized.
     pub fn from_trigger(trigger: &Trigger) -> Option<Self> {
         match trigger.r#type.as_str() {
-            "github_issue_assigned" => Some(TriggerType::GithubIssueAssigned {
+            triggers::GITHUB_ISSUE_ASSIGNED => Some(TriggerType::GithubIssueAssigned {
                 assigned_to: trigger.assigned_to.clone(),
                 allowed_users: trigger.allowed_users.clone(),
             }),
-            "github_issue_comment_mention" => Some(TriggerType::GithubIssueCommentMention {
-                mentioned_user: trigger.mentioned_user.clone(),
+            triggers::GITHUB_ISSUE_COMMENT_MENTION => {
+                Some(TriggerType::GithubIssueCommentMention {
+                    mentioned_user: trigger.mentioned_user.clone(),
+                    allowed_users: trigger.allowed_users.clone(),
+                })
+            }
+            triggers::GITHUB_PULL_REQUEST_REVIEW => Some(TriggerType::GithubPullRequestReview {
                 allowed_users: trigger.allowed_users.clone(),
             }),
-            "github_pull_request_review" => Some(TriggerType::GithubPullRequestReview {
-                allowed_users: trigger.allowed_users.clone(),
-            }),
-            "github_pull_request_review_comment" => {
+            triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION => {
                 Some(TriggerType::GithubPullRequestCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
                     allowed_users: trigger.allowed_users.clone(),
                 })
             }
-            "gitlab_issue_assigned" => Some(TriggerType::GitlabIssueAssigned {
+            triggers::GITLAB_ISSUE_ASSIGNED => Some(TriggerType::GitlabIssueAssigned {
                 assigned_to: trigger.assigned_to.clone(),
             }),
-            "gitlab_issue_mention" => Some(TriggerType::GitlabIssueMention {
+            triggers::GITLAB_ISSUE_MENTION => Some(TriggerType::GitlabIssueMention {
                 mentioned_user: trigger.mentioned_user.clone(),
                 allowed_users: trigger.allowed_users.clone(),
             }),
-            "gitlab_merge_request_review" => Some(TriggerType::GitlabMergeRequestReview {
+            triggers::GITLAB_MERGE_REQUEST_REVIEW => Some(TriggerType::GitlabMergeRequestReview {
                 allowed_users: trigger.allowed_users.clone(),
             }),
-            "gitlab_merge_request_review_comment" => {
+            triggers::GITLAB_MERGE_REQUEST_REVIEW_COMMENT => {
                 Some(TriggerType::GitlabMergeRequestCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
                     allowed_users: trigger.allowed_users.clone(),
@@ -161,17 +187,17 @@ impl TriggerType {
     /// and are the same strings parsed by `TriggerType::from_trigger()`.
     pub fn label(&self) -> &'static str {
         match self {
-            TriggerType::GithubIssueAssigned { .. } => "github_issue_assigned",
-            TriggerType::GithubIssueCommentMention { .. } => "github_issue_comment_mention",
-            TriggerType::GithubPullRequestReview { .. } => "github_pull_request_review",
+            TriggerType::GithubIssueAssigned { .. } => triggers::GITHUB_ISSUE_ASSIGNED,
+            TriggerType::GithubIssueCommentMention { .. } => triggers::GITHUB_ISSUE_COMMENT_MENTION,
+            TriggerType::GithubPullRequestReview { .. } => triggers::GITHUB_PULL_REQUEST_REVIEW,
             TriggerType::GithubPullRequestCommentMention { .. } => {
-                "github_pull_request_review_comment"
+                triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION
             }
-            TriggerType::GitlabIssueAssigned { .. } => "gitlab_issue_assigned",
-            TriggerType::GitlabIssueMention { .. } => "gitlab_issue_mention",
-            TriggerType::GitlabMergeRequestReview { .. } => "gitlab_merge_request_review",
+            TriggerType::GitlabIssueAssigned { .. } => triggers::GITLAB_ISSUE_ASSIGNED,
+            TriggerType::GitlabIssueMention { .. } => triggers::GITLAB_ISSUE_MENTION,
+            TriggerType::GitlabMergeRequestReview { .. } => triggers::GITLAB_MERGE_REQUEST_REVIEW,
             TriggerType::GitlabMergeRequestCommentMention { .. } => {
-                "gitlab_merge_request_review_comment"
+                triggers::GITLAB_MERGE_REQUEST_REVIEW_COMMENT
             }
         }
     }
@@ -204,15 +230,82 @@ impl TriggerType {
     /// `events` arrays (GitHub) or as GitLab event flag names.
     pub fn webhook_event(&self) -> &'static str {
         match self {
-            TriggerType::GithubIssueAssigned { .. } => "issues",
-            TriggerType::GithubIssueCommentMention { .. } => "issue_comment",
-            TriggerType::GithubPullRequestReview { .. } => "pull_request_review",
-            TriggerType::GithubPullRequestCommentMention { .. } => "pull_request_review_comment",
+            TriggerType::GithubIssueAssigned { .. } => crate::webhook::github::GITHUB_ISSUES,
+            TriggerType::GithubIssueCommentMention { .. } => {
+                crate::webhook::github::GITHUB_ISSUE_COMMENT
+            }
+            TriggerType::GithubPullRequestReview { .. } => {
+                crate::webhook::github::GITHUB_PULL_REQUEST_REVIEW
+            }
+            TriggerType::GithubPullRequestCommentMention { .. } => {
+                crate::webhook::github::GITHUB_PULL_REQUEST_REVIEW_COMMENT
+            }
             TriggerType::GitlabIssueAssigned { .. } => "issues_events",
             TriggerType::GitlabIssueMention { .. } => "note_events",
             TriggerType::GitlabMergeRequestReview { .. } => "note_events",
             TriggerType::GitlabMergeRequestCommentMention { .. } => "note_events",
         }
+    }
+
+    /// Return the set of known template variables available at runtime for this trigger type.
+    ///
+    /// Global variables (`owner`, `repo`, `output_dir`, `event_id`, `repo_path`)
+    /// are always included. Trigger-specific variables are added based on the
+    /// platform and event type, matching the variables populated by the
+    /// webhook handlers and dispatcher.
+    pub fn known_variables(&self) -> std::collections::HashSet<String> {
+        let mut vars = std::collections::HashSet::new();
+        // Global variables available to all triggers
+        vars.insert("owner".to_string());
+        vars.insert("repo".to_string());
+        vars.insert("output_dir".to_string());
+        vars.insert("event_id".to_string());
+        vars.insert("repo_path".to_string());
+
+        match self {
+            TriggerType::GithubIssueAssigned { .. } => {
+                vars.insert("issue_number".to_string());
+                vars.insert("assignee".to_string());
+                vars.insert("issue_title".to_string());
+                vars.insert("issue_body".to_string());
+            }
+            TriggerType::GithubIssueCommentMention { .. } => {
+                vars.insert("issue_number".to_string());
+                vars.insert("comment_id".to_string());
+                vars.insert("comment_body".to_string());
+            }
+            TriggerType::GithubPullRequestReview { .. } => {
+                vars.insert("pr_number".to_string());
+                vars.insert("review_id".to_string());
+                vars.insert("review_body".to_string());
+            }
+            TriggerType::GithubPullRequestCommentMention { .. } => {
+                vars.insert("pr_number".to_string());
+                vars.insert("review_id".to_string());
+                vars.insert("comment_id".to_string());
+                vars.insert("comment_body".to_string());
+            }
+            TriggerType::GitlabIssueAssigned { .. } => {
+                vars.insert("issue_iid".to_string());
+                vars.insert("issue_action".to_string());
+            }
+            TriggerType::GitlabIssueMention { .. } => {
+                vars.insert("issue_iid".to_string());
+                vars.insert("note_id".to_string());
+                vars.insert("note_body".to_string());
+            }
+            TriggerType::GitlabMergeRequestReview { .. } => {
+                vars.insert("mr_iid".to_string());
+                vars.insert("note_id".to_string());
+                vars.insert("note_body".to_string());
+            }
+            TriggerType::GitlabMergeRequestCommentMention { .. } => {
+                vars.insert("mr_iid".to_string());
+                vars.insert("note_id".to_string());
+                vars.insert("note_body".to_string());
+            }
+        }
+        vars
     }
 }
 
@@ -242,6 +335,9 @@ impl Workflow {
     /// - trigger type must be non-empty and one of the known types
     /// - steps must not be empty
     /// - every step must have a non-empty prompt_template
+    /// - all `{{variable}}` placeholders in `prompt_template` must be known
+    ///   variables available at runtime for this workflow's trigger type
+    /// - template syntax must be valid (no unclosed braces or empty placeholders)
     pub fn validate(&self) -> Result<(), String> {
         // Trigger type is required
         if self.trigger.r#type.is_empty() {
@@ -249,19 +345,34 @@ impl Workflow {
         }
 
         // Validate trigger type is a known value via TriggerType enum
-        if TriggerType::from_trigger(&self.trigger).is_none() {
-            return Err(format!("invalid trigger type: {}", self.trigger.r#type));
-        }
+        let trigger_type = TriggerType::from_trigger(&self.trigger)
+            .ok_or_else(|| format!("invalid trigger type: {}", self.trigger.r#type))?;
 
         // Steps array must not be empty
         if self.steps.is_empty() {
             return Err("workflow must contain at least one step".to_string());
         }
 
-        // Each step must have a prompt_template
+        // Build the set of known variables for this trigger type
+        let known_vars = trigger_type.known_variables();
+
+        // Each step must have a prompt_template with valid variable references
         for step in &self.steps {
             if step.prompt_template.trim().is_empty() {
                 return Err(format!("step '{}' is missing prompt_template", step.name));
+            }
+
+            // Extract and validate template variables
+            let vars = crate::template::extract_variables(&step.prompt_template)
+                .map_err(|e| format!("syntax error in step '{}': {}", step.name, e))?;
+
+            for var in vars {
+                if !known_vars.contains(&var) {
+                    return Err(format!(
+                        "unknown template variable '{}' in step '{}' of workflow {}",
+                        var, step.name, self.path
+                    ));
+                }
             }
         }
 
@@ -332,6 +443,11 @@ pub fn load_workflows<P: AsRef<Path>>(dir: P) -> Result<Vec<(String, Workflow)>,
             workflows.push((path_str, workflow));
         }
     }
+    if workflows.is_empty() {
+        return Err(WorkflowError::EmptyDirectory(
+            "No workflow .toml files found".to_string(),
+        ));
+    }
     Ok(workflows)
 }
 
@@ -347,6 +463,8 @@ pub enum WorkflowError {
     },
     /// Semantic validation error.
     Validation { path: String, message: String },
+    /// No workflow `.toml` files found in the directory.
+    EmptyDirectory(String),
 }
 
 impl std::fmt::Display for WorkflowError {
@@ -359,6 +477,9 @@ impl std::fmt::Display for WorkflowError {
             WorkflowError::Validation { path, message } => {
                 write!(f, "validation error in {path}: {message}")
             }
+            WorkflowError::EmptyDirectory(msg) => {
+                write!(f, "empty workflow directory: {msg}")
+            }
         }
     }
 }
@@ -368,7 +489,7 @@ impl std::error::Error for WorkflowError {
         match self {
             WorkflowError::Io(e) => Some(e),
             WorkflowError::Parse { source, .. } => Some(source),
-            WorkflowError::Validation { .. } => None,
+            WorkflowError::Validation { .. } | WorkflowError::EmptyDirectory(_) => None,
         }
     }
 }
@@ -378,17 +499,17 @@ mod tests {
     use super::*;
 
     const GITHUB_TRIGGERS: &[&str] = &[
-        "github_issue_assigned",
-        "github_issue_comment_mention",
-        "github_pull_request_review",
-        "github_pull_request_review_comment",
+        triggers::GITHUB_ISSUE_ASSIGNED,
+        triggers::GITHUB_ISSUE_COMMENT_MENTION,
+        triggers::GITHUB_PULL_REQUEST_REVIEW,
+        triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION,
     ];
 
     const GITLAB_TRIGGERS: &[&str] = &[
-        "gitlab_issue_assigned",
-        "gitlab_issue_mention",
-        "gitlab_merge_request_review",
-        "gitlab_merge_request_review_comment",
+        triggers::GITLAB_ISSUE_ASSIGNED,
+        triggers::GITLAB_ISSUE_MENTION,
+        triggers::GITLAB_MERGE_REQUEST_REVIEW,
+        triggers::GITLAB_MERGE_REQUEST_REVIEW_COMMENT,
     ];
 
     #[test]
@@ -410,7 +531,7 @@ mod tests {
         "#;
         let wf: Workflow = toml::from_str(toml).unwrap();
         assert!(wf.validate().is_ok());
-        assert_eq!(wf.trigger.r#type, "github_issue_assigned");
+        assert_eq!(wf.trigger.r#type, triggers::GITHUB_ISSUE_ASSIGNED);
         assert_eq!(wf.trigger.assigned_to, Some("alice".to_string()));
         assert_eq!(wf.steps.len(), 1);
         assert_eq!(wf.steps[0].name, "Plan");
@@ -633,6 +754,147 @@ mod tests {
         assert!(wf.trigger.assigned_to.is_none());
     }
 
+    // --- Template variable validation tests ---
+
+    #[test]
+    fn test_validate_known_variable_passes() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{owner}}/{{repo}}#{{issue_number}}"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        assert!(wf.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_unknown_variable_fails() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{typo_variable}}"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        let result = wf.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("unknown template variable"),
+            "expected unknown variable error, got: {err}"
+        );
+        assert!(
+            err.contains("typo_variable"),
+            "error should mention the unknown variable name, got: {err}"
+        );
+        assert!(
+            err.contains("Plan"),
+            "error should mention the step name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_template_syntax_error() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        let result = wf.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("syntax error"),
+            "expected syntax error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_empty_placeholder_fails() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{}}"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        let result = wf.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("syntax error"),
+            "expected syntax error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_gitlab_known_variable_passes() {
+        let toml = r#"
+            [trigger]
+            type = "gitlab_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{owner}}/{{repo}} issue {{issue_iid}}"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        assert!(wf.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_cross_platform_variable_fails() {
+        // Using a GitHub variable (issue_number) in a GitLab workflow should fail
+        let toml = r#"
+            [trigger]
+            type = "gitlab_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{issue_number}}"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        let result = wf.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("unknown template variable"),
+            "expected unknown variable error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_no_variables_passes() {
+        // Templates without any {{}} are fine
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Just a plain template"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        assert!(wf.validate().is_ok());
+    }
+
     #[test]
     fn test_load_workflows_from_directory() {
         let dir = std::env::temp_dir().join("yoke_test_workflows");
@@ -732,7 +994,7 @@ prompt_template = "Do the thing"
     #[test]
     fn test_validate_triggers_github_with_github_platform() {
         let platform = Platform::Github;
-        let wf = make_workflow("github_issue_assigned");
+        let wf = make_workflow(triggers::GITHUB_ISSUE_ASSIGNED);
         let workflows = vec![("workflows/plan.toml".to_string(), wf)];
         assert!(validate_triggers(&platform, &workflows).is_ok());
     }
@@ -740,7 +1002,7 @@ prompt_template = "Do the thing"
     #[test]
     fn test_validate_triggers_gitlab_with_gitlab_platform() {
         let platform = Platform::Gitlab;
-        let wf = make_workflow("gitlab_issue_assigned");
+        let wf = make_workflow(triggers::GITLAB_ISSUE_ASSIGNED);
         let workflows = vec![("workflows/plan.toml".to_string(), wf)];
         assert!(validate_triggers(&platform, &workflows).is_ok());
     }
@@ -748,7 +1010,7 @@ prompt_template = "Do the thing"
     #[test]
     fn test_validate_triggers_mismatch_gitlab_trigger_on_github() {
         let platform = Platform::Github;
-        let wf = make_workflow("gitlab_issue_assigned");
+        let wf = make_workflow(triggers::GITLAB_ISSUE_ASSIGNED);
         let workflows = vec![("workflows/gitlab-plan.toml".to_string(), wf)];
         let result = validate_triggers(&platform, &workflows);
         assert!(result.is_err());
@@ -758,7 +1020,7 @@ prompt_template = "Do the thing"
             "error should contain workflow path, got: {err}"
         );
         assert!(
-            err.contains("gitlab_issue_assigned"),
+            err.contains(triggers::GITLAB_ISSUE_ASSIGNED),
             "error should contain trigger type, got: {err}"
         );
         assert!(
@@ -770,7 +1032,7 @@ prompt_template = "Do the thing"
     #[test]
     fn test_validate_triggers_mismatch_github_trigger_on_gitlab() {
         let platform = Platform::Gitlab;
-        let wf = make_workflow("github_issue_assigned");
+        let wf = make_workflow(triggers::GITHUB_ISSUE_ASSIGNED);
         let workflows = vec![("workflows/github-plan.toml".to_string(), wf)];
         let result = validate_triggers(&platform, &workflows);
         assert!(result.is_err());
@@ -780,7 +1042,7 @@ prompt_template = "Do the thing"
             "error should contain workflow path, got: {err}"
         );
         assert!(
-            err.contains("github_issue_assigned"),
+            err.contains(triggers::GITHUB_ISSUE_ASSIGNED),
             "error should contain trigger type, got: {err}"
         );
         assert!(
@@ -792,8 +1054,8 @@ prompt_template = "Do the thing"
     #[test]
     fn test_validate_triggers_multiple_workflows_all_valid() {
         let platform = Platform::Github;
-        let wf1 = make_workflow("github_issue_assigned");
-        let wf2 = make_workflow("github_pull_request_review");
+        let wf1 = make_workflow(triggers::GITHUB_ISSUE_ASSIGNED);
+        let wf2 = make_workflow(triggers::GITHUB_PULL_REQUEST_REVIEW);
         let workflows = vec![
             ("workflows/issue.toml".to_string(), wf1),
             ("workflows/review.toml".to_string(), wf2),
@@ -804,8 +1066,8 @@ prompt_template = "Do the thing"
     #[test]
     fn test_validate_triggers_mixed_valid_and_invalid() {
         let platform = Platform::Github;
-        let wf1 = make_workflow("github_issue_assigned");
-        let wf2 = make_workflow("gitlab_issue_assigned");
+        let wf1 = make_workflow(triggers::GITHUB_ISSUE_ASSIGNED);
+        let wf2 = make_workflow(triggers::GITLAB_ISSUE_ASSIGNED);
         let workflows = vec![
             ("workflows/issue.toml".to_string(), wf1),
             ("workflows/gitlab-flow.toml".to_string(), wf2),
@@ -857,7 +1119,7 @@ prompt_template = "Do the thing"
     #[test]
     fn test_trigger_type_from_trigger_github() {
         let trigger = Trigger {
-            r#type: "github_issue_assigned".to_string(),
+            r#type: triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
             assigned_to: Some("alice".to_string()),
             mentioned_user: None,
             allowed_users: None,
@@ -869,7 +1131,7 @@ prompt_template = "Do the thing"
     #[test]
     fn test_trigger_type_from_trigger_gitlab() {
         let trigger = Trigger {
-            r#type: "gitlab_issue_mention".to_string(),
+            r#type: triggers::GITLAB_ISSUE_MENTION.to_string(),
             assigned_to: None,
             mentioned_user: Some("bob".to_string()),
             allowed_users: None,
@@ -892,7 +1154,7 @@ prompt_template = "Do the thing"
     #[test]
     fn test_trigger_type_carries_filter_fields() {
         let trigger = Trigger {
-            r#type: "github_issue_comment_mention".to_string(),
+            r#type: triggers::GITHUB_ISSUE_COMMENT_MENTION.to_string(),
             assigned_to: None,
             mentioned_user: Some("carol".to_string()),
             allowed_users: Some(vec!["alice".to_string(), "bob".to_string()]),
@@ -917,32 +1179,44 @@ prompt_template = "Do the thing"
 
     #[test]
     fn test_derive_required_events_single_github_workflow() {
-        let wf = make_workflow("github_issue_assigned");
+        let wf = make_workflow(triggers::GITHUB_ISSUE_ASSIGNED);
         let events = derive_required_events(&[wf]);
-        assert_eq!(events, vec!["issues"]);
+        assert_eq!(
+            events,
+            vec![crate::webhook::github::GITHUB_ISSUES.to_string()]
+        );
     }
 
     #[test]
     fn test_derive_required_events_multiple_github_workflows() {
-        let wf1 = make_workflow("github_issue_assigned");
-        let wf2 = make_workflow("github_issue_comment_mention");
+        let wf1 = make_workflow(triggers::GITHUB_ISSUE_ASSIGNED);
+        let wf2 = make_workflow(triggers::GITHUB_ISSUE_COMMENT_MENTION);
         let events = derive_required_events(&[wf1, wf2]);
-        assert_eq!(events, vec!["issues", "issue_comment"]);
+        assert_eq!(
+            events,
+            vec![
+                crate::webhook::github::GITHUB_ISSUES.to_string(),
+                crate::webhook::github::GITHUB_ISSUE_COMMENT.to_string()
+            ]
+        );
     }
 
     #[test]
     fn test_derive_required_events_deduplicates() {
-        let wf1 = make_workflow("github_issue_assigned");
-        let wf2 = make_workflow("github_issue_assigned");
+        let wf1 = make_workflow(triggers::GITHUB_ISSUE_ASSIGNED);
+        let wf2 = make_workflow(triggers::GITHUB_ISSUE_ASSIGNED);
         let events = derive_required_events(&[wf1, wf2]);
-        assert_eq!(events, vec!["issues"]);
+        assert_eq!(
+            events,
+            vec![crate::webhook::github::GITHUB_ISSUES.to_string()]
+        );
     }
 
     #[test]
     fn test_derive_required_events_gitlab_workflows() {
-        let wf1 = make_workflow("gitlab_issue_assigned");
-        let wf2 = make_workflow("gitlab_issue_mention");
-        let wf3 = make_workflow("gitlab_merge_request_review");
+        let wf1 = make_workflow(triggers::GITLAB_ISSUE_ASSIGNED);
+        let wf2 = make_workflow(triggers::GITLAB_ISSUE_MENTION);
+        let wf3 = make_workflow(triggers::GITLAB_MERGE_REQUEST_REVIEW);
         let events = derive_required_events(&[wf1, wf2, wf3]);
         // gitlab_issue_mention and gitlab_merge_request_review both map to note_events
         assert_eq!(events, vec!["issues_events", "note_events"]);
@@ -950,9 +1224,9 @@ prompt_template = "Do the thing"
 
     #[test]
     fn test_derive_required_events_gitlab_dedup_note_events() {
-        let wf1 = make_workflow("gitlab_issue_mention");
-        let wf2 = make_workflow("gitlab_merge_request_review");
-        let wf3 = make_workflow("gitlab_merge_request_review_comment");
+        let wf1 = make_workflow(triggers::GITLAB_ISSUE_MENTION);
+        let wf2 = make_workflow(triggers::GITLAB_MERGE_REQUEST_REVIEW);
+        let wf3 = make_workflow(triggers::GITLAB_MERGE_REQUEST_REVIEW_COMMENT);
         let events = derive_required_events(&[wf1, wf2, wf3]);
         // All three map to note_events — deduplicated
         assert_eq!(events, vec!["note_events"]);
@@ -970,7 +1244,7 @@ prompt_template = "Do the thing"
     fn test_webhook_event_github_triggers() {
         assert_eq!(
             TriggerType::from_trigger(&Trigger {
-                r#type: "github_issue_assigned".to_string(),
+                r#type: triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -981,7 +1255,7 @@ prompt_template = "Do the thing"
         );
         assert_eq!(
             TriggerType::from_trigger(&Trigger {
-                r#type: "github_issue_comment_mention".to_string(),
+                r#type: triggers::GITHUB_ISSUE_COMMENT_MENTION.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -992,7 +1266,7 @@ prompt_template = "Do the thing"
         );
         assert_eq!(
             TriggerType::from_trigger(&Trigger {
-                r#type: "github_pull_request_review".to_string(),
+                r#type: triggers::GITHUB_PULL_REQUEST_REVIEW.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -1003,7 +1277,7 @@ prompt_template = "Do the thing"
         );
         assert_eq!(
             TriggerType::from_trigger(&Trigger {
-                r#type: "github_pull_request_review_comment".to_string(),
+                r#type: triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -1018,7 +1292,7 @@ prompt_template = "Do the thing"
     fn test_webhook_event_gitlab_triggers() {
         assert_eq!(
             TriggerType::from_trigger(&Trigger {
-                r#type: "gitlab_issue_assigned".to_string(),
+                r#type: triggers::GITLAB_ISSUE_ASSIGNED.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -1029,7 +1303,7 @@ prompt_template = "Do the thing"
         );
         assert_eq!(
             TriggerType::from_trigger(&Trigger {
-                r#type: "gitlab_issue_mention".to_string(),
+                r#type: triggers::GITLAB_ISSUE_MENTION.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -1040,7 +1314,7 @@ prompt_template = "Do the thing"
         );
         assert_eq!(
             TriggerType::from_trigger(&Trigger {
-                r#type: "gitlab_merge_request_review".to_string(),
+                r#type: triggers::GITLAB_MERGE_REQUEST_REVIEW.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -1049,5 +1323,56 @@ prompt_template = "Do the thing"
             .webhook_event(),
             "note_events"
         );
+    }
+
+    // --- TriggerType::known_variables tests ---
+
+    #[test]
+    fn test_known_variables_github_issue_assigned() {
+        let tt = TriggerType::GithubIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        };
+        let vars = tt.known_variables();
+        // Global
+        assert!(vars.contains("owner"));
+        assert!(vars.contains("repo"));
+        assert!(vars.contains("output_dir"));
+        assert!(vars.contains("event_id"));
+        assert!(vars.contains("repo_path"));
+        // Trigger-specific
+        assert!(vars.contains("issue_number"));
+        assert!(vars.contains("assignee"));
+        assert!(vars.contains("issue_title"));
+        assert!(vars.contains("issue_body"));
+        // Should NOT contain variables from other triggers
+        assert!(!vars.contains("pr_number"));
+        assert!(!vars.contains("comment_id"));
+    }
+
+    #[test]
+    fn test_known_variables_gitlab_issue_assigned() {
+        let tt = TriggerType::GitlabIssueAssigned { assigned_to: None };
+        let vars = tt.known_variables();
+        // Global
+        assert!(vars.contains("owner"));
+        assert!(vars.contains("repo"));
+        // Trigger-specific
+        assert!(vars.contains("issue_iid"));
+        assert!(vars.contains("issue_action"));
+        // Should NOT contain GitHub variables
+        assert!(!vars.contains("issue_number"));
+    }
+
+    #[test]
+    fn test_known_variables_gitlab_merge_request_comment() {
+        let tt = TriggerType::GitlabMergeRequestCommentMention {
+            mentioned_user: None,
+            allowed_users: None,
+        };
+        let vars = tt.known_variables();
+        assert!(vars.contains("mr_iid"));
+        assert!(vars.contains("note_id"));
+        assert!(vars.contains("note_body"));
     }
 }

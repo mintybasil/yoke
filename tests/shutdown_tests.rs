@@ -8,11 +8,23 @@
 //! - State is persisted before exit
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use yoke::dispatcher::{DispatchMessage, Dispatcher, load_persistence, new_dedup_sets};
+use yoke::reload::WorkflowState;
 use yoke::webhook::TriggerEvent;
 use yoke::workflow::TriggerType;
+
+/// Create a Dispatcher for tests with an empty workflow state and no agents.
+fn test_dispatcher(
+    dedup: yoke::dispatcher::SharedDedupSets,
+    max_concurrent: usize,
+    workdir: PathBuf,
+) -> Dispatcher {
+    let workflow_state = Arc::new(WorkflowState::new(vec![]));
+    Dispatcher::new(dedup, max_concurrent, workdir, workflow_state, vec![])
+}
 
 // --- Helper functions ---
 
@@ -22,6 +34,7 @@ fn make_event(trigger_type: TriggerType, event_id: &str) -> TriggerEvent {
         trigger_type,
         repo_path: "owner/repo".to_string(),
         event_id: event_id.to_string(),
+        variables: std::collections::HashMap::new(),
     }
 }
 
@@ -63,7 +76,7 @@ async fn test_signal_handler_sends_shutdown_on_first_signal() {
 async fn test_graceful_shutdown_with_custom_drain_timeout() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -113,7 +126,7 @@ async fn test_graceful_shutdown_with_custom_drain_timeout() {
 async fn test_state_persisted_on_graceful_shutdown() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -172,7 +185,7 @@ async fn test_state_persisted_on_graceful_shutdown() {
 async fn test_shutdown_with_no_active_workflows() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (_tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -208,7 +221,7 @@ async fn test_drain_timeout_expires_gracefully() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Use concurrency of 1 so we can control ordering
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 1, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 1, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -256,7 +269,7 @@ async fn test_drain_timeout_expires_gracefully() {
 async fn test_shutdown_signal_propagates_via_watch_channel() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

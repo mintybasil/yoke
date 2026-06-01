@@ -19,6 +19,14 @@ use super::{TriggerEvent, WebhookError};
 
 // ── Payload structs ──────────────────────────────────────────────────────────
 
+/// GitLab webhook event type strings (object_kind values).
+pub const GITLAB_PUSH: &str = "push";
+/// GitLab merge request event type (used in API webhook event config).
+pub const GITLAB_MERGE_REQUESTS: &str = "merge_requests";
+/// GitLab issue object_kind value.
+pub const GITLAB_ISSUE: &str = "issue";
+pub const GITLAB_NOTE: &str = "note";
+
 /// Root payload structure for GitLab webhook events.
 ///
 /// GitLab sends different payloads depending on the event type. The `object_kind`
@@ -109,6 +117,47 @@ impl GitLabEvent {
         }
     }
 
+    /// Extract trigger-specific template variables from the payload.
+    ///
+    /// These variables are merged with global variables in the dispatcher
+    /// and made available for template rendering in workflow steps.
+    pub fn variables(&self) -> std::collections::HashMap<String, String> {
+        let mut vars = std::collections::HashMap::new();
+        match self {
+            GitLabEvent::IssueHook(p) => {
+                let iid = p.object_attributes.iid.unwrap_or(p.object_attributes.id);
+                vars.insert("issue_iid".to_string(), iid.to_string());
+                vars.insert(
+                    "issue_action".to_string(),
+                    p.object_attributes.action.clone().unwrap_or_default(),
+                );
+            }
+            GitLabEvent::NoteHook(p) => {
+                let iid = p.object_attributes.iid.unwrap_or(p.object_attributes.id);
+                let note_id = p
+                    .object_attributes
+                    .note_id
+                    .unwrap_or(p.object_attributes.id);
+                vars.insert("note_id".to_string(), note_id.to_string());
+
+                match p.noteable_type.as_deref() {
+                    Some("Issue") => {
+                        vars.insert("issue_iid".to_string(), iid.to_string());
+                    }
+                    Some("MergeRequest") => {
+                        vars.insert("mr_iid".to_string(), iid.to_string());
+                    }
+                    _ => {}
+                }
+
+                if let Some(ref note_text) = p.object_attributes.note {
+                    vars.insert("note_body".to_string(), note_text.clone());
+                }
+            }
+        }
+        vars
+    }
+
     /// Return a deduplication-friendly event ID.
     ///
     /// Format matches Appendix A of the architecture doc:
@@ -179,8 +228,8 @@ pub fn parse_gitlab_event(payload: &[u8]) -> Result<GitLabEvent, String> {
         .map_err(|e| format!("Failed to parse GitLab payload: {e}"))?;
 
     match p.object_kind.as_str() {
-        "issue" => Ok(GitLabEvent::IssueHook(p)),
-        "note" => Ok(GitLabEvent::NoteHook(p)),
+        GITLAB_ISSUE => Ok(GitLabEvent::IssueHook(p)),
+        GITLAB_NOTE => Ok(GitLabEvent::NoteHook(p)),
         other => Err(format!("Unsupported object_kind: {other}")),
     }
 }
@@ -257,14 +306,16 @@ pub fn handle_gitlab_webhook(
         ))
     })?;
 
-    // Step 4: Extract repo path and event ID
+    // Step 4: Extract repo path, event ID, and variables
     let repo_path = event.repo_path();
     let event_id = event.event_id();
+    let variables = event.variables();
 
     Ok(TriggerEvent {
         trigger_type,
         repo_path,
         event_id,
+        variables,
     })
 }
 
@@ -317,7 +368,7 @@ mod tests {
 
     fn sample_issue_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "issue".to_string(),
+            object_kind: GITLAB_ISSUE.to_string(),
             event_type: Some("Issue Hook".to_string()),
             object_attributes: GitLabObjectAttributes {
                 id: 42,
@@ -337,7 +388,7 @@ mod tests {
 
     fn sample_note_on_issue_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "note".to_string(),
+            object_kind: GITLAB_NOTE.to_string(),
             event_type: Some("Note Hook".to_string()),
             object_attributes: GitLabObjectAttributes {
                 id: 100,
@@ -357,7 +408,7 @@ mod tests {
 
     fn sample_note_on_mr_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "note".to_string(),
+            object_kind: GITLAB_NOTE.to_string(),
             event_type: Some("Note Hook".to_string()),
             object_attributes: GitLabObjectAttributes {
                 id: 200,
@@ -377,7 +428,7 @@ mod tests {
 
     fn sample_diff_note_on_mr_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "note".to_string(),
+            object_kind: GITLAB_NOTE.to_string(),
             event_type: Some("Note Hook".to_string()),
             object_attributes: {
                 let mut p = sample_note_on_mr_payload().object_attributes;
@@ -416,7 +467,7 @@ mod tests {
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(event, GitLabEvent::IssueHook(_)));
-        assert_eq!(event.object_kind(), "issue");
+        assert_eq!(event.object_kind(), GITLAB_ISSUE);
     }
 
     #[test]
@@ -577,6 +628,45 @@ mod tests {
         assert_eq!(event.repo_path(), "internal-team/backend-service");
     }
 
+    // ── Variables extraction tests ────────────────────────────────────
+
+    #[test]
+    fn test_variables_issue_hook() {
+        let payload = sample_issue_payload();
+        let event = GitLabEvent::IssueHook(payload);
+        let vars = event.variables();
+        assert_eq!(vars.get("issue_iid").unwrap(), "7");
+        assert_eq!(vars.get("issue_action").unwrap(), "update");
+    }
+
+    #[test]
+    fn test_variables_note_on_issue() {
+        let payload = sample_note_on_issue_payload();
+        let event = GitLabEvent::NoteHook(payload);
+        let vars = event.variables();
+        assert_eq!(vars.get("note_id").unwrap(), "99");
+        assert_eq!(vars.get("issue_iid").unwrap(), "7");
+        assert!(vars.contains_key("note_body"));
+    }
+
+    #[test]
+    fn test_variables_note_on_mr() {
+        let payload = sample_note_on_mr_payload();
+        let event = GitLabEvent::NoteHook(payload);
+        let vars = event.variables();
+        assert_eq!(vars.get("note_id").unwrap(), "150");
+        assert_eq!(vars.get("mr_iid").unwrap(), "12");
+    }
+
+    #[test]
+    fn test_variables_diff_note_on_mr() {
+        let payload = sample_diff_note_on_mr_payload();
+        let event = GitLabEvent::NoteHook(payload);
+        let vars = event.variables();
+        assert_eq!(vars.get("note_id").unwrap(), "250");
+        assert_eq!(vars.get("mr_iid").unwrap(), "12");
+    }
+
     // ── Integration tests for handle_gitlab_webhook ────────────────────
 
     #[test]
@@ -606,6 +696,8 @@ mod tests {
         ));
         assert_eq!(event.repo_path, "internal-team/backend-service");
         assert_eq!(event.event_id, "issue-7");
+        assert_eq!(event.variables.get("issue_iid").unwrap(), "7");
+        assert_eq!(event.variables.get("issue_action").unwrap(), "update");
     }
 
     #[test]
@@ -636,6 +728,8 @@ mod tests {
             TriggerType::GitlabIssueMention { .. }
         ));
         assert_eq!(event.repo_path, "owner/repo");
+        assert_eq!(event.variables.get("note_id").unwrap(), "99");
+        assert_eq!(event.variables.get("issue_iid").unwrap(), "7");
     }
 
     #[test]
@@ -665,6 +759,8 @@ mod tests {
             event.trigger_type,
             TriggerType::GitlabMergeRequestReview { .. }
         ));
+        assert_eq!(event.variables.get("note_id").unwrap(), "150");
+        assert_eq!(event.variables.get("mr_iid").unwrap(), "12");
     }
 
     #[test]
@@ -697,6 +793,8 @@ mod tests {
             event.trigger_type,
             TriggerType::GitlabMergeRequestCommentMention { .. }
         ));
+        assert_eq!(event.variables.get("note_id").unwrap(), "250");
+        assert_eq!(event.variables.get("mr_iid").unwrap(), "12");
     }
 
     #[test]

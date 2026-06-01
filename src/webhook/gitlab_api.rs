@@ -293,7 +293,10 @@ mod tests {
             token: Some("secret123".to_string()),
             push_disabled: Some(false),
             active: Some(true),
-            events: Some(vec!["push".to_string(), "merge_requests".to_string()]),
+            events: Some(vec![
+                crate::webhook::gitlab::GITLAB_PUSH.to_string(),
+                crate::webhook::gitlab::GITLAB_MERGE_REQUESTS.to_string(),
+            ]),
         };
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["url"], "https://example.com/hook");
@@ -302,8 +305,8 @@ mod tests {
         assert_eq!(json["active"], true);
         let events = json["events"].as_array().unwrap();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0], "push");
-        assert_eq!(events[1], "merge_requests");
+        assert_eq!(events[0], crate::webhook::gitlab::GITLAB_PUSH);
+        assert_eq!(events[1], crate::webhook::gitlab::GITLAB_MERGE_REQUESTS);
     }
 
     #[test]
@@ -352,7 +355,7 @@ mod tests {
             token: Some("secret123".to_string()),
             push_disabled: Some(false),
             active: Some(true),
-            events: Some(vec!["push".to_string()]),
+            events: Some(vec![crate::webhook::gitlab::GITLAB_PUSH.to_string()]),
         };
         let result = client.create_webhook("1", &config).await.unwrap();
 
@@ -414,7 +417,10 @@ mod tests {
             token: Some("new-secret".to_string()),
             push_disabled: Some(true),
             active: Some(true),
-            events: Some(vec!["push".to_string(), "merge_requests".to_string()]),
+            events: Some(vec![
+                crate::webhook::gitlab::GITLAB_PUSH.to_string(),
+                crate::webhook::gitlab::GITLAB_MERGE_REQUESTS.to_string(),
+            ]),
         };
         let result = client.update_webhook("1", 456, &config).await.unwrap();
 

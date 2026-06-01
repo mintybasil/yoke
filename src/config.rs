@@ -6,6 +6,18 @@ use url::Url;
 
 use crate::workflow::Workflow;
 
+/// Environment variable names used by Yoke.
+pub mod env {
+    /// Hermes API key (always required).
+    pub const HERMES_API_KEY: &str = "HERMES_API_KEY";
+    /// GitHub personal access token (required when platform = "github").
+    pub const GITHUB_TOKEN: &str = "GITHUB_TOKEN";
+    /// GitLab personal access token (required when platform = "gitlab").
+    pub const GITLAB_TOKEN: &str = "GITLAB_TOKEN";
+    /// Optional webhook secret override (overrides `server.webhook_secret` from config).
+    pub const WEBHOOK_SECRET: &str = "WEBHOOK_SECRET";
+}
+
 /// Supported code platforms.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -94,7 +106,8 @@ fn default_max_body_size() -> u64 {
     1_048_576
 }
 
-/// GitHub-specific configuration (reserved for future fields).
+/// GitHub-specific configuration. Currently a placeholder for future
+/// configuration options (e.g. custom API endpoints, enterprise URLs).
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct GithubConfig {}
 
@@ -252,12 +265,15 @@ pub fn resolve_agents(config: &Config, workflows: &[Workflow]) -> Result<(), Con
 
 /// Validate that required environment variables are set based on the configured platform.
 ///
-/// Checks globally required variables (`HERMES_API_KEY`, `WEBHOOK_SECRET`) and
+/// Checks globally required variables (`HERMES_API_KEY`) and
 /// platform-specific variables (`GITHUB_TOKEN` for GitHub, `GITLAB_TOKEN` for GitLab).
+/// Note: `WEBHOOK_SECRET` is not required as an env var because the webhook secret
+/// can be provided via `config.toml` (`server.webhook_secret`). The env var is
+/// optional and overrides the config value when set.
 /// Returns `Ok(())` if all required variables are present, or `Err(ConfigError::EnvVar)`
 /// with a descriptive message naming the first missing variable.
 pub fn validate_env_vars(platform: &Platform) -> Result<(), ConfigError> {
-    let required_globals = ["HERMES_API_KEY", "WEBHOOK_SECRET"];
+    let required_globals = [env::HERMES_API_KEY];
     for var in required_globals {
         if std::env::var(var).is_err() {
             return Err(ConfigError::EnvVar(format!(
@@ -734,7 +750,7 @@ webhook_secret = "secret"
         Workflow {
             path: path.to_string(),
             trigger: crate::workflow::Trigger {
-                r#type: "github_issue_assigned".to_string(),
+                r#type: crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -821,34 +837,35 @@ webhook_secret = "secret"
     fn test_validate_env_vars_missing_hermes_api_key() {
         let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
-            std::env::remove_var("HERMES_API_KEY");
-            std::env::remove_var("WEBHOOK_SECRET");
-            std::env::remove_var("GITHUB_TOKEN");
+            std::env::remove_var(env::HERMES_API_KEY);
+            std::env::remove_var(env::GITHUB_TOKEN);
         }
 
         let result = validate_env_vars(&Platform::Github);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("HERMES_API_KEY"),
+            err_msg.contains(env::HERMES_API_KEY),
             "error should mention HERMES_API_KEY, got: {err_msg}"
         );
     }
 
     #[test]
-    fn test_validate_env_vars_missing_webhook_secret() {
+    fn test_validate_env_vars_webhook_secret_not_required() {
+        // WEBHOOK_SECRET is no longer required by validate_env_vars;
+        // it can be provided via config.toml instead.
         let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
-            std::env::set_var("HERMES_API_KEY", "test-key");
-            std::env::remove_var("WEBHOOK_SECRET");
+            std::env::set_var(env::HERMES_API_KEY, "test-key");
+            std::env::set_var(env::GITHUB_TOKEN, "gh-token");
+            std::env::remove_var(env::WEBHOOK_SECRET);
         }
 
         let result = validate_env_vars(&Platform::Github);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("WEBHOOK_SECRET"),
-            "error should mention WEBHOOK_SECRET, got: {err_msg}"
+            result.is_ok(),
+            "WEBHOOK_SECRET should be optional: {:?}",
+            result
         );
     }
 
@@ -856,16 +873,16 @@ webhook_secret = "secret"
     fn test_validate_env_vars_github_token_missing() {
         let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
-            std::env::set_var("HERMES_API_KEY", "valid");
-            std::env::set_var("WEBHOOK_SECRET", "valid");
-            std::env::remove_var("GITHUB_TOKEN");
+            std::env::set_var(env::HERMES_API_KEY, "valid");
+            std::env::set_var(env::WEBHOOK_SECRET, "valid");
+            std::env::remove_var(env::GITHUB_TOKEN);
         }
 
         let result = validate_env_vars(&Platform::Github);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("GITHUB_TOKEN"),
+            err_msg.contains(env::GITHUB_TOKEN),
             "error should mention GITHUB_TOKEN, got: {err_msg}"
         );
     }
@@ -874,16 +891,16 @@ webhook_secret = "secret"
     fn test_validate_env_vars_gitlab_token_missing() {
         let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
-            std::env::set_var("HERMES_API_KEY", "valid");
-            std::env::set_var("WEBHOOK_SECRET", "valid");
-            std::env::remove_var("GITLAB_TOKEN");
+            std::env::set_var(env::HERMES_API_KEY, "valid");
+            std::env::set_var(env::WEBHOOK_SECRET, "valid");
+            std::env::remove_var(env::GITLAB_TOKEN);
         }
 
         let result = validate_env_vars(&Platform::Gitlab);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("GITLAB_TOKEN"),
+            err_msg.contains(env::GITLAB_TOKEN),
             "error should mention GITLAB_TOKEN, got: {err_msg}"
         );
     }
@@ -892,9 +909,9 @@ webhook_secret = "secret"
     fn test_validate_env_vars_github_all_present() {
         let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
-            std::env::set_var("HERMES_API_KEY", "valid");
-            std::env::set_var("WEBHOOK_SECRET", "valid");
-            std::env::set_var("GITHUB_TOKEN", "gh-token");
+            std::env::set_var(env::HERMES_API_KEY, "valid");
+            std::env::set_var(env::WEBHOOK_SECRET, "valid");
+            std::env::set_var(env::GITHUB_TOKEN, "gh-token");
         }
 
         let result = validate_env_vars(&Platform::Github);
@@ -905,9 +922,9 @@ webhook_secret = "secret"
     fn test_validate_env_vars_gitlab_all_present() {
         let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
-            std::env::set_var("HERMES_API_KEY", "valid");
-            std::env::set_var("WEBHOOK_SECRET", "valid");
-            std::env::set_var("GITLAB_TOKEN", "gl-token");
+            std::env::set_var(env::HERMES_API_KEY, "valid");
+            std::env::set_var(env::WEBHOOK_SECRET, "valid");
+            std::env::set_var(env::GITLAB_TOKEN, "gl-token");
         }
 
         let result = validate_env_vars(&Platform::Gitlab);

@@ -423,7 +423,7 @@ mod tests {
         let wf = Workflow {
             path: "test.toml".to_string(),
             trigger: crate::workflow::Trigger {
-                r#type: "github_issue_assigned".to_string(),
+                r#type: crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -448,7 +448,7 @@ mod tests {
         let wf1 = Workflow {
             path: "a.toml".to_string(),
             trigger: crate::workflow::Trigger {
-                r#type: "github_issue_assigned".to_string(),
+                r#type: crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -465,7 +465,7 @@ mod tests {
         let wf2 = Workflow {
             path: "b.toml".to_string(),
             trigger: crate::workflow::Trigger {
-                r#type: "github_issue_comment_mention".to_string(),
+                r#type: crate::workflow::triggers::GITHUB_ISSUE_COMMENT_MENTION.to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,
@@ -543,7 +543,10 @@ prompt_template = "Plan the issue"
         assert!(result.is_ok(), "expected Ok, got Err: {:?}", result.err());
         let workflows = result.unwrap();
         assert_eq!(workflows.len(), 1);
-        assert_eq!(workflows[0].1.trigger.r#type, "github_issue_assigned");
+        assert_eq!(
+            workflows[0].1.trigger.r#type,
+            crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED
+        );
     }
 
     #[test]
@@ -614,7 +617,11 @@ prompt_template = "Plan the issue"
         let dir = tempfile::tempdir().unwrap();
         let config = make_config();
         let result = reload_workflows(dir.path(), &config);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("empty workflow directory"),
+            "expected empty directory error, got: {err}"
+        );
     }
 }
