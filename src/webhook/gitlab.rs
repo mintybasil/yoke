@@ -19,6 +19,14 @@ use super::{TriggerEvent, WebhookError};
 
 // ── Payload structs ──────────────────────────────────────────────────────────
 
+/// GitLab webhook event type strings (object_kind values).
+pub const GITLAB_PUSH: &str = "push";
+/// GitLab merge request event type (used in API webhook event config).
+pub const GITLAB_MERGE_REQUESTS: &str = "merge_requests";
+/// GitLab issue object_kind value.
+pub const GITLAB_ISSUE: &str = "issue";
+pub const GITLAB_NOTE: &str = "note";
+
 /// Root payload structure for GitLab webhook events.
 ///
 /// GitLab sends different payloads depending on the event type. The `object_kind`
@@ -220,8 +228,8 @@ pub fn parse_gitlab_event(payload: &[u8]) -> Result<GitLabEvent, String> {
         .map_err(|e| format!("Failed to parse GitLab payload: {e}"))?;
 
     match p.object_kind.as_str() {
-        "issue" => Ok(GitLabEvent::IssueHook(p)),
-        "note" => Ok(GitLabEvent::NoteHook(p)),
+        GITLAB_ISSUE => Ok(GitLabEvent::IssueHook(p)),
+        GITLAB_NOTE => Ok(GitLabEvent::NoteHook(p)),
         other => Err(format!("Unsupported object_kind: {other}")),
     }
 }
@@ -360,7 +368,7 @@ mod tests {
 
     fn sample_issue_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "issue".to_string(),
+            object_kind: GITLAB_ISSUE.to_string(),
             event_type: Some("Issue Hook".to_string()),
             object_attributes: GitLabObjectAttributes {
                 id: 42,
@@ -380,7 +388,7 @@ mod tests {
 
     fn sample_note_on_issue_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "note".to_string(),
+            object_kind: GITLAB_NOTE.to_string(),
             event_type: Some("Note Hook".to_string()),
             object_attributes: GitLabObjectAttributes {
                 id: 100,
@@ -400,7 +408,7 @@ mod tests {
 
     fn sample_note_on_mr_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "note".to_string(),
+            object_kind: GITLAB_NOTE.to_string(),
             event_type: Some("Note Hook".to_string()),
             object_attributes: GitLabObjectAttributes {
                 id: 200,
@@ -420,7 +428,7 @@ mod tests {
 
     fn sample_diff_note_on_mr_payload() -> GitLabPayload {
         GitLabPayload {
-            object_kind: "note".to_string(),
+            object_kind: GITLAB_NOTE.to_string(),
             event_type: Some("Note Hook".to_string()),
             object_attributes: {
                 let mut p = sample_note_on_mr_payload().object_attributes;
@@ -459,7 +467,7 @@ mod tests {
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(event, GitLabEvent::IssueHook(_)));
-        assert_eq!(event.object_kind(), "issue");
+        assert_eq!(event.object_kind(), GITLAB_ISSUE);
     }
 
     #[test]

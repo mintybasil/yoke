@@ -6,6 +6,19 @@ use crate::workflow::TriggerType;
 
 use super::{TriggerEvent, WebhookError};
 
+/// GitHub webhook event type strings (X-GitHub-Event header values).
+pub const GITHUB_PUSH: &str = "push";
+/// GitHub pull request event type.
+pub const GITHUB_PULL_REQUEST: &str = "pull_request";
+/// GitHub issues event type.
+pub const GITHUB_ISSUES: &str = "issues";
+/// GitHub issue comment event type.
+pub const GITHUB_ISSUE_COMMENT: &str = "issue_comment";
+/// GitHub pull request review event type.
+pub const GITHUB_PULL_REQUEST_REVIEW: &str = "pull_request_review";
+/// GitHub pull request review comment event type.
+pub const GITHUB_PULL_REQUEST_REVIEW_COMMENT: &str = "pull_request_review_comment";
+
 /// HMAC-SHA256 type alias.
 type HmacSha256 = Hmac<Sha256>;
 
@@ -221,12 +234,12 @@ pub fn parse_github_event(
     body: &[u8],
 ) -> Result<GitHubEvent, GitHubWebhookError> {
     match event_header {
-        "issues" => {
+        GITHUB_ISSUES => {
             let payload: IssuesPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
             let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
-                event_type: "issues".to_string(),
+                event_type: GITHUB_ISSUES.to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::Issues(payload),
                 repository: RepositoryDetails {
@@ -234,12 +247,12 @@ pub fn parse_github_event(
                 },
             })
         }
-        "issue_comment" => {
+        GITHUB_ISSUE_COMMENT => {
             let payload: IssueCommentPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
             let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
-                event_type: "issue_comment".to_string(),
+                event_type: GITHUB_ISSUE_COMMENT.to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::IssueComment(payload),
                 repository: RepositoryDetails {
@@ -247,12 +260,12 @@ pub fn parse_github_event(
                 },
             })
         }
-        "pull_request_review" => {
+        GITHUB_PULL_REQUEST_REVIEW => {
             let payload: PullRequestReviewPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
             let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
-                event_type: "pull_request_review".to_string(),
+                event_type: GITHUB_PULL_REQUEST_REVIEW.to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::PullRequestReview(payload),
                 repository: RepositoryDetails {
@@ -260,12 +273,12 @@ pub fn parse_github_event(
                 },
             })
         }
-        "pull_request_review_comment" => {
+        GITHUB_PULL_REQUEST_REVIEW_COMMENT => {
             let payload: PullRequestReviewCommentPayload = serde_json::from_slice(body)
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
             let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
-                event_type: "pull_request_review_comment".to_string(),
+                event_type: GITHUB_PULL_REQUEST_REVIEW_COMMENT.to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::PullRequestReviewComment(payload),
                 repository: RepositoryDetails {
@@ -289,7 +302,7 @@ pub fn parse_github_event(
 /// type (e.g. an `issues` event with action `opened` instead of `assigned`).
 pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
     match (&event.event_type as &str, event.action.as_str()) {
-        ("issues", "assigned") => {
+        (GITHUB_ISSUES, "assigned") => {
             let payload = match &event.payload {
                 GitHubPayload::Issues(p) => p,
                 _ => return None,
@@ -299,7 +312,7 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 allowed_users: None,
             })
         }
-        ("issue_comment", "created") => {
+        (GITHUB_ISSUE_COMMENT, "created") => {
             let _payload = match &event.payload {
                 GitHubPayload::IssueComment(p) => p,
                 _ => return None,
@@ -311,7 +324,7 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 allowed_users: None,
             })
         }
-        ("pull_request_review", "submitted") => {
+        (GITHUB_PULL_REQUEST_REVIEW, "submitted") => {
             let _payload = match &event.payload {
                 GitHubPayload::PullRequestReview(p) => p,
                 _ => return None,
@@ -320,7 +333,7 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 allowed_users: None,
             })
         }
-        ("pull_request_review_comment", "created") => {
+        (GITHUB_PULL_REQUEST_REVIEW_COMMENT, "created") => {
             let payload = match &event.payload {
                 GitHubPayload::PullRequestReviewComment(p) => p,
                 _ => return None,
@@ -652,16 +665,16 @@ mod tests {
 
     #[test]
     fn test_parse_unknown_event_type() {
-        let result = parse_github_event("push", b"{}");
+        let result = parse_github_event(GITHUB_PUSH, b"{}");
         assert!(matches!(
             result,
-            Err(GitHubWebhookError::UnknownEventType(ref t)) if t == "push"
+            Err(GitHubWebhookError::UnknownEventType(ref t)) if t == GITHUB_PUSH
         ));
     }
 
     #[test]
     fn test_parse_invalid_json() {
-        let result = parse_github_event("issues", b"not json");
+        let result = parse_github_event(GITHUB_ISSUES, b"not json");
         assert!(matches!(
             result,
             Err(GitHubWebhookError::PayloadParseError(_))
@@ -689,7 +702,10 @@ mod tests {
         let trigger = map_to_trigger_event(&event).unwrap();
 
         assert!(matches!(trigger, TriggerType::GithubIssueAssigned { .. }));
-        assert_eq!(trigger.label(), "github_issue_assigned");
+        assert_eq!(
+            trigger.label(),
+            crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED
+        );
     }
 
     #[test]
@@ -716,7 +732,10 @@ mod tests {
             trigger,
             TriggerType::GithubIssueCommentMention { .. }
         ));
-        assert_eq!(trigger.label(), "github_issue_comment_mention");
+        assert_eq!(
+            trigger.label(),
+            crate::workflow::triggers::GITHUB_ISSUE_COMMENT_MENTION
+        );
     }
 
     #[test]
@@ -742,7 +761,10 @@ mod tests {
             trigger,
             TriggerType::GithubPullRequestReview { .. }
         ));
-        assert_eq!(trigger.label(), "github_pull_request_review");
+        assert_eq!(
+            trigger.label(),
+            crate::workflow::triggers::GITHUB_PULL_REQUEST_REVIEW
+        );
     }
 
     #[test]
@@ -768,7 +790,10 @@ mod tests {
             trigger,
             TriggerType::GithubPullRequestCommentMention { .. }
         ));
-        assert_eq!(trigger.label(), "github_pull_request_comment_mention");
+        assert_eq!(
+            trigger.label(),
+            crate::workflow::triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION
+        );
     }
 
     #[test]
@@ -792,7 +817,7 @@ mod tests {
     #[test]
     fn test_map_unsupported_event_type_returns_err() {
         // "push" events don't map to any trigger
-        let result = parse_github_event("push", b"{}");
+        let result = parse_github_event(GITHUB_PUSH, b"{}");
         assert!(result.is_err());
     }
 
@@ -851,7 +876,7 @@ mod tests {
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
 
-        let result = handle_github_webhook(&signature, "issues", payload, secret);
+        let result = handle_github_webhook(&signature, GITHUB_ISSUES, payload, secret);
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(
@@ -884,7 +909,7 @@ mod tests {
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
 
-        let result = handle_github_webhook(&signature, "issue_comment", payload, secret);
+        let result = handle_github_webhook(&signature, GITHUB_ISSUE_COMMENT, payload, secret);
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(
@@ -912,7 +937,7 @@ mod tests {
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
 
-        let result = handle_github_webhook(&signature, "pull_request_review", payload, secret);
+        let result = handle_github_webhook(&signature, GITHUB_PULL_REQUEST_REVIEW, payload, secret);
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(
@@ -941,8 +966,12 @@ mod tests {
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
 
-        let result =
-            handle_github_webhook(&signature, "pull_request_review_comment", payload, secret);
+        let result = handle_github_webhook(
+            &signature,
+            GITHUB_PULL_REQUEST_REVIEW_COMMENT,
+            payload,
+            secret,
+        );
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(
@@ -959,7 +988,7 @@ mod tests {
         let body = r#"{"action":"assigned","issue":{"number":1,"title":"t","assignees":[]},"sender":{"login":"a"},"repository":{"full_name":"owner/repo"}}"#;
         let wrong_sig = "sha256=0000000000000000000000000000000000000000000000000000000000000000";
 
-        let result = handle_github_webhook(wrong_sig, "issues", body.as_bytes(), secret);
+        let result = handle_github_webhook(wrong_sig, GITHUB_ISSUES, body.as_bytes(), secret);
         assert!(matches!(result, Err(WebhookError::Unauthorized(_))));
     }
 
@@ -971,7 +1000,7 @@ mod tests {
 
         // "push" is unknown — parse_github_event returns UnknownEventType,
         // which maps to NoMatchingTrigger
-        let result = handle_github_webhook(&signature, "push", body, secret);
+        let result = handle_github_webhook(&signature, GITHUB_PUSH, body, secret);
         assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
     }
 
@@ -983,7 +1012,7 @@ mod tests {
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
 
-        let result = handle_github_webhook(&signature, "issues", payload, secret);
+        let result = handle_github_webhook(&signature, GITHUB_ISSUES, payload, secret);
         assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
     }
 
@@ -1004,7 +1033,7 @@ mod tests {
         // Missing "sha256=" prefix
         let bad_sig = "abcdef0123456789";
 
-        let result = handle_github_webhook(bad_sig, "issues", body, secret);
+        let result = handle_github_webhook(bad_sig, GITHUB_ISSUES, body, secret);
         assert!(matches!(result, Err(WebhookError::Unauthorized(_))));
     }
 }

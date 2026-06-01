@@ -161,7 +161,7 @@ async fn main() {
     }
 
     // Allow WEBHOOK_SECRET env var to override config.toml value
-    if let Ok(secret) = std::env::var("WEBHOOK_SECRET") {
+    if let Ok(secret) = std::env::var(yoke::config::env::WEBHOOK_SECRET) {
         config.server.webhook_secret = secret;
     }
 
