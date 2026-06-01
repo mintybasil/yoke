@@ -11,7 +11,7 @@
 //! API instances.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::AgentConfig;
 use crate::harness::HermesClient;
@@ -41,6 +41,25 @@ pub enum RunnerError {
         /// The step that referenced the unknown agent.
         step: String,
     },
+}
+
+/// Build context-aware `instructions` for the Hermes API.
+///
+/// When local file access is enabled (`git.clone` or `git.worktree` is true),
+/// returns `Some(instructions)` containing the workspace directory path and an
+/// explicit `cd` directive. When both are false (no local file access), returns
+/// `None` — the `instructions` field is omitted from the API request entirely,
+/// since the step name is already passed as the prompt (`input`).
+fn build_instructions(workflow: &Workflow, workspace_dir: &Path) -> Option<String> {
+    if workflow.git.clone || workflow.git.worktree {
+        let path = workspace_dir.to_string_lossy();
+        Some(format!(
+            "All work is in: {}. Always run `cd {}` as your first action before any file or terminal operations. Reference all file paths relative to this directory.",
+            path, path
+        ))
+    } else {
+        None
+    }
 }
 
 /// Orchestrates execution of a `Workflow` within a specific workspace.
@@ -114,11 +133,15 @@ impl WorkflowRunner {
         // 2. Render prompt template with variables
         let prompt = crate::template::render(&step.prompt_template, &self.variables)?;
 
-        // 3. Call Hermes API
-        let instructions = format!("Execute step: {}", step.name);
-        let result = client.execute_step(&instructions, &prompt).await?;
+        // 3. Build context-aware instructions based on git config
+        let instructions = build_instructions(&self.workflow, &self.workspace_dir);
 
-        // 4. Post-hooks
+        // 4. Call Hermes API
+        let result = client
+            .execute_step(instructions.as_deref(), &prompt)
+            .await?;
+
+        // 5. Post-hooks
         self.run_hooks(&step.post_hooks)?;
 
         Ok(result)
@@ -179,6 +202,91 @@ mod tests {
         }]
     }
 
+    /// Build a `Workflow` with custom `GitConfig` for testing instructions.
+    fn test_workflow_with_git(steps: Vec<Step>, git: GitConfig) -> Workflow {
+        let mut workflow = test_workflow(steps);
+        workflow.git = git;
+        workflow
+    }
+
+    // --- Tests for build_instructions ---
+
+    #[test]
+    fn test_build_instructions_with_git_clone() {
+        let workflow = test_workflow_with_git(
+            vec![],
+            GitConfig {
+                clone: true,
+                worktree: false,
+                default_branch: "main".to_string(),
+            },
+        );
+        let workspace_dir = PathBuf::from("/var/lib/yoke/mintybasil/yoke/42");
+        let instructions = build_instructions(&workflow, &workspace_dir);
+
+        assert!(instructions.is_some());
+        let instructions = instructions.unwrap();
+        assert!(instructions.contains("/var/lib/yoke/mintybasil/yoke/42"));
+        assert!(instructions.contains("cd /var/lib/yoke/mintybasil/yoke/42"));
+        assert!(instructions.contains("All work is in:"));
+        assert!(instructions.contains("Reference all file paths relative to this directory"));
+    }
+
+    #[test]
+    fn test_build_instructions_with_git_worktree() {
+        let workflow = test_workflow_with_git(
+            vec![],
+            GitConfig {
+                clone: false,
+                worktree: true,
+                default_branch: "main".to_string(),
+            },
+        );
+        let workspace_dir = PathBuf::from("/var/lib/yoke/mintybasil/yoke/42/worktree-1");
+        let instructions = build_instructions(&workflow, &workspace_dir);
+
+        assert!(instructions.is_some());
+        let instructions = instructions.unwrap();
+        assert!(instructions.contains("/var/lib/yoke/mintybasil/yoke/42/worktree-1"));
+        assert!(instructions.contains("cd /var/lib/yoke/mintybasil/yoke/42/worktree-1"));
+    }
+
+    #[test]
+    fn test_build_instructions_with_both_git_enabled() {
+        let workflow = test_workflow_with_git(
+            vec![],
+            GitConfig {
+                clone: true,
+                worktree: true,
+                default_branch: "main".to_string(),
+            },
+        );
+        let workspace_dir = PathBuf::from("/var/lib/yoke/org/repo/100");
+        let instructions = build_instructions(&workflow, &workspace_dir);
+
+        assert!(instructions.is_some());
+        let instructions = instructions.unwrap();
+        assert!(instructions.contains("/var/lib/yoke/org/repo/100"));
+        assert!(instructions.contains("cd /var/lib/yoke/org/repo/100"));
+    }
+
+    #[test]
+    fn test_build_instructions_without_git() {
+        let workflow = test_workflow_with_git(
+            vec![],
+            GitConfig {
+                clone: false,
+                worktree: false,
+                default_branch: "main".to_string(),
+            },
+        );
+        let workspace_dir = PathBuf::from("/var/lib/yoke/org/repo/42");
+        let instructions = build_instructions(&workflow, &workspace_dir);
+
+        assert!(instructions.is_none());
+    }
+
+    // --- Existing tests ---
     #[test]
     fn test_runner_error_display() {
         let err = RunnerError::Execution("something went wrong".to_string());
