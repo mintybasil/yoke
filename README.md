@@ -285,27 +285,7 @@ Step `prompt_template` fields use `{{variable}}` syntax. The following variables
 | `event_id` | Unique event identifier for deduplication |
 | `repo_path` | Full repository path (`owner/repo`) |
 
-Additional variables are available depending on the trigger type:
-
-**GitHub triggers:**
-
-| Trigger | Variables |
-|---|---|
-| `github_issue_assigned` | `issue_number`, `assignee`, `issue_title`, `issue_body` |
-| `github_issue_comment_mention` | `issue_number`, `comment_id`, `comment_body` |
-| `github_pull_request_review` | `pr_number`, `review_id`, `review_body` |
-| `github_pull_request_comment_mention` | `pr_number`, `review_id`, `comment_id`, `comment_body` |
-
-**GitLab triggers:**
-
-| Trigger | Variables |
-|---|---|
-| `gitlab_issue_assigned` | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` |
-| `gitlab_issue_mention` | `issue_iid`, `note_id`, `comment_body` |
-| `gitlab_merge_request_review` | `mr_iid`, `review_id`, `review_body` |
-| `gitlab_merge_request_comment_mention` | `mr_iid`, `note_id`, `comment_body` |
-
-See the [Architecture Design](docs/Architecture%20Design.md#appendix-a-trigger-reference) doc for the full trigger reference including all trigger-specific variables.
+Additional variables are available depending on the trigger type. See the [Architecture Design](docs/Architecture%20Design.md#appendix-a-trigger-reference) doc for the full trigger reference including all filters and event ID formats.
 
 ### Trigger types
 
@@ -313,21 +293,21 @@ Triggers are platform-specific and must match the `platform` setting in `config.
 
 **GitHub triggers** (`platform = "github"`):
 
-| Trigger | Event |
-|---|---|
-| `github_issue_assigned` | Issue assigned to a user |
-| `github_issue_comment_mention` | Comment on an issue mentions a user |
-| `github_pull_request_review` | Pull request review submitted |
-| `github_pull_request_comment_mention` | Pull request review comment |
+| Trigger | Event | Variables |
+|---|---|---|
+| `github_issue_assigned` | Issue assigned to a user | `issue_number`, `assignee`, `issue_title`, `issue_body` |
+| `github_issue_comment_mention` | Comment on an issue mentions a user | `issue_number`, `comment_id`, `comment_body` |
+| `github_pull_request_review` | Pull request review submitted | `pr_number`, `review_id`, `review_body` |
+| `github_pull_request_comment_mention` | Pull request review comment | `pr_number`, `review_id`, `comment_id`, `comment_body` |
 
 **GitLab triggers** (`platform = "gitlab"`):
 
-| Trigger | Event |
-|---|---|
-| `gitlab_issue_assigned` | Issue assigned to a user |
-| `gitlab_issue_mention` | Note on an issue mentions a user |
-| `gitlab_merge_request_review` | Note on a merge request |
-| `gitlab_merge_request_comment_mention` | DiffNote on a merge request |
+| Trigger | Event | Variables |
+|---|---|---|
+| `gitlab_issue_assigned` | Issue assigned to a user | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` |
+| `gitlab_issue_mention` | Note on an issue mentions a user | `issue_iid`, `note_id`, `comment_body` |
+| `gitlab_merge_request_review` | Note on a merge request | `mr_iid`, `review_id`, `review_body` |
+| `gitlab_merge_request_comment_mention` | DiffNote on a merge request | `mr_iid`, `note_id`, `comment_body` |
 
 ### Hot-reload
 
