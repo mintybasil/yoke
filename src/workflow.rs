@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Platform;
 
-
 /// Trigger type string labels used in workflow TOML `trigger.type` fields
 /// and the [`TriggerType`] enum.
 pub mod triggers {
@@ -153,11 +152,9 @@ impl TriggerType {
                     allowed_users: trigger.allowed_users.clone(),
                 })
             }
-            triggers::GITHUB_PULL_REQUEST_REVIEW => {
-                Some(TriggerType::GithubPullRequestReview {
-                    allowed_users: trigger.allowed_users.clone(),
-                })
-            }
+            triggers::GITHUB_PULL_REQUEST_REVIEW => Some(TriggerType::GithubPullRequestReview {
+                allowed_users: trigger.allowed_users.clone(),
+            }),
             triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION => {
                 Some(TriggerType::GithubPullRequestCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
@@ -171,11 +168,9 @@ impl TriggerType {
                 mentioned_user: trigger.mentioned_user.clone(),
                 allowed_users: trigger.allowed_users.clone(),
             }),
-            triggers::GITLAB_MERGE_REQUEST_REVIEW => {
-                Some(TriggerType::GitlabMergeRequestReview {
-                    allowed_users: trigger.allowed_users.clone(),
-                })
-            }
+            triggers::GITLAB_MERGE_REQUEST_REVIEW => Some(TriggerType::GitlabMergeRequestReview {
+                allowed_users: trigger.allowed_users.clone(),
+            }),
             triggers::GITLAB_MERGE_REQUEST_REVIEW_COMMENT => {
                 Some(TriggerType::GitlabMergeRequestCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
@@ -193,20 +188,14 @@ impl TriggerType {
     pub fn label(&self) -> &'static str {
         match self {
             TriggerType::GithubIssueAssigned { .. } => triggers::GITHUB_ISSUE_ASSIGNED,
-            TriggerType::GithubIssueCommentMention { .. } => {
-                triggers::GITHUB_ISSUE_COMMENT_MENTION
-            }
-            TriggerType::GithubPullRequestReview { .. } => {
-                triggers::GITHUB_PULL_REQUEST_REVIEW
-            }
+            TriggerType::GithubIssueCommentMention { .. } => triggers::GITHUB_ISSUE_COMMENT_MENTION,
+            TriggerType::GithubPullRequestReview { .. } => triggers::GITHUB_PULL_REQUEST_REVIEW,
             TriggerType::GithubPullRequestCommentMention { .. } => {
                 triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION
             }
             TriggerType::GitlabIssueAssigned { .. } => triggers::GITLAB_ISSUE_ASSIGNED,
             TriggerType::GitlabIssueMention { .. } => triggers::GITLAB_ISSUE_MENTION,
-            TriggerType::GitlabMergeRequestReview { .. } => {
-                triggers::GITLAB_MERGE_REQUEST_REVIEW
-            }
+            TriggerType::GitlabMergeRequestReview { .. } => triggers::GITLAB_MERGE_REQUEST_REVIEW,
             TriggerType::GitlabMergeRequestCommentMention { .. } => {
                 triggers::GITLAB_MERGE_REQUEST_REVIEW_COMMENT
             }
@@ -542,10 +531,7 @@ mod tests {
         "#;
         let wf: Workflow = toml::from_str(toml).unwrap();
         assert!(wf.validate().is_ok());
-        assert_eq!(
-            wf.trigger.r#type,
-            triggers::GITHUB_ISSUE_ASSIGNED
-        );
+        assert_eq!(wf.trigger.r#type, triggers::GITHUB_ISSUE_ASSIGNED);
         assert_eq!(wf.trigger.assigned_to, Some("alice".to_string()));
         assert_eq!(wf.steps.len(), 1);
         assert_eq!(wf.steps[0].name, "Plan");

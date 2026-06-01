@@ -240,7 +240,7 @@ pub fn reload_workflows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_is_toml_event_with_toml_extension() {
         let event = Event {

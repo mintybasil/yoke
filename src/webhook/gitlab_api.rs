@@ -282,7 +282,7 @@ pub fn find_webhook_by_url<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-        use mockito::Server;
+    use mockito::Server;
 
     // -- WebhookConfig serialization tests ------------------------------------
 

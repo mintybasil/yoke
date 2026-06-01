@@ -383,7 +383,7 @@ impl GitHubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-        use mockito::Server;
+    use mockito::Server;
 
     #[tokio::test]
     async fn test_list_webhooks_success() {

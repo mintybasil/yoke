@@ -20,7 +20,6 @@ use crate::reload::WorkflowState;
 use crate::webhook;
 use tracing::instrument;
 
-
 /// HTTP header names for webhook authentication and event identification.
 pub mod headers {
     /// GitHub HMAC-SHA256 signature header.
@@ -731,10 +730,7 @@ mod tests {
                     .method("POST")
                     .uri("/webhook")
                     .header(headers::GITHUB_SIGNATURE, sig)
-                    .header(
-                        headers::GITHUB_EVENT,
-                        "pull_request_review_comment",
-                    )
+                    .header(headers::GITHUB_EVENT, "pull_request_review_comment")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),

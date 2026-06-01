@@ -19,7 +19,6 @@ use super::{TriggerEvent, WebhookError};
 
 // ── Payload structs ──────────────────────────────────────────────────────────
 
-
 /// GitLab webhook event type strings (object_kind values).
 pub const GITLAB_PUSH: &str = "push";
 /// GitLab merge request event type (used in API webhook event config).
@@ -468,10 +467,7 @@ mod tests {
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(event, GitLabEvent::IssueHook(_)));
-        assert_eq!(
-            event.object_kind(),
-            GITLAB_ISSUE
-        );
+        assert_eq!(event.object_kind(), GITLAB_ISSUE);
     }
 
     #[test]

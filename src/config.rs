@@ -6,7 +6,6 @@ use url::Url;
 
 use crate::workflow::Workflow;
 
-
 /// Environment variable names used by Yoke.
 pub mod env {
     /// Hermes API key (always required).

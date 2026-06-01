@@ -6,7 +6,6 @@ use crate::workflow::TriggerType;
 
 use super::{TriggerEvent, WebhookError};
 
-
 /// GitHub webhook event type strings (X-GitHub-Event header values).
 pub const GITHUB_PUSH: &str = "push";
 /// GitHub pull request event type.
@@ -279,8 +278,7 @@ pub fn parse_github_event(
                 .map_err(|e| GitHubWebhookError::PayloadParseError(e.to_string()))?;
             let repo_path = payload.repository.full_name.clone();
             Ok(GitHubEvent {
-                event_type: GITHUB_PULL_REQUEST_REVIEW_COMMENT
-                    .to_string(),
+                event_type: GITHUB_PULL_REQUEST_REVIEW_COMMENT.to_string(),
                 action: payload.action.clone(),
                 payload: GitHubPayload::PullRequestReviewComment(payload),
                 repository: RepositoryDetails {
@@ -704,7 +702,10 @@ mod tests {
         let trigger = map_to_trigger_event(&event).unwrap();
 
         assert!(matches!(trigger, TriggerType::GithubIssueAssigned { .. }));
-        assert_eq!(trigger.label(), crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED);
+        assert_eq!(
+            trigger.label(),
+            crate::workflow::triggers::GITHUB_ISSUE_ASSIGNED
+        );
     }
 
     #[test]
@@ -875,12 +876,7 @@ mod tests {
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
 
-        let result = handle_github_webhook(
-            &signature,
-            GITHUB_ISSUES,
-            payload,
-            secret,
-        );
+        let result = handle_github_webhook(&signature, GITHUB_ISSUES, payload, secret);
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(
@@ -913,12 +909,7 @@ mod tests {
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
 
-        let result = handle_github_webhook(
-            &signature,
-            GITHUB_ISSUE_COMMENT,
-            payload,
-            secret,
-        );
+        let result = handle_github_webhook(&signature, GITHUB_ISSUE_COMMENT, payload, secret);
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(
@@ -946,12 +937,7 @@ mod tests {
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
 
-        let result = handle_github_webhook(
-            &signature,
-            GITHUB_PULL_REQUEST_REVIEW,
-            payload,
-            secret,
-        );
+        let result = handle_github_webhook(&signature, GITHUB_PULL_REQUEST_REVIEW, payload, secret);
         assert!(result.is_ok());
         let event = result.unwrap();
         assert!(matches!(
@@ -1002,12 +988,7 @@ mod tests {
         let body = r#"{"action":"assigned","issue":{"number":1,"title":"t","assignees":[]},"sender":{"login":"a"},"repository":{"full_name":"owner/repo"}}"#;
         let wrong_sig = "sha256=0000000000000000000000000000000000000000000000000000000000000000";
 
-        let result = handle_github_webhook(
-            wrong_sig,
-            GITHUB_ISSUES,
-            body.as_bytes(),
-            secret,
-        );
+        let result = handle_github_webhook(wrong_sig, GITHUB_ISSUES, body.as_bytes(), secret);
         assert!(matches!(result, Err(WebhookError::Unauthorized(_))));
     }
 
@@ -1019,12 +1000,7 @@ mod tests {
 
         // "push" is unknown — parse_github_event returns UnknownEventType,
         // which maps to NoMatchingTrigger
-        let result = handle_github_webhook(
-            &signature,
-            GITHUB_PUSH,
-            body,
-            secret,
-        );
+        let result = handle_github_webhook(&signature, GITHUB_PUSH, body, secret);
         assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
     }
 
@@ -1036,12 +1012,7 @@ mod tests {
         let payload = body.as_bytes();
         let signature = make_signature(payload, secret);
 
-        let result = handle_github_webhook(
-            &signature,
-            GITHUB_ISSUES,
-            payload,
-            secret,
-        );
+        let result = handle_github_webhook(&signature, GITHUB_ISSUES, payload, secret);
         assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
     }
 
@@ -1062,12 +1033,7 @@ mod tests {
         // Missing "sha256=" prefix
         let bad_sig = "abcdef0123456789";
 
-        let result = handle_github_webhook(
-            bad_sig,
-            GITHUB_ISSUES,
-            body,
-            secret,
-        );
+        let result = handle_github_webhook(bad_sig, GITHUB_ISSUES, body, secret);
         assert!(matches!(result, Err(WebhookError::Unauthorized(_))));
     }
 }
