@@ -94,7 +94,8 @@ fn default_max_body_size() -> u64 {
     1_048_576
 }
 
-/// GitHub-specific configuration (reserved for future fields).
+/// GitHub-specific configuration. Currently a placeholder for future
+/// configuration options (e.g. custom API endpoints, enterprise URLs).
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct GithubConfig {}
 
@@ -252,12 +253,15 @@ pub fn resolve_agents(config: &Config, workflows: &[Workflow]) -> Result<(), Con
 
 /// Validate that required environment variables are set based on the configured platform.
 ///
-/// Checks globally required variables (`HERMES_API_KEY`, `WEBHOOK_SECRET`) and
+/// Checks globally required variables (`HERMES_API_KEY`) and
 /// platform-specific variables (`GITHUB_TOKEN` for GitHub, `GITLAB_TOKEN` for GitLab).
+/// Note: `WEBHOOK_SECRET` is not required as an env var because the webhook secret
+/// can be provided via `config.toml` (`server.webhook_secret`). The env var is
+/// optional and overrides the config value when set.
 /// Returns `Ok(())` if all required variables are present, or `Err(ConfigError::EnvVar)`
 /// with a descriptive message naming the first missing variable.
 pub fn validate_env_vars(platform: &Platform) -> Result<(), ConfigError> {
-    let required_globals = ["HERMES_API_KEY", "WEBHOOK_SECRET"];
+    let required_globals = ["HERMES_API_KEY"];
     for var in required_globals {
         if std::env::var(var).is_err() {
             return Err(ConfigError::EnvVar(format!(
@@ -822,7 +826,6 @@ webhook_secret = "secret"
         let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
             std::env::remove_var("HERMES_API_KEY");
-            std::env::remove_var("WEBHOOK_SECRET");
             std::env::remove_var("GITHUB_TOKEN");
         }
 
@@ -836,19 +839,21 @@ webhook_secret = "secret"
     }
 
     #[test]
-    fn test_validate_env_vars_missing_webhook_secret() {
+    fn test_validate_env_vars_webhook_secret_not_required() {
+        // WEBHOOK_SECRET is no longer required by validate_env_vars;
+        // it can be provided via config.toml instead.
         let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
             std::env::set_var("HERMES_API_KEY", "test-key");
+            std::env::set_var("GITHUB_TOKEN", "gh-token");
             std::env::remove_var("WEBHOOK_SECRET");
         }
 
         let result = validate_env_vars(&Platform::Github);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("WEBHOOK_SECRET"),
-            "error should mention WEBHOOK_SECRET, got: {err_msg}"
+            result.is_ok(),
+            "WEBHOOK_SECRET should be optional: {:?}",
+            result
         );
     }
 

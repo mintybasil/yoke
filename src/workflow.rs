@@ -129,7 +129,7 @@ impl TriggerType {
             "github_pull_request_review" => Some(TriggerType::GithubPullRequestReview {
                 allowed_users: trigger.allowed_users.clone(),
             }),
-            "github_pull_request_review_comment" => {
+            "github_pull_request_comment_mention" => {
                 Some(TriggerType::GithubPullRequestCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
                     allowed_users: trigger.allowed_users.clone(),
@@ -165,7 +165,7 @@ impl TriggerType {
             TriggerType::GithubIssueCommentMention { .. } => "github_issue_comment_mention",
             TriggerType::GithubPullRequestReview { .. } => "github_pull_request_review",
             TriggerType::GithubPullRequestCommentMention { .. } => {
-                "github_pull_request_review_comment"
+                "github_pull_request_comment_mention"
             }
             TriggerType::GitlabIssueAssigned { .. } => "gitlab_issue_assigned",
             TriggerType::GitlabIssueMention { .. } => "gitlab_issue_mention",
@@ -332,6 +332,11 @@ pub fn load_workflows<P: AsRef<Path>>(dir: P) -> Result<Vec<(String, Workflow)>,
             workflows.push((path_str, workflow));
         }
     }
+    if workflows.is_empty() {
+        return Err(WorkflowError::EmptyDirectory(
+            "No workflow .toml files found".to_string(),
+        ));
+    }
     Ok(workflows)
 }
 
@@ -347,6 +352,8 @@ pub enum WorkflowError {
     },
     /// Semantic validation error.
     Validation { path: String, message: String },
+    /// No workflow `.toml` files found in the directory.
+    EmptyDirectory(String),
 }
 
 impl std::fmt::Display for WorkflowError {
@@ -359,6 +366,9 @@ impl std::fmt::Display for WorkflowError {
             WorkflowError::Validation { path, message } => {
                 write!(f, "validation error in {path}: {message}")
             }
+            WorkflowError::EmptyDirectory(msg) => {
+                write!(f, "empty workflow directory: {msg}")
+            }
         }
     }
 }
@@ -368,7 +378,7 @@ impl std::error::Error for WorkflowError {
         match self {
             WorkflowError::Io(e) => Some(e),
             WorkflowError::Parse { source, .. } => Some(source),
-            WorkflowError::Validation { .. } => None,
+            WorkflowError::Validation { .. } | WorkflowError::EmptyDirectory(_) => None,
         }
     }
 }
@@ -381,7 +391,7 @@ mod tests {
         "github_issue_assigned",
         "github_issue_comment_mention",
         "github_pull_request_review",
-        "github_pull_request_review_comment",
+        "github_pull_request_comment_mention",
     ];
 
     const GITLAB_TRIGGERS: &[&str] = &[
@@ -1003,7 +1013,7 @@ prompt_template = "Do the thing"
         );
         assert_eq!(
             TriggerType::from_trigger(&Trigger {
-                r#type: "github_pull_request_review_comment".to_string(),
+                r#type: "github_pull_request_comment_mention".to_string(),
                 assigned_to: None,
                 mentioned_user: None,
                 allowed_users: None,

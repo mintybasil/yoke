@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
+use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
@@ -31,10 +32,14 @@ async fn health() -> Json<Value> {
     Json(json!({"status": "ok"}))
 }
 
-/// Readiness check handler — returns 200 when the server is accepting events.
-/// Currently always ready; will be wired to dispatcher state in a later issue.
-async fn ready() -> &'static str {
-    "OK"
+/// Readiness check handler — returns 200 when the server is accepting events,
+/// 503 Service Unavailable when the dispatcher is shutting down.
+async fn ready(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+    if state.dispatcher.is_shutting_down() {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    }
 }
 
 /// Webhook handler — routes verified platform events through the `WebhookHandler`
@@ -135,6 +140,7 @@ fn build_router(state: AppState, config: &ServerConfig) -> Router {
         .route("/ready", get(ready))
         .route("/webhook", post(webhook_handler))
         .with_state(state)
+        .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(config.max_body_size as usize))
 }
@@ -198,7 +204,7 @@ pub async fn run_server(
             config.webhook_secret.clone(),
             tx,
         ),
-        dispatcher,
+        dispatcher: dispatcher.clone(),
     };
 
     let router = build_router(state, config);
@@ -215,6 +221,7 @@ pub async fn run_server(
             }
             if *rx.borrow() {
                 tracing::info!("HTTP server shutting down...");
+                dispatcher.mark_shutting_down();
                 break;
             }
         }

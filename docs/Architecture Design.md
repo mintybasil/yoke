@@ -477,7 +477,7 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
   {owner}/{repo}/
     repo/                     # git clone
     {event_id}/           # per-event workspace
-      worktree-{N}/           # per-event worktree (if git.worktree = true)
+      worktree/                # per-event worktree (if git.worktree = true)
       00_Plan.log             # Full Hermes API request + response, with final message rendered
       00_Plan.prompt          # Rendered prompt for auditing
       01_Implement.log
@@ -530,9 +530,10 @@ Two-tier model: startup errors are hard exits, runtime errors are per-event soft
 | `src/git.rs`             | Git repo/worktree management: clone/pull, worktree create/remove, auth              |
 | `src/hooks.rs`           | Hook enum + run_hook() dispatcher                                                   |
 | `src/template.rs`        | `{{key}}` placeholder renderer                                                      |
-| `src/workflow.rs`        | Step type definition                                                                |
-| `src/webhooks/github.rs` | GitHub webhook payload types (event structs)                                        |
-| `src/webhooks/gitlab.rs` | GitLab webhook payload types (event structs)                                        |
+| `src/workflow.rs`        | Workflow definition, trigger types, loading & validation                           |
+| `src/cli.rs`             | CLI argument parsing with clap                                                      |
+| `src/logging.rs`         | Per-event workflow step log file writing                                           |
+| `src/reload.rs`          | Hot-reload file watcher & atomic workflow state swap                                |
 
 ## 14. CLI
 
@@ -555,7 +556,7 @@ Options:
 | `GITHUB_TOKEN`   | GitHub authentication for git clone/pull                  | When `platform = "github"` |
 | `GITLAB_TOKEN`   | GitLab authentication for git clone/pull                  | When `platform = "gitlab"` |
 | `HERMES_API_KEY` | Bearer token for Hermes REST API                          | Yes                        |
-| `WEBHOOK_SECRET` | Webhook auth key (overrides config.toml `webhook_secret`) | Yes                        |
+| `WEBHOOK_SECRET` | Webhook auth key (overrides config.toml `webhook_secret`) | No (config fallback)       |
 
 ## 16. Example Configs
 

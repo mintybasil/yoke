@@ -28,7 +28,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -193,6 +193,8 @@ pub struct Dispatcher {
     workflow_state: Arc<WorkflowState>,
     /// Agent configurations for constructing HermesClient instances.
     agents: Vec<AgentConfig>,
+    /// Whether the dispatcher is shutting down (set by shutdown signal).
+    shutting_down: Arc<AtomicBool>,
 }
 
 impl Dispatcher {
@@ -237,7 +239,24 @@ impl Dispatcher {
             workdir,
             workflow_state,
             agents,
+            shutting_down: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Check whether the dispatcher is shutting down.
+    ///
+    /// Returns `true` after `mark_shutting_down()` has been called,
+    /// which happens when a shutdown signal is received.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Relaxed)
+    }
+
+    /// Mark the dispatcher as shutting down.
+    ///
+    /// Called when a shutdown signal is received. After this, `is_shutting_down()`
+    /// returns `true` and the `/ready` endpoint will return 503.
+    pub fn mark_shutting_down(&self) {
+        self.shutting_down.store(true, Ordering::Relaxed);
     }
 
     /// Acquire a concurrency permit from the semaphore.

@@ -614,7 +614,11 @@ prompt_template = "Plan the issue"
         let dir = tempfile::tempdir().unwrap();
         let config = make_config();
         let result = reload_workflows(dir.path(), &config);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("empty workflow directory"),
+            "expected empty directory error, got: {err}"
+        );
     }
 }
