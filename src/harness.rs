@@ -267,7 +267,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_step_result_fields() {
         let result = StepResult {
             extracted_message: "Hello".to_string(),

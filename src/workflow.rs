@@ -214,6 +214,67 @@ impl TriggerType {
             TriggerType::GitlabMergeRequestCommentMention { .. } => "note_events",
         }
     }
+
+    /// Return the set of known template variables available at runtime for this trigger type.
+    ///
+    /// Global variables (`owner`, `repo`, `output_dir`, `event_id`, `repo_path`)
+    /// are always included. Trigger-specific variables are added based on the
+    /// platform and event type, matching the variables populated by the
+    /// webhook handlers and dispatcher.
+    pub fn known_variables(&self) -> std::collections::HashSet<String> {
+        let mut vars = std::collections::HashSet::new();
+        // Global variables available to all triggers
+        vars.insert("owner".to_string());
+        vars.insert("repo".to_string());
+        vars.insert("output_dir".to_string());
+        vars.insert("event_id".to_string());
+        vars.insert("repo_path".to_string());
+
+        match self {
+            TriggerType::GithubIssueAssigned { .. } => {
+                vars.insert("issue_number".to_string());
+                vars.insert("assignee".to_string());
+                vars.insert("issue_title".to_string());
+                vars.insert("issue_body".to_string());
+            }
+            TriggerType::GithubIssueCommentMention { .. } => {
+                vars.insert("issue_number".to_string());
+                vars.insert("comment_id".to_string());
+                vars.insert("comment_body".to_string());
+            }
+            TriggerType::GithubPullRequestReview { .. } => {
+                vars.insert("pr_number".to_string());
+                vars.insert("review_id".to_string());
+                vars.insert("review_body".to_string());
+            }
+            TriggerType::GithubPullRequestCommentMention { .. } => {
+                vars.insert("pr_number".to_string());
+                vars.insert("review_id".to_string());
+                vars.insert("comment_id".to_string());
+                vars.insert("comment_body".to_string());
+            }
+            TriggerType::GitlabIssueAssigned { .. } => {
+                vars.insert("issue_iid".to_string());
+                vars.insert("issue_action".to_string());
+            }
+            TriggerType::GitlabIssueMention { .. } => {
+                vars.insert("issue_iid".to_string());
+                vars.insert("note_id".to_string());
+                vars.insert("note_body".to_string());
+            }
+            TriggerType::GitlabMergeRequestReview { .. } => {
+                vars.insert("mr_iid".to_string());
+                vars.insert("note_id".to_string());
+                vars.insert("note_body".to_string());
+            }
+            TriggerType::GitlabMergeRequestCommentMention { .. } => {
+                vars.insert("mr_iid".to_string());
+                vars.insert("note_id".to_string());
+                vars.insert("note_body".to_string());
+            }
+        }
+        vars
+    }
 }
 
 /// Derive the set of unique webhook events required by a list of workflows.
@@ -242,6 +303,9 @@ impl Workflow {
     /// - trigger type must be non-empty and one of the known types
     /// - steps must not be empty
     /// - every step must have a non-empty prompt_template
+    /// - all `{{variable}}` placeholders in `prompt_template` must be known
+    ///   variables available at runtime for this workflow's trigger type
+    /// - template syntax must be valid (no unclosed braces or empty placeholders)
     pub fn validate(&self) -> Result<(), String> {
         // Trigger type is required
         if self.trigger.r#type.is_empty() {
@@ -249,19 +313,34 @@ impl Workflow {
         }
 
         // Validate trigger type is a known value via TriggerType enum
-        if TriggerType::from_trigger(&self.trigger).is_none() {
-            return Err(format!("invalid trigger type: {}", self.trigger.r#type));
-        }
+        let trigger_type = TriggerType::from_trigger(&self.trigger)
+            .ok_or_else(|| format!("invalid trigger type: {}", self.trigger.r#type))?;
 
         // Steps array must not be empty
         if self.steps.is_empty() {
             return Err("workflow must contain at least one step".to_string());
         }
 
-        // Each step must have a prompt_template
+        // Build the set of known variables for this trigger type
+        let known_vars = trigger_type.known_variables();
+
+        // Each step must have a prompt_template with valid variable references
         for step in &self.steps {
             if step.prompt_template.trim().is_empty() {
                 return Err(format!("step '{}' is missing prompt_template", step.name));
+            }
+
+            // Extract and validate template variables
+            let vars = crate::template::extract_variables(&step.prompt_template)
+                .map_err(|e| format!("syntax error in step '{}': {}", step.name, e))?;
+
+            for var in vars {
+                if !known_vars.contains(&var) {
+                    return Err(format!(
+                        "unknown template variable '{}' in step '{}' of workflow {}",
+                        var, step.name, self.path
+                    ));
+                }
             }
         }
 
@@ -641,6 +720,147 @@ mod tests {
             Some(vec!["alice".to_string(), "bob".to_string()])
         );
         assert!(wf.trigger.assigned_to.is_none());
+    }
+
+    // --- Template variable validation tests ---
+
+    #[test]
+    fn test_validate_known_variable_passes() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{owner}}/{{repo}}#{{issue_number}}"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        assert!(wf.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_unknown_variable_fails() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{typo_variable}}"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        let result = wf.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("unknown template variable"),
+            "expected unknown variable error, got: {err}"
+        );
+        assert!(
+            err.contains("typo_variable"),
+            "error should mention the unknown variable name, got: {err}"
+        );
+        assert!(
+            err.contains("Plan"),
+            "error should mention the step name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_template_syntax_error() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        let result = wf.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("syntax error"),
+            "expected syntax error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_empty_placeholder_fails() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{}}"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        let result = wf.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("syntax error"),
+            "expected syntax error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_gitlab_known_variable_passes() {
+        let toml = r#"
+            [trigger]
+            type = "gitlab_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{owner}}/{{repo}} issue {{issue_iid}}"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        assert!(wf.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_cross_platform_variable_fails() {
+        // Using a GitHub variable (issue_number) in a GitLab workflow should fail
+        let toml = r#"
+            [trigger]
+            type = "gitlab_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan {{issue_number}}"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        let result = wf.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("unknown template variable"),
+            "expected unknown variable error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_no_variables_passes() {
+        // Templates without any {{}} are fine
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Just a plain template"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        assert!(wf.validate().is_ok());
     }
 
     #[test]
@@ -1059,5 +1279,56 @@ prompt_template = "Do the thing"
             .webhook_event(),
             "note_events"
         );
+    }
+
+    // --- TriggerType::known_variables tests ---
+
+    #[test]
+    fn test_known_variables_github_issue_assigned() {
+        let tt = TriggerType::GithubIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        };
+        let vars = tt.known_variables();
+        // Global
+        assert!(vars.contains("owner"));
+        assert!(vars.contains("repo"));
+        assert!(vars.contains("output_dir"));
+        assert!(vars.contains("event_id"));
+        assert!(vars.contains("repo_path"));
+        // Trigger-specific
+        assert!(vars.contains("issue_number"));
+        assert!(vars.contains("assignee"));
+        assert!(vars.contains("issue_title"));
+        assert!(vars.contains("issue_body"));
+        // Should NOT contain variables from other triggers
+        assert!(!vars.contains("pr_number"));
+        assert!(!vars.contains("comment_id"));
+    }
+
+    #[test]
+    fn test_known_variables_gitlab_issue_assigned() {
+        let tt = TriggerType::GitlabIssueAssigned { assigned_to: None };
+        let vars = tt.known_variables();
+        // Global
+        assert!(vars.contains("owner"));
+        assert!(vars.contains("repo"));
+        // Trigger-specific
+        assert!(vars.contains("issue_iid"));
+        assert!(vars.contains("issue_action"));
+        // Should NOT contain GitHub variables
+        assert!(!vars.contains("issue_number"));
+    }
+
+    #[test]
+    fn test_known_variables_gitlab_merge_request_comment() {
+        let tt = TriggerType::GitlabMergeRequestCommentMention {
+            mentioned_user: None,
+            allowed_users: None,
+        };
+        let vars = tt.known_variables();
+        assert!(vars.contains("mr_iid"));
+        assert!(vars.contains("note_id"));
+        assert!(vars.contains("note_body"));
     }
 }

@@ -99,6 +99,54 @@ pub fn render(template: &str, vars: &HashMap<String, String>) -> Result<String, 
     Ok(result)
 }
 
+/// Extract all `{{variable}}` placeholder names from a template string.
+///
+/// Returns a `Vec` of variable names in order of appearance, or a
+/// `TemplateError::SyntaxError` if the template contains malformed
+/// placeholders (unclosed braces, empty `{{}}`).
+///
+/// # Errors
+///
+/// - `SyntaxError` — a `{{` without matching `}}`, or a `{{}}` with no variable name.
+pub fn extract_variables(template: &str) -> Result<Vec<String>, TemplateError> {
+    let mut variables = Vec::new();
+    let bytes = template.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0;
+
+    while pos < len {
+        if bytes[pos] == b'{' && pos + 1 < len && bytes[pos + 1] == b'{' {
+            let after_open = pos + 2;
+            let mut found = false;
+            let mut scan = after_open;
+            while scan + 2 <= len {
+                if &bytes[scan..scan + 2] == b"}}" {
+                    let var_name =
+                        std::str::from_utf8(&bytes[after_open..scan]).expect("valid utf8");
+                    if var_name.is_empty() {
+                        return Err(TemplateError::SyntaxError {
+                            message: "empty placeholder".to_string(),
+                        });
+                    }
+                    variables.push(var_name.to_string());
+                    pos = scan + 2;
+                    found = true;
+                    break;
+                }
+                scan += 1;
+            }
+            if !found {
+                return Err(TemplateError::SyntaxError {
+                    message: format!("unclosed placeholder at position {pos}"),
+                });
+            }
+        } else {
+            pos += 1;
+        }
+    }
+    Ok(variables)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +273,65 @@ mod tests {
         vars.insert("v".to_string(), "\t\n".to_string());
         let err = render(" {{v}} ", &vars).unwrap_err();
         assert!(matches!(err, TemplateError::EmptyTemplate));
+    }
+
+    // --- extract_variables tests ---
+
+    #[test]
+    fn test_extract_variables_two_vars() {
+        let vars = extract_variables("{{var1}} and {{var2}}").unwrap();
+        assert_eq!(vars, vec!["var1", "var2"]);
+    }
+
+    #[test]
+    fn test_extract_variables_single_var() {
+        let vars = extract_variables("Hello {{name}}").unwrap();
+        assert_eq!(vars, vec!["name"]);
+    }
+
+    #[test]
+    fn test_extract_variables_no_vars() {
+        let vars = extract_variables("plain text").unwrap();
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn test_extract_variables_empty_placeholder() {
+        let err = extract_variables("{{}}").unwrap_err();
+        match err {
+            TemplateError::SyntaxError { message } => {
+                assert!(message.contains("empty"));
+            }
+            other => panic!("expected SyntaxError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_extract_variables_unclosed_placeholder() {
+        let err = extract_variables("{{unclosed").unwrap_err();
+        match err {
+            TemplateError::SyntaxError { message } => {
+                assert!(message.contains("unclosed"));
+            }
+            other => panic!("expected SyntaxError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_extract_variables_adjacent() {
+        let vars = extract_variables("{{a}}{{b}}").unwrap();
+        assert_eq!(vars, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_extract_variables_literal_braces() {
+        let vars = extract_variables("{not a placeholder}").unwrap();
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn test_extract_variables_repeated_var() {
+        let vars = extract_variables("{{owner}}/{{repo}}#{{owner}}").unwrap();
+        assert_eq!(vars, vec!["owner", "repo", "owner"]);
     }
 }

@@ -275,7 +275,9 @@ post_hooks = [{ type = "file_contains", path = "plan.md", text = "implementation
 
 ### Template variables
 
-Step `prompt_template` fields use `{{variable}}` syntax. The following variables are available in all triggers:
+Step `prompt_template` fields use `{{variable}}` syntax. Yoke validates all template variables at startup — unknown variables, malformed syntax (e.g., `{{unclosed`), and empty placeholders (`{{}}`) cause a hard exit with a clear error message before the server starts.
+
+The following variables are available in all triggers:
 
 | Variable | Value |
 |---|---|
@@ -285,7 +287,7 @@ Step `prompt_template` fields use `{{variable}}` syntax. The following variables
 | `event_id` | Unique event identifier for deduplication |
 | `repo_path` | Full repository path (`owner/repo`) |
 
-Additional variables are available depending on the trigger type. See the [Architecture Design](docs/Architecture%20Design.md#appendix-a-trigger-reference) doc for the full trigger reference including all filters and event ID formats.
+Additional variables are available depending on the trigger type. Using a variable that is not available for a given trigger type (e.g., `{{issue_number}}` in a GitLab workflow) causes a startup validation error. See the [Architecture Design](docs/Architecture%20Design.md#appendix-a-trigger-reference) doc for the full trigger reference including all filters and event ID formats.
 
 ### Trigger types
 
