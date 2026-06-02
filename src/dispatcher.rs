@@ -485,6 +485,7 @@ impl Dispatcher {
         let workdir = self.workdir.clone();
         let workflow_state = self.workflow_state.clone();
         let agents = self.agents.clone();
+        let active_count = self.active_count.clone();
 
         // Build the per-event workspace directory
         let owner = parse_owner(&event.repo_path);
@@ -497,6 +498,10 @@ impl Dispatcher {
             // Remove from in-flight so it can be retried
             let mut sets = self.dedup_sets.write().await;
             sets.remove_in_flight(&key);
+            // Decrement active_count since we acquired a permit but won't spawn a task
+            if permit.is_some() {
+                self.active_count.fetch_sub(1, Ordering::Relaxed);
+            }
             return;
         }
 
@@ -610,7 +615,12 @@ impl Dispatcher {
                     }
                 }
             }
-            // Permit released on drop (RAII)
+            // Decrement active_count (incremented by acquire_permit) now that
+            // the workflow task is done, regardless of success or failure.
+            if permit.is_some() {
+                active_count.fetch_sub(1, Ordering::Relaxed);
+            }
+            // Permit released on drop (RAII) — releases the semaphore slot
             drop(permit);
         });
     }
