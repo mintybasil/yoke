@@ -18,8 +18,8 @@ src/
   github_api.rs — GitHub REST API client (GitHubClient, Webhook, WebhookConfig, WebhookOrchestrationSummary, GitHubError with ValidationError variant, list/create/update/delete webhooks, find_webhook_by_url, ensure_webhook, orchestrate_webhooks, map_status_with_body for response body capture in errors)
   webhooks.rs  — Unified webhook management (WebhookClient enum, GitHubWebhookClient, GitLabWebhookClient, WebhookInfo, WebhookConfig, WebhookError, AddSummary, RemoveSummary, webhooks_list/webhooks_remove/webhooks_add handlers) — CLI subcommand handler for `yoke webhooks`
   template.rs  — Template rendering with `{{variable}}` substitution, validation, and variable extraction
-  hooks.rs     — Hook definitions (FileNotEmpty, FileContains) and run_hook dispatcher
-  runner.rs    — Workflow runner: sequential step execution with template vars, hooks, and fail-fast
+  hooks.rs     — Hook definitions (FileNotEmpty, FileContains) and run_hook dispatcher (paths and text are rendered by the runner before execution)
+  runner.rs    — Workflow runner: sequential step execution with template vars, hook path/text rendering, and fail-fast
   webhook/     — Webhook handling modules
     mod.rs       — Shared types (TriggerEvent, WebhookError) and dispatch to platform handler
     github.rs   — GitHub webhook: HMAC-SHA256 verification, event parsing, trigger mapping, and GitHub event type string constants

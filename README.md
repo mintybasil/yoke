@@ -263,8 +263,10 @@ Create a PR with your changes.
 
 Hooks validate file conditions before and after each step. A hook failure stops the workflow.
 
+Hook `path` and `text` fields support `{{variable}}` template syntax, the same variables available in `prompt_template`. Template variables are resolved before the hook runs, so you can reference dynamic paths like `{{output_dir}}/plan.md`.
+
 ```toml
-pre_hooks = [{ type = "file_not_empty", path = "plan.md" }]
+pre_hooks = [{ type = "file_not_empty", path = "{{output_dir}}/plan.md" }]
 post_hooks = [{ type = "file_contains", path = "plan.md", text = "implementation" }]
 ```
 
