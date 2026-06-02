@@ -701,6 +701,7 @@ async fn test_failure_state_transition_via_on_workflow_complete() {
 async fn test_permits_released_after_completion() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
+    // Use concurrency limit of 2 so the semaphore is in play
     let dispatcher = test_dispatcher(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
@@ -740,7 +741,105 @@ async fn test_permits_released_after_completion() {
         sets.in_flight.is_empty(),
         "no events should be in_flight after completion"
     );
-    // Note: active_count is not decremented by spawn_workflow's spawned tasks
-    // (only run_with_permit decrements it). This is a known limitation —
-    // the actual cleanup will be handled when the workflow runner is integrated.
+}
+
+// --- Test: active_count returns to 0 after spawn_workflow tasks complete ---
+
+#[tokio::test]
+async fn test_active_count_decrements_after_spawn_workflow() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
+
+    assert_eq!(
+        dispatcher.active_count(),
+        0,
+        "active_count should start at 0"
+    );
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let disp = dispatcher.clone();
+    let handle = tokio::spawn(async move {
+        disp.run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
+    });
+
+    // Send 3 events — each will increment active_count on spawn
+    for i in 0..3 {
+        let msg = make_message(
+            TriggerType::GithubIssueAssigned {
+                assigned_to: None,
+                allowed_users: None,
+            },
+            &format!("issue-{}0", 100 + i),
+        );
+        tx.send(msg).await.unwrap();
+    }
+
+    // Give the dispatcher time to process all events and for active_count to return to 0
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    drop(tx);
+
+    // active_count should have returned to 0 after all spawned tasks completed
+    assert_eq!(
+        dispatcher.active_count(),
+        0,
+        "active_count should return to 0 after all spawned workflows complete"
+    );
+
+    shutdown_tx.send(true).unwrap();
+    let _ = handle.await;
+}
+
+// --- Test: active_count returns to 0 after spawn with unlimited concurrency ---
+
+#[tokio::test]
+async fn test_active_count_stays_zero_with_unlimited_concurrency() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    // max_concurrent = 0 means no semaphore, so acquire_permit returns None
+    // and active_count should never be incremented
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    assert_eq!(
+        dispatcher.active_count(),
+        0,
+        "active_count should be 0 when unlimited concurrency"
+    );
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let disp = dispatcher.clone();
+    let handle = tokio::spawn(async move {
+        disp.run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
+    });
+
+    // Send multiple events — with unlimited concurrency, active_count stays 0
+    for i in 0..5 {
+        let msg = make_message(
+            TriggerType::GithubIssueAssigned {
+                assigned_to: None,
+                allowed_users: None,
+            },
+            &format!("issue-{i}00"),
+        );
+        tx.send(msg).await.unwrap();
+    }
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    drop(tx);
+    handle.await.unwrap();
+
+    // With unlimited concurrency (no semaphore), active_count never increments
+    assert_eq!(
+        dispatcher.active_count(),
+        0,
+        "active_count should remain 0 with unlimited concurrency"
+    );
 }
