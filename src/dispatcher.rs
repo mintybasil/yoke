@@ -348,7 +348,7 @@ impl Dispatcher {
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
         drain_timeout: Duration,
     ) {
-        tracing::info!(?drain_timeout, "dispatcher run loop started");
+        tracing::info!(?drain_timeout, "Dispatcher run loop started");
 
         loop {
             tokio::select! {
@@ -358,14 +358,14 @@ impl Dispatcher {
                             self.spawn_workflow(dispatch_msg).await;
                         }
                         None => {
-                            tracing::info!("dispatcher channel closed, stopping");
+                            tracing::info!("Dispatcher channel closed, stopping");
                             break;
                         }
                     }
                 }
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
-                        tracing::info!("dispatcher received shutdown signal, draining in-flight tasks...");
+                        tracing::info!("Dispatcher received shutdown signal, draining in-flight tasks");
                         break;
                     }
                 }
@@ -379,7 +379,7 @@ impl Dispatcher {
         while self.active_count() > 0 && elapsed < drain_timeout {
             tracing::info!(
                 active = self.active_count(),
-                "waiting for in-flight workflows to complete..."
+                "Waiting for in-flight workflows to complete"
             );
             tokio::time::sleep(drain_interval).await;
             elapsed += drain_interval;
@@ -388,10 +388,10 @@ impl Dispatcher {
         if self.active_count() > 0 {
             tracing::warn!(
                 active = self.active_count(),
-                "shutdown timed out, some in-flight workflows may not have completed"
+                "Shutdown timed out, some in-flight workflows may not have completed"
             );
         } else {
-            tracing::info!("all in-flight workflows completed, dispatcher shut down");
+            tracing::info!("All in-flight workflows completed, dispatcher shut down");
         }
 
         // Persist state before exit
@@ -404,10 +404,10 @@ impl Dispatcher {
     /// even if no workflow just completed. Uses the same atomic write
     /// pattern as individual persist calls.
     async fn persist_state(&self) {
-        tracing::info!("persisting dispatcher state before exit");
+        tracing::info!("Persisting dispatcher state before exit");
         let sets = self.dedup_sets.read().await;
         if let Err(e) = sets.persist_completed(&self.workdir) {
-            tracing::error!(error = %e, "failed to persist completed set during shutdown");
+            tracing::error!(error = %e, "Failed to persist completed set during shutdown");
         }
         // persist_failed only appends individual entries; we re-write the
         // permanent_failed keys as a safety net by writing the full file
@@ -428,7 +428,7 @@ impl Dispatcher {
                 }
             }
             if let Err(e) = save_dedup_file(&path, &failed_entries) {
-                tracing::error!(error = %e, "failed to persist failed set during shutdown");
+                tracing::error!(error = %e, "Failed to persist failed set during shutdown");
             }
         }
     }
@@ -455,7 +455,7 @@ impl Dispatcher {
         {
             let sets = self.dedup_sets.read().await;
             if sets.is_duplicate(&key) {
-                tracing::warn!(%key, "skipping duplicate event");
+                tracing::warn!(%key, "Skipping duplicate event");
                 return;
             }
         }
@@ -470,7 +470,7 @@ impl Dispatcher {
         let permit = match self.acquire_permit().await {
             Ok(p) => p,
             Err(e) => {
-                tracing::error!(%key, error = %e, "failed to acquire concurrency permit");
+                tracing::error!(%key, error = %e, "Failed to acquire concurrency permit");
                 // Remove from in-flight so it can be retried
                 let mut sets = self.dedup_sets.write().await;
                 sets.remove_in_flight(&key);
@@ -478,7 +478,7 @@ impl Dispatcher {
             }
         };
 
-        tracing::info!(%key, "spawning workflow");
+        tracing::info!(%key, repo = %event.repo_path, event_id = %event_id, "Spawning workflow");
 
         // Clone what we need for the spawned task
         let dedup_sets = self.dedup_sets.clone();
@@ -493,7 +493,7 @@ impl Dispatcher {
 
         // Ensure the workspace directory exists before spawning the task
         if let Err(e) = std::fs::create_dir_all(&event_ws_dir) {
-            tracing::error!(%key, path = %event_ws_dir.display(), error = %e, "failed to create workspace directory");
+            tracing::error!(%key, path = %event_ws_dir.display(), error = %e, "Failed to create workspace directory");
             // Remove from in-flight so it can be retried
             let mut sets = self.dedup_sets.write().await;
             sets.remove_in_flight(&key);
@@ -517,7 +517,9 @@ impl Dispatcher {
                 if matching.is_empty() {
                     tracing::warn!(
                         trigger_type = %event.trigger_type.label(),
-                        "no matching workflow found for trigger type, skipping"
+                        repo = %event.repo_path,
+                        event_id = %event.event_id,
+                        "No matching workflow found for trigger type, skipping"
                     );
                     return Ok(());
                 }
@@ -529,11 +531,17 @@ impl Dispatcher {
                 // Run each matching workflow sequentially within this task.
                 // If multiple workflows match the same trigger, they run one after
                 // another in the same workspace directory.
-                for (_path, workflow) in matching {
+                for (path, workflow) in matching {
+                    let workflow_name = std::path::Path::new(&path)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
                     tracing::info!(
-                        workflow_path = %_path,
+                        workflow = %workflow_name,
                         steps = workflow.steps.len(),
-                        "running matching workflow"
+                        repo = %event.repo_path,
+                        event_id = %event_id,
+                        "Running matching workflow"
                     );
 
                     // Build template variables from the event context
@@ -558,16 +566,20 @@ impl Dispatcher {
 
                     if let Err(e) = runner.run().await {
                         tracing::error!(
-                            workflow_path = %_path,
+                            workflow = %workflow_name,
+                            repo = %event.repo_path,
+                            event_id = %event_id,
                             error = %e,
-                            "workflow execution failed"
+                            "Workflow execution failed"
                         );
-                        return Err(format!("Workflow '{}' failed: {}", _path, e));
+                        return Err(format!("Workflow '{}' failed: {}", path, e));
                     }
 
                     tracing::info!(
-                        workflow_path = %_path,
-                        "workflow completed successfully"
+                        workflow = %workflow_name,
+                        repo = %event.repo_path,
+                        event_id = %event_id,
+                        "Workflow completed successfully"
                     );
                 }
 
@@ -581,7 +593,7 @@ impl Dispatcher {
                 Ok(()) => {
                     sets.mark_completed(&key);
                     if let Err(e) = sets.persist_completed(&workdir) {
-                        tracing::error!(%key, error = %e, "failed to persist completed set");
+                        tracing::error!(%key, error = %e, "Failed to persist completed set");
                     }
                 }
                 Err(e) => {
@@ -594,7 +606,7 @@ impl Dispatcher {
                             error: e,
                         },
                     ) {
-                        tracing::error!(%key, error = %persist_err, "failed to persist failed set");
+                        tracing::error!(%key, error = %persist_err, "Failed to persist failed set");
                     }
                 }
             }
@@ -617,7 +629,7 @@ impl Dispatcher {
             Ok(()) => {
                 sets.mark_completed(key);
                 if let Err(e) = sets.persist_completed(&self.workdir) {
-                    tracing::error!(%key, error = %e, "failed to persist completed set");
+                    tracing::error!(%key, error = %e, "Failed to persist completed set");
                 }
             }
             Err(e) => {
@@ -630,7 +642,7 @@ impl Dispatcher {
                         error: e,
                     },
                 ) {
-                    tracing::error!(%key, error = %persist_err, "failed to persist failed set");
+                    tracing::error!(%key, error = %persist_err, "Failed to persist failed set");
                 }
             }
         }
@@ -844,7 +856,7 @@ pub fn load_persistence(workdir: &Path) -> DedupSets {
             &e,
             PersistenceError::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound
         ) {
-            tracing::warn!(error = %e, "Corrupted completed.json, treating as empty");
+            tracing::warn!(error = %e, "Corrupted completed.json, treating as empty; data will be rebuilt");
         }
         HashSet::new()
     });
@@ -854,7 +866,7 @@ pub fn load_persistence(workdir: &Path) -> DedupSets {
             &e,
             PersistenceError::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound
         ) {
-            tracing::warn!(error = %e, "Corrupted failed.json, treating as empty");
+            tracing::warn!(error = %e, "Corrupted failed.json, treating as empty; data will be rebuilt");
         }
         Vec::new()
     });

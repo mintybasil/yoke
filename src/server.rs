@@ -80,12 +80,12 @@ async fn webhook_handler(
                 Some(v) => match v.to_str() {
                     Ok(s) => s.to_string(),
                     Err(_) => {
-                        tracing::warn!("invalid GitHub signature header encoding");
+                        tracing::warn!("Invalid GitHub signature header encoding");
                         return StatusCode::UNAUTHORIZED;
                     }
                 },
                 None => {
-                    tracing::warn!("missing GitHub signature header");
+                    tracing::warn!("Missing GitHub signature header");
                     return StatusCode::UNAUTHORIZED;
                 }
             };
@@ -93,12 +93,12 @@ async fn webhook_handler(
                 Some(v) => match v.to_str() {
                     Ok(s) => s.to_string(),
                     Err(_) => {
-                        tracing::warn!("invalid GitHub event header encoding");
+                        tracing::warn!("Invalid GitHub event header encoding");
                         return StatusCode::BAD_REQUEST;
                     }
                 },
                 None => {
-                    tracing::warn!("missing GitHub event header");
+                    tracing::warn!("Missing GitHub event header");
                     return StatusCode::BAD_REQUEST;
                 }
             };
@@ -127,19 +127,19 @@ async fn webhook_handler(
     {
         Ok(_) => StatusCode::OK,
         Err(webhook::WebhookError::Unauthorized(msg)) => {
-            tracing::warn!(reason = %msg, "webhook authentication failed");
+            tracing::warn!(reason = %msg, "Webhook authentication failed");
             StatusCode::UNAUTHORIZED
         }
         Err(webhook::WebhookError::BadRequest(msg)) => {
-            tracing::warn!(reason = %msg, "webhook request parsing failed");
+            tracing::warn!(reason = %msg, "Webhook request parsing failed");
             StatusCode::BAD_REQUEST
         }
         Err(webhook::WebhookError::NoMatchingTrigger(msg)) => {
-            tracing::debug!(reason = %msg, "no matching trigger for webhook event");
+            tracing::debug!(reason = %msg, "No matching trigger for webhook event");
             StatusCode::OK
         }
         Err(webhook::WebhookError::InternalError(msg)) => {
-            tracing::error!(reason = %msg, "internal dispatcher error");
+            tracing::error!(reason = %msg, "Internal dispatcher error");
             StatusCode::SERVICE_UNAVAILABLE
         }
     }
@@ -232,7 +232,7 @@ pub async fn run_server(
                 break;
             }
             if *rx.borrow() {
-                tracing::info!("HTTP server shutting down...");
+                tracing::info!("HTTP server shutting down");
                 dispatcher.mark_shutting_down();
                 break;
             }

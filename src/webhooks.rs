@@ -450,7 +450,7 @@ pub async fn webhooks_list(config: &Config, client: &WebhookClient) -> Result<()
                 }
             }
             Err(e) => {
-                tracing::error!(repo = %repo_display, error = %e, "Error listing webhooks");
+                tracing::error!(repo = %repo_display, error = %e, "Failed to list webhooks");
             }
         }
     }
@@ -474,7 +474,7 @@ pub async fn webhooks_remove(
         let hooks = match client.list_webhooks(&repo.owner, &repo.repo).await {
             Ok(h) => h,
             Err(e) => {
-                tracing::error!(repo = %repo_display, error = %e, "Error listing webhooks");
+                tracing::error!(repo = %repo_display, error = %e, "Failed to list webhooks");
                 summary.errors += 1;
                 continue;
             }
@@ -497,7 +497,7 @@ pub async fn webhooks_remove(
                     summary.deleted += 1;
                 }
                 Err(e) => {
-                    tracing::error!(repo = %repo_display, webhook_id = hook.id, error = %e, "Error deleting webhook");
+                    tracing::error!(repo = %repo_display, webhook_id = hook.id, error = %e, "Failed to delete webhook");
                     summary.errors += 1;
                 }
             }
@@ -554,7 +554,7 @@ pub async fn webhooks_add(
         let existing = match client.list_webhooks(&repo.owner, &repo.repo).await {
             Ok(hooks) => hooks,
             Err(e) => {
-                tracing::error!(repo = %repo_display, error = %e, "Error listing webhooks");
+                tracing::error!(repo = %repo_display, error = %e, "Failed to list webhooks");
                 summary.errors += 1;
                 continue;
             }
@@ -572,7 +572,7 @@ pub async fn webhooks_add(
                         summary.updated += 1;
                     }
                     Err(e) => {
-                        tracing::error!(repo = %repo_display, webhook_id = hook.id, error = %e, "Error updating webhook");
+                        tracing::error!(repo = %repo_display, webhook_id = hook.id, error = %e, "Failed to update webhook");
                         summary.errors += 1;
                     }
                 }
@@ -586,7 +586,7 @@ pub async fn webhooks_add(
                     summary.created += 1;
                 }
                 Err(e) => {
-                    tracing::error!(repo = %repo_display, error = %e, hook_config = %hook_config, "Error creating webhook");
+                    tracing::error!(repo = %repo_display, error = %e, hook_config = %hook_config, "Failed to create webhook");
                     summary.errors += 1;
                 }
             },

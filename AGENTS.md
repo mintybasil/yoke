@@ -225,9 +225,39 @@ async fn spawn_workflow(&self, msg: DispatchMessage) {
 }
 ```
 
+### Message Style Conventions
+
+All `tracing` log messages must follow these conventions:
+
+1. **Capitalize the first letter** — Message strings start with an uppercase letter: `"Dispatcher run loop started"`, not `"dispatcher run loop started"`.
+2. **"Failed to X" over "Error X"** — Use `"Failed to create webhook client"`, not `"Error creating webhook client"`. This clarifies that the operation didn't succeed, rather than naming the category.
+3. **No trailing ellipsis** — Avoid `...` at the end of messages. Prefer `"Waiting for in-flight workflows to complete"` over `"waiting for in-flight workflows to complete..."`. Exception: ellipsis is acceptable in user-facing CLI output that implies an ongoing process.
+4. **Named fields over format strings** — Use structured tracing fields instead of `format!()` interpolation:
+   ```rust
+   // ✅ Preferred — structured field
+   tracing::info!(workflow_count = workflows.len(), "Configuration and workflow(s) loaded");
+   
+   // ❌ Avoid — format string interpolation
+   tracing::info!("Configuration and {} workflow(s) loaded", workflows.len());
+   ```
+5. **Filenames over full paths** — Log workflow names as just the filename (e.g. `deploy.yml`) rather than the full filesystem path (e.g. `/etc/yoke/workflows/deploy.yml`). Use `Path::file_name()` to extract the filename:
+   ```rust
+   let workflow_name = Path::new(&path).file_name().unwrap_or_default().to_string_lossy();
+   tracing::info!(workflow = %workflow_name, "Running matching workflow");
+   ```
+6. **Include `repo` and `event_id` fields** — All workflow execution log messages (spawning, running, completing, failing) must include `repo` and `event_id` structured fields for log correlation:
+   ```rust
+   tracing::info!(
+       workflow = %workflow_name,
+       repo = %event.repo_path,
+       event_id = %event_id,
+       "Running matching workflow"
+   );
+   ```
+
 ### No `println!` / `eprintln!`
 
-The codebase must not contain `println!` or `eprintln!` calls. All output goes through `tracing` macros. CLI output (e.g. `yoke webhooks list`) uses `tracing::info!` so it is captured by the subscriber and respect `RUST_LOG` filtering.
+The codebase must not contain `println!` or `eprintln!` calls. All output goes through `tracing` macros. CLI output (e.g. `yoke webhooks list`) uses `tracing::info!` so it is captured by the subscriber and respects `RUST_LOG` filtering.
 
 ### Controlling Log Output
 
