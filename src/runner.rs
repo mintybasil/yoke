@@ -524,7 +524,10 @@ mod tests {
 
         // This should now succeed — the template variable is rendered before the hook runs
         let result = runner.run_hooks(&hooks);
-        assert!(result.is_ok(), "Templated hook path should resolve and find the file");
+        assert!(
+            result.is_ok(),
+            "Templated hook path should resolve and find the file"
+        );
     }
 
     #[test]
@@ -554,7 +557,10 @@ mod tests {
         }];
 
         let result = runner.run_hooks(&hooks);
-        assert!(result.is_ok(), "Templated hook path and text should resolve correctly");
+        assert!(
+            result.is_ok(),
+            "Templated hook path and text should resolve correctly"
+        );
     }
 
     #[test]
