@@ -20,7 +20,7 @@ pub fn write_prompt_file(
     prompt: &str,
     workspace_dir: &Path,
 ) -> io::Result<()> {
-    let filename = format!("{:02}_{}.prompt", step_num, step_name);
+    let filename = format!("{step_num:02}_{step_name}.prompt");
     let path = workspace_dir.join(filename);
     // Ensure the workspace directory exists
     if let Some(parent) = path.parent() {
@@ -32,6 +32,10 @@ pub fn write_prompt_file(
 /// Write a log file capturing the full HTTP exchange and extracted message.
 ///
 /// The file is named `{step_num:02}_{step_name}.log`, e.g. `00_Plan.log`.
+///
+/// The extracted message is automatically capitalized (first letter uppercased)
+/// before writing. If the message is empty or already starts with an uppercase
+/// letter or non-alphabetic character, it is written as-is.
 ///
 /// The content format is:
 /// ```text
@@ -52,17 +56,25 @@ pub fn write_log_file(
     extracted_message: &str,
     workspace_dir: &Path,
 ) -> io::Result<()> {
-    let filename = format!("{:02}_{}.log", step_num, step_name);
+    let filename = format!("{step_num:02}_{step_name}.log");
     let path = workspace_dir.join(filename);
     // Ensure the workspace directory exists
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let content = format!(
-        "REQUEST:\n{}\n\nRESPONSE:\n{}\n\nFINAL MESSAGE:\n{}",
-        request, response, extracted_message
-    );
+    let mut final_msg = extracted_message.to_string();
+    if let Some(first_char) = final_msg.chars().next()
+        && first_char.is_lowercase()
+    {
+        final_msg.replace_range(
+            ..first_char.len_utf8(),
+            &first_char.to_uppercase().to_string(),
+        );
+    }
+
+    let content =
+        format!("REQUEST:\n{request}\n\nRESPONSE:\n{response}\n\nFINAL MESSAGE:\n{final_msg}");
     fs::write(path, content)
 }
 
@@ -80,13 +92,13 @@ pub fn write_request_log_file(
     request: &str,
     workspace_dir: &Path,
 ) -> io::Result<()> {
-    let filename = format!("{:02}_{}.log", step_num, step_name);
+    let filename = format!("{step_num:02}_{step_name}.log");
     let path = workspace_dir.join(filename);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let content = format!("REQUEST:\n{}", request);
+    let content = format!("REQUEST:\n{request}");
     fs::write(path, content)
 }
 
@@ -123,7 +135,7 @@ mod tests {
         let content = fs::read_to_string(path.join("01_Implement.log")).unwrap();
         assert!(content.contains("REQUEST:\nreq"));
         assert!(content.contains("RESPONSE:\nres"));
-        assert!(content.contains("FINAL MESSAGE:\nmsg"));
+        assert!(content.contains("FINAL MESSAGE:\nMsg"));
     }
 
     #[test]
@@ -134,7 +146,7 @@ mod tests {
 
         let content = fs::read_to_string(nested.join("03_Test.log")).unwrap();
         assert!(content.contains("REQUEST:\nr"));
-        assert!(content.contains("FINAL MESSAGE:\nm"));
+        assert!(content.contains("FINAL MESSAGE:\nM"));
     }
 
     #[test]
@@ -169,7 +181,7 @@ mod tests {
         assert!(content.starts_with("REQUEST:\n"));
         assert!(content.contains(&request));
         assert!(content.contains("RESPONSE:\nresponse body"));
-        assert!(content.contains("FINAL MESSAGE:\nfinal answer"));
+        assert!(content.contains("FINAL MESSAGE:\nFinal answer"));
     }
 
     #[test]
@@ -206,8 +218,8 @@ mod tests {
         let plan_log = fs::read_to_string(path.join("00_Plan.log")).unwrap();
         let impl_log = fs::read_to_string(path.join("01_Implement.log")).unwrap();
 
-        assert!(plan_log.contains("plan message"));
-        assert!(impl_log.contains("impl message"));
+        assert!(plan_log.contains("Plan message"));
+        assert!(impl_log.contains("Impl message"));
     }
 
     #[test]
@@ -243,6 +255,53 @@ mod tests {
         let full_log = fs::read_to_string(path.join("00_Plan.log")).unwrap();
         assert!(full_log.contains("REQUEST:\nrequest body"));
         assert!(full_log.contains("RESPONSE:\nresponse body"));
-        assert!(full_log.contains("FINAL MESSAGE:\nmessage"));
+        assert!(full_log.contains("FINAL MESSAGE:\nMessage"));
+    }
+
+    #[test]
+    fn test_write_log_file_capitalizes_first_letter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let lowercase_msg = "this is a lowercase message";
+
+        write_log_file(0, "Plan", "req", "res", lowercase_msg, path).unwrap();
+
+        let content = fs::read_to_string(path.join("00_Plan.log")).unwrap();
+        assert!(content.contains("FINAL MESSAGE:\nThis is a lowercase message"));
+    }
+
+    #[test]
+    fn test_write_log_file_already_capitalized_stays_same() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let msg = "Already capitalized";
+
+        write_log_file(0, "Plan", "req", "res", msg, path).unwrap();
+
+        let content = fs::read_to_string(path.join("00_Plan.log")).unwrap();
+        assert!(content.contains("FINAL MESSAGE:\nAlready capitalized"));
+    }
+
+    #[test]
+    fn test_write_log_file_empty_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+
+        write_log_file(0, "Plan", "req", "res", "", path).unwrap();
+
+        let content = fs::read_to_string(path.join("00_Plan.log")).unwrap();
+        assert!(content.contains("FINAL MESSAGE:\n"));
+    }
+
+    #[test]
+    fn test_write_log_file_non_ascii_first_char() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let msg = "écran"; // non-ASCII lowercase first char
+
+        write_log_file(0, "Plan", "req", "res", msg, path).unwrap();
+
+        let content = fs::read_to_string(path.join("00_Plan.log")).unwrap();
+        assert!(content.contains("FINAL MESSAGE:\nÉcran"));
     }
 }
