@@ -153,6 +153,21 @@ impl HermesClient {
         }
     }
 
+    /// Build the serialized request body for a step, without sending it.
+    ///
+    /// This is useful for logging the request before the API call, so that
+    /// the request data is available even if the API call fails.
+    /// The returned string is the pretty-printed JSON that would be sent
+    /// as the request body to the Hermes API.
+    pub fn build_request_body(&self, instructions: Option<&str>, input: &str) -> String {
+        let request = HermesRequest {
+            instructions: instructions.map(|s| s.to_string()),
+            input: input.to_string(),
+            store: true,
+        };
+        serde_json::to_string_pretty(&request)
+            .unwrap_or_else(|_| serde_json::to_string(&request).unwrap_or_default())
+    }
     /// Execute a single agent step by sending a request to the Hermes API.
     ///
     /// 1. Builds a `HermesRequest` from the given `instructions` (optional) and `input`.

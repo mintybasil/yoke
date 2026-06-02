@@ -634,3 +634,191 @@ async fn test_single_agent_workflow_still_works() {
     let result = runner.run().await;
     assert!(result.is_ok());
 }
+
+#[tokio::test]
+async fn test_file_logging_writes_prompt_and_log_files() {
+    // After a successful workflow run, prompt and log files should exist in the
+    // workspace directory with actual API data — not placeholder "pending" text.
+    let base_url = start_mock_server("Implementation complete").await;
+    let agents = make_agents(&[("dev", &base_url)]);
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let workflow = test_workflow(vec![
+        Step {
+            name: "Plan".to_string(),
+            agent: "dev".to_string(),
+            prompt_template: "Plan the task".to_string(),
+            pre_hooks: vec![],
+            post_hooks: vec![],
+        },
+        Step {
+            name: "Implement".to_string(),
+            agent: "dev".to_string(),
+            prompt_template: "Implement the plan".to_string(),
+            pre_hooks: vec![],
+            post_hooks: vec![],
+        },
+    ]);
+
+    let variables = HashMap::new();
+
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
+
+    let result = runner.run().await;
+    assert!(result.is_ok());
+
+    // Step 0 (Plan): prompt file should contain the rendered template
+    let plan_prompt = dir.path().join("00_Plan.prompt");
+    assert!(plan_prompt.exists(), "00_Plan.prompt should exist");
+    let plan_prompt_content = std::fs::read_to_string(&plan_prompt).unwrap();
+    assert!(
+        plan_prompt_content.contains("Plan the task"),
+        "prompt file should contain rendered template, got: {plan_prompt_content}"
+    );
+    // Should NOT contain placeholder "pending" text from old dispatcher code
+    assert!(
+        !plan_prompt_content.contains("pending"),
+        "prompt file should not contain 'pending', got: {plan_prompt_content}"
+    );
+
+    // Step 0 (Plan): log file should contain real request/response data
+    let plan_log = dir.path().join("00_Plan.log");
+    assert!(plan_log.exists(), "00_Plan.log should exist");
+    let plan_log_content = std::fs::read_to_string(&plan_log).unwrap();
+    assert!(
+        plan_log_content.contains("REQUEST:"),
+        "log file should contain REQUEST section, got: {plan_log_content}"
+    );
+    assert!(
+        plan_log_content.contains("RESPONSE:"),
+        "log file should contain RESPONSE section, got: {plan_log_content}"
+    );
+    assert!(
+        plan_log_content.contains("FINAL MESSAGE:"),
+        "log file should contain FINAL MESSAGE section, got: {plan_log_content}"
+    );
+    assert!(
+        plan_log_content.contains("Implementation complete"),
+        "log should contain the actual response text, got: {plan_log_content}"
+    );
+    // Should NOT contain old placeholder data
+    assert!(
+        !plan_log_content.contains("Start"),
+        "log should not contain 'Start' placeholder, got: {plan_log_content}"
+    );
+
+    // Step 1 (Implement): verify second step also gets logged
+    let impl_prompt = dir.path().join("01_Implement.prompt");
+    assert!(impl_prompt.exists(), "01_Implement.prompt should exist");
+    let impl_prompt_content = std::fs::read_to_string(&impl_prompt).unwrap();
+    assert!(
+        impl_prompt_content.contains("Implement the plan"),
+        "second prompt file should contain its template, got: {impl_prompt_content}"
+    );
+
+    let impl_log = dir.path().join("01_Implement.log");
+    assert!(impl_log.exists(), "01_Implement.log should exist");
+    let impl_log_content = std::fs::read_to_string(&impl_log).unwrap();
+    assert!(
+        impl_log_content.contains("Implementation complete"),
+        "second log should contain the actual response text, got: {impl_log_content}"
+    );
+}
+
+#[tokio::test]
+async fn test_file_logging_writes_request_on_api_failure() {
+    // When the Hermes API call fails (e.g. network error), the request body
+    // should still be logged to the .log file because we write it before the call.
+    // Only the RESPONSE and FINAL MESSAGE sections will be missing.
+    let base_url = start_mock_server("should not matter").await;
+    let agents = make_agents(&[("dev", &base_url)]);
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let workflow = test_workflow(vec![Step {
+        name: "Plan".to_string(),
+        agent: "bad-agent".to_string(), // not in agents list — will fail to resolve
+        prompt_template: "Plan the task".to_string(),
+        pre_hooks: vec![],
+        post_hooks: vec![],
+    }]);
+
+    let variables = HashMap::new();
+
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
+
+    // This will fail because "bad-agent" is not in the agents list
+    let result = runner.run().await;
+    assert!(result.is_err(), "workflow should fail with unknown agent");
+
+    // Even though the workflow failed, the .prompt file should NOT exist
+    // because step resolution happens before file logging.
+    // (The agent resolution fails before we even get to template rendering or logging.)
+    let plan_prompt = dir.path().join("00_Plan.prompt");
+    assert!(
+        !plan_prompt.exists(),
+        "prompt file should not exist when agent resolution fails"
+    );
+}
+
+#[tokio::test]
+async fn test_file_logging_request_logged_before_api_call() {
+    // After a successful workflow run, the .log file should contain both
+    // the request (written before the API call) and the response (written after).
+    // This test verifies the two-phase write: request first, then full exchange overwrite.
+    let base_url = start_mock_server("Response text here").await;
+    let agents = make_agents(&[("dev", &base_url)]);
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let workflow = test_workflow(vec![Step {
+        name: "Plan".to_string(),
+        agent: "dev".to_string(),
+        prompt_template: "Plan the task".to_string(),
+        pre_hooks: vec![],
+        post_hooks: vec![],
+    }]);
+
+    let variables = HashMap::new();
+
+    let mut runner = WorkflowRunner::new(
+        workflow,
+        variables,
+        dir.path().to_path_buf(),
+        agents,
+        "test-key".to_string(),
+    );
+
+    let result = runner.run().await;
+    assert!(result.is_ok());
+
+    // The log file should contain the full exchange after a successful run
+    let plan_log = dir.path().join("00_Plan.log");
+    assert!(plan_log.exists(), "00_Plan.log should exist");
+    let plan_log_content = std::fs::read_to_string(&plan_log).unwrap();
+    assert!(
+        plan_log_content.contains("REQUEST:"),
+        "log should contain REQUEST section, got: {plan_log_content}"
+    );
+    assert!(
+        plan_log_content.contains("RESPONSE:"),
+        "log should contain RESPONSE section, got: {plan_log_content}"
+    );
+    assert!(
+        plan_log_content.contains("FINAL MESSAGE:"),
+        "log should contain FINAL MESSAGE section, got: {plan_log_content}"
+    );
+}

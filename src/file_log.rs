@@ -66,6 +66,30 @@ pub fn write_log_file(
     fs::write(path, content)
 }
 
+/// Write a log file with just the request portion, before the API call completes.
+///
+/// This ensures the request is logged even if the API call fails. After a
+/// successful API call, `write_log_file` should be called to overwrite this
+/// with the full exchange (request + response + extracted message).
+///
+/// The file is named `{step_num:02}_{step_name}.log`, same as `write_log_file`,
+/// so a subsequent successful call will update it in place.
+pub fn write_request_log_file(
+    step_num: usize,
+    step_name: &str,
+    request: &str,
+    workspace_dir: &Path,
+) -> io::Result<()> {
+    let filename = format!("{:02}_{}.log", step_num, step_name);
+    let path = workspace_dir.join(filename);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let content = format!("REQUEST:\n{}", request);
+    fs::write(path, content)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +208,41 @@ mod tests {
 
         assert!(plan_log.contains("plan message"));
         assert!(impl_log.contains("impl message"));
+    }
+
+    #[test]
+    fn test_write_request_log_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        write_request_log_file(0, "Plan", "request body", path).unwrap();
+
+        let content = fs::read_to_string(path.join("00_Plan.log")).unwrap();
+        assert!(content.starts_with("REQUEST:\n"));
+        assert!(content.contains("request body"));
+        // Should NOT contain RESPONSE or FINAL MESSAGE sections yet
+        assert!(!content.contains("RESPONSE:"));
+        assert!(!content.contains("FINAL MESSAGE:"));
+    }
+
+    #[test]
+    fn test_write_request_log_then_full_log_overwrites() {
+        // Simulates the real flow: write request log, then overwrite with full log
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+
+        // First: write request log (before API call)
+        write_request_log_file(0, "Plan", "request body", path).unwrap();
+
+        let request_only = fs::read_to_string(path.join("00_Plan.log")).unwrap();
+        assert!(request_only.starts_with("REQUEST:\n"));
+        assert!(!request_only.contains("RESPONSE:"));
+
+        // Then: overwrite with full log (after successful API call)
+        write_log_file(0, "Plan", "request body", "response body", "message", path).unwrap();
+
+        let full_log = fs::read_to_string(path.join("00_Plan.log")).unwrap();
+        assert!(full_log.contains("REQUEST:\nrequest body"));
+        assert!(full_log.contains("RESPONSE:\nresponse body"));
+        assert!(full_log.contains("FINAL MESSAGE:\nmessage"));
     }
 }
