@@ -31,7 +31,15 @@ struct MockRequest {
 /// Matches the Hermes API response body format.
 #[derive(Debug, Serialize)]
 struct MockResponse {
-    output: Vec<MockContentBlock>,
+    output: Vec<MockOutputItem>,
+}
+
+#[derive(Debug, Serialize)]
+struct MockOutputItem {
+    #[serde(rename = "type")]
+    item_type: String,
+    role: String,
+    content: Vec<MockContentBlock>,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,9 +91,13 @@ async fn start_mock_server(response_text: &str) -> String {
             let text = text.clone();
             async move {
                 let response = MockResponse {
-                    output: vec![MockContentBlock {
-                        block_type: "output_text".to_string(),
-                        text,
+                    output: vec![MockOutputItem {
+                        item_type: "message".to_string(),
+                        role: "assistant".to_string(),
+                        content: vec![MockContentBlock {
+                            block_type: "output_text".to_string(),
+                            text,
+                        }],
                     }],
                 };
                 Json(response)
@@ -127,9 +139,13 @@ async fn start_mock_server_with_capture(response_text: &str) -> (String, Arc<Mut
                     .unwrap()
                     .push(body.instructions.clone().unwrap_or_default());
                 let response = MockResponse {
-                    output: vec![MockContentBlock {
-                        block_type: "output_text".to_string(),
-                        text,
+                    output: vec![MockOutputItem {
+                        item_type: "message".to_string(),
+                        role: "assistant".to_string(),
+                        content: vec![MockContentBlock {
+                            block_type: "output_text".to_string(),
+                            text,
+                        }],
                     }],
                 };
                 Json(response)

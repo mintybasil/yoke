@@ -29,21 +29,68 @@ pub struct HermesRequest {
     pub store: bool,
 }
 
-/// A single content block within the API response output.
+/// A single content block within a message's `content` array.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContentBlock {
     /// The type of content block (e.g. `"output_text"`).
     #[serde(rename = "type")]
     pub block_type: String,
     /// The text content of the block.
+    #[serde(default)]
     pub text: String,
+}
+
+/// An output item in the Hermes API response.
+///
+/// The Hermes `/v1/responses` endpoint returns `output` as an array of items.
+/// Items with `type: "message"` carry the assistant's response in their
+/// `content` field, which is an array of content blocks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OutputItem {
+    /// The item type (e.g. `"message"`).
+    #[serde(rename = "type")]
+    pub item_type: String,
+    /// The role of the message author (e.g. `"assistant"`).
+    #[serde(default)]
+    pub role: String,
+    /// Content blocks within this output item.
+    #[serde(default)]
+    pub content: Vec<ContentBlock>,
 }
 
 /// The top-level response from the Hermes API `/v1/responses` endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HermesResponse {
-    /// List of content blocks returned by the agent.
-    pub output: Vec<ContentBlock>,
+    /// Output items returned by the agent.
+    ///
+    /// Each item is typically a `"message"` object containing a `content`
+    /// array of content blocks. The last message in the output contains
+    /// the final assistant response.
+    pub output: Vec<OutputItem>,
+}
+
+impl HermesResponse {
+    /// Extract all `output_text` content from the last message in the output.
+    ///
+    /// The Hermes API returns multiple output items; the last one with
+    /// `type: "message"` contains the assistant's final response.
+    /// This method finds that last message and concatenates all
+    /// `output_text` blocks within it, separated by newlines.
+    pub fn extract_text(&self) -> String {
+        self.output
+            .iter()
+            .rev()
+            .find(|item| item.item_type == "message")
+            .map(|msg| {
+                msg.content
+                    .iter()
+                    .filter(|block| block.block_type == "output_text")
+                    .map(|block| block.text.as_str())
+                    .collect::<Vec<&str>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// The result of executing a single agent step.
@@ -177,13 +224,7 @@ impl HermesClient {
                 body: format!("Failed to parse response JSON: {e}"),
             })?;
 
-        let extracted_message: String = hermes_response
-            .output
-            .iter()
-            .filter(|block| block.block_type == "output_text")
-            .map(|block| block.text.as_str())
-            .collect::<Vec<&str>>()
-            .join("\n");
+        let extracted_message = hermes_response.extract_text();
 
         Ok(StepResult {
             extracted_message,
@@ -242,28 +283,101 @@ mod tests {
     }
 
     #[test]
-    fn test_hermes_response_parsing() {
+    fn test_output_item_deserialization() {
         let json = r#"{
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "output_text", "text": "Hello!"}
+            ]
+        }"#;
+        let item: OutputItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.item_type, "message");
+        assert_eq!(item.role, "assistant");
+        assert_eq!(item.content.len(), 1);
+        assert_eq!(item.content[0].block_type, "output_text");
+        assert_eq!(item.content[0].text, "Hello!");
+    }
+
+    #[test]
+    fn test_hermes_response_parsing_with_nested_output() {
+        let json = r#"{
+            "id": "resp_test123",
+            "object": "response",
+            "status": "completed",
             "output": [
-                {"type": "output_text", "text": "First message"},
-                {"type": "reasoning", "text": "Thinking..."},
-                {"type": "output_text", "text": "Second message"}
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "First message"},
+                        {"type": "reasoning", "text": "Thinking..."},
+                        {"type": "output_text", "text": "Second message"}
+                    ]
+                }
             ]
         }"#;
 
         let response: HermesResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.output.len(), 3);
+        assert_eq!(response.output.len(), 1);
+        assert_eq!(response.output[0].item_type, "message");
+        assert_eq!(response.output[0].content.len(), 3);
 
-        // Filter for output_text only
-        let output_text: String = response
-            .output
-            .iter()
-            .filter(|b| b.block_type == "output_text")
-            .map(|b| b.text.as_str())
-            .collect::<Vec<&str>>()
-            .join("\n");
+        let extracted = response.extract_text();
+        assert_eq!(extracted, "First message\nSecond message");
+    }
 
-        assert_eq!(output_text, "First message\nSecond message");
+    #[test]
+    fn test_hermes_response_extracts_last_message() {
+        let json = r#"{
+            "id": "resp_test456",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Earlier response"}
+                    ]
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Final response"}
+                    ]
+                }
+            ]
+        }"#;
+
+        let response: HermesResponse = serde_json::from_str(json).unwrap();
+        let extracted = response.extract_text();
+        assert_eq!(extracted, "Final response");
+    }
+
+    #[test]
+    fn test_hermes_response_no_message_output() {
+        let json = r#"{
+            "id": "resp_test789",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Should not appear"}
+                    ]
+                }
+            ]
+        }"#;
+
+        let response: HermesResponse = serde_json::from_str(json).unwrap();
+        assert!(response.extract_text().is_empty());
+    }
+
+    #[test]
+    fn test_hermes_response_empty_output() {
+        let json = r#"{"id": "resp_empty", "output": []}"#;
+        let response: HermesResponse = serde_json::from_str(json).unwrap();
+        assert!(response.extract_text().is_empty());
     }
 
     #[test]
@@ -271,14 +385,14 @@ mod tests {
         let result = StepResult {
             extracted_message: "Hello".to_string(),
             raw_request: r#"{"instructions":"test","input":"","store":true}"#.to_string(),
-            raw_response: r#"{"output":[]}"#.to_string(),
+            raw_response: r#"{"id":"resp_x","output":[]}"#.to_string(),
         };
         assert_eq!(result.extracted_message, "Hello");
         assert_eq!(
             result.raw_request,
             r#"{"instructions":"test","input":"","store":true}"#
         );
-        assert_eq!(result.raw_response, r#"{"output":[]}"#);
+        assert_eq!(result.raw_response, r#"{"id":"resp_x","output":[]}"#);
     }
 
     #[test]

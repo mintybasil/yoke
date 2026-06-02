@@ -1,10 +1,10 @@
 pub mod cli;
 pub mod config;
 pub mod dispatcher;
+pub mod file_log;
 pub mod git;
 pub mod harness;
 pub mod hooks;
-pub mod logging;
 pub mod reload;
 pub mod runner;
 pub mod server;

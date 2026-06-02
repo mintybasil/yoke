@@ -36,7 +36,7 @@ use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::config::AgentConfig;
-use crate::logging;
+use crate::file_log;
 use crate::reload::WorkflowState;
 use crate::runner::WorkflowRunner;
 use crate::webhook::TriggerEvent;
@@ -512,7 +512,7 @@ impl Dispatcher {
                 );
 
                 // Log the start of workflow processing
-                if let Err(e) = logging::write_log_file(
+                if let Err(e) = file_log::write_log_file(
                     0,
                     "Start",
                     &format!("trigger_type={}", event.trigger_type.label()),
