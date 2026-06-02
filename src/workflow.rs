@@ -104,27 +104,15 @@ pub use crate::hooks::Hook;
 #[derive(Debug, Clone, PartialEq)]
 pub enum TriggerType {
     // GitHub triggers
-    GithubIssueAssigned {
-        assigned_to: Option<String>,
-    },
-    GithubIssueCommentMention {
-        mentioned_user: Option<String>,
-    },
+    GithubIssueAssigned { assigned_to: Option<String> },
+    GithubIssueCommentMention { mentioned_user: Option<String> },
     GithubPullRequestReview,
-    GithubPullRequestCommentMention {
-        mentioned_user: Option<String>,
-    },
+    GithubPullRequestCommentMention { mentioned_user: Option<String> },
     // GitLab triggers
-    GitlabIssueAssigned {
-        assigned_to: Option<String>,
-    },
-    GitlabIssueMention {
-        mentioned_user: Option<String>,
-    },
+    GitlabIssueAssigned { assigned_to: Option<String> },
+    GitlabIssueMention { mentioned_user: Option<String> },
     GitlabMergeRequestReview,
-    GitlabMergeRequestCommentMention {
-        mentioned_user: Option<String>,
-    },
+    GitlabMergeRequestCommentMention { mentioned_user: Option<String> },
 }
 
 impl TriggerType {
@@ -211,9 +199,7 @@ impl TriggerType {
     pub fn actor(&self) -> Option<&str> {
         match self {
             TriggerType::GithubIssueAssigned { assigned_to } => assigned_to.as_deref(),
-            TriggerType::GithubIssueCommentMention { mentioned_user } => {
-                mentioned_user.as_deref()
-            }
+            TriggerType::GithubIssueCommentMention { mentioned_user } => mentioned_user.as_deref(),
             // PullRequestReview doesn't carry a specific actor from the payload
             TriggerType::GithubPullRequestReview => None,
             TriggerType::GithubPullRequestCommentMention { mentioned_user } => {
@@ -378,7 +364,7 @@ impl Workflow {
                 .trigger
                 .allowed_users
                 .as_ref()
-                .map_or(true, |users| users.is_empty())
+                .is_none_or(|users| users.is_empty())
         {
             return Err(format!(
                 "workflow '{}' with trigger type '{}' must specify allowed_users \
@@ -1376,9 +1362,7 @@ prompt_template = "Do the thing"
 
     #[test]
     fn test_known_variables_github_issue_assigned() {
-        let tt = TriggerType::GithubIssueAssigned {
-            assigned_to: None,
-        };
+        let tt = TriggerType::GithubIssueAssigned { assigned_to: None };
         let vars = tt.known_variables();
         // Global
         assert!(vars.contains("owner"));
@@ -1456,13 +1440,33 @@ prompt_template = "Do the thing"
     #[test]
     fn test_requires_allowed_users_all_trigger_types() {
         assert!(TriggerType::GithubIssueAssigned { assigned_to: None }.requires_allowed_users());
-        assert!(TriggerType::GithubIssueCommentMention { mentioned_user: None }.requires_allowed_users());
+        assert!(
+            TriggerType::GithubIssueCommentMention {
+                mentioned_user: None
+            }
+            .requires_allowed_users()
+        );
         assert!(TriggerType::GithubPullRequestReview.requires_allowed_users());
-        assert!(TriggerType::GithubPullRequestCommentMention { mentioned_user: None }.requires_allowed_users());
+        assert!(
+            TriggerType::GithubPullRequestCommentMention {
+                mentioned_user: None
+            }
+            .requires_allowed_users()
+        );
         assert!(TriggerType::GitlabIssueAssigned { assigned_to: None }.requires_allowed_users());
-        assert!(TriggerType::GitlabIssueMention { mentioned_user: None }.requires_allowed_users());
+        assert!(
+            TriggerType::GitlabIssueMention {
+                mentioned_user: None
+            }
+            .requires_allowed_users()
+        );
         assert!(TriggerType::GitlabMergeRequestReview.requires_allowed_users());
-        assert!(TriggerType::GitlabMergeRequestCommentMention { mentioned_user: None }.requires_allowed_users());
+        assert!(
+            TriggerType::GitlabMergeRequestCommentMention {
+                mentioned_user: None
+            }
+            .requires_allowed_users()
+        );
     }
 
     // --- allowed_users validation tests ---
@@ -1480,7 +1484,10 @@ prompt_template = "Do the thing"
         "#;
         let wf: Workflow = toml::from_str(toml).unwrap();
         let result = wf.validate();
-        assert!(result.is_err(), "expected validation to fail without allowed_users");
+        assert!(
+            result.is_err(),
+            "expected validation to fail without allowed_users"
+        );
         let err = result.unwrap_err();
         assert!(
             err.contains("must specify allowed_users"),
@@ -1502,7 +1509,10 @@ prompt_template = "Do the thing"
         "#;
         let wf: Workflow = toml::from_str(toml).unwrap();
         let result = wf.validate();
-        assert!(result.is_err(), "expected validation to fail with empty allowed_users");
+        assert!(
+            result.is_err(),
+            "expected validation to fail with empty allowed_users"
+        );
         let err = result.unwrap_err();
         assert!(
             err.contains("must specify allowed_users"),

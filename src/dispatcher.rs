@@ -1208,9 +1208,7 @@ mod tests {
     #[test]
     fn test_extract_event_id_github_issue_assigned() {
         let event = make_trigger_event(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             "issue-42",
         );
         assert_eq!(extract_event_id(&event), "42");
@@ -1229,10 +1227,7 @@ mod tests {
 
     #[test]
     fn test_extract_event_id_github_pr_review() {
-        let event = make_trigger_event(
-            TriggerType::GithubPullRequestReview,
-            "pr-7-review-999",
-        );
+        let event = make_trigger_event(TriggerType::GithubPullRequestReview, "pr-7-review-999");
         assert_eq!(extract_event_id(&event), "7_review-999");
     }
 
@@ -1269,10 +1264,7 @@ mod tests {
 
     #[test]
     fn test_extract_event_id_gitlab_mr_review() {
-        let event = make_trigger_event(
-            TriggerType::GitlabMergeRequestReview,
-            "mr-12-review-150",
-        );
+        let event = make_trigger_event(TriggerType::GitlabMergeRequestReview, "mr-12-review-150");
         assert_eq!(extract_event_id(&event), "12_review-150");
     }
 
@@ -1337,9 +1329,7 @@ mod tests {
     #[test]
     fn test_integration_build_key_with_event_id() {
         let event = make_trigger_event(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             "issue-42",
         );
         let event_id = extract_event_id(&event);
@@ -1349,10 +1339,7 @@ mod tests {
 
     #[test]
     fn test_integration_pr_review_dedup_key() {
-        let event = make_trigger_event(
-            TriggerType::GithubPullRequestReview,
-            "pr-7-review-999",
-        );
+        let event = make_trigger_event(TriggerType::GithubPullRequestReview, "pr-7-review-999");
         let event_id = extract_event_id(&event);
         let key = build_dedup_key("mintybasil", "yoke", &event_id);
         assert_eq!(key, "mintybasil/yoke/7_review-999");
@@ -1360,10 +1347,7 @@ mod tests {
 
     #[test]
     fn test_integration_gitlab_mr_dedup_key() {
-        let event = make_trigger_event(
-            TriggerType::GitlabMergeRequestReview,
-            "mr-12-review-150",
-        );
+        let event = make_trigger_event(TriggerType::GitlabMergeRequestReview, "mr-12-review-150");
         let event_id = extract_event_id(&event);
         let key = build_dedup_key("internal-team", "backend-service", &event_id);
         assert_eq!(key, "internal-team/backend-service/12_review-150");

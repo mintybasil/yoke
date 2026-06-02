@@ -780,10 +780,7 @@ mod tests {
         let event = parse_github_event("pull_request_review", body.as_bytes()).unwrap();
         let trigger = map_to_trigger_event(&event).unwrap();
 
-        assert!(matches!(
-            trigger,
-            TriggerType::GithubPullRequestReview
-        ));
+        assert!(matches!(trigger, TriggerType::GithubPullRequestReview));
         assert_eq!(
             trigger.label(),
             crate::workflow::triggers::GITHUB_PULL_REQUEST_REVIEW
