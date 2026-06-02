@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use yoke::harness::{ContentBlock, HermesClient, HermesRequest, OutputItem, HermesResponse};
+use yoke::harness::{ContentBlock, HermesClient, HermesRequest, HermesResponse, OutputItem};
 
 /// Verify that `HermesRequest` serializes to the expected JSON format.
 #[test]
