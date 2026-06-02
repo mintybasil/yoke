@@ -12,8 +12,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::config::AgentConfig;
+use crate::file_log;
 use crate::harness::HermesClient;
 use crate::workflow::Workflow;
 use tracing::instrument;
@@ -79,6 +81,8 @@ pub struct WorkflowRunner {
     pub agents: Vec<AgentConfig>,
     /// The API key for authenticating with Hermes API instances.
     pub api_key: String,
+    /// Step counter for file naming (0-based, incremented per step).
+    step_counter: AtomicUsize,
 }
 
 impl WorkflowRunner {
@@ -97,6 +101,7 @@ impl WorkflowRunner {
             workspace_dir,
             agents,
             api_key,
+            step_counter: AtomicUsize::new(0),
         }
     }
 
@@ -117,7 +122,8 @@ impl WorkflowRunner {
             })
     }
 
-    /// Execute a single workflow step: resolve agent → pre-hooks → template render → API call → post-hooks.
+    /// Execute a single workflow step: resolve agent → pre-hooks → template render →
+    /// API call (with request logging) → post-hooks (with response logging).
     #[instrument(skip(self), fields(step = %step.name, agent = %step.agent))]
     pub async fn execute_step(
         &self,
@@ -136,12 +142,32 @@ impl WorkflowRunner {
         // 3. Build context-aware instructions based on git config
         let instructions = build_instructions(&self.workflow, &self.workspace_dir);
 
-        // 4. Call Hermes API
+        // 4. Write the rendered prompt file before the API call
+        let step_num = self.step_counter.fetch_add(1, Ordering::Relaxed);
+        if let Err(e) =
+            file_log::write_prompt_file(step_num, &step.name, &prompt, &self.workspace_dir)
+        {
+            tracing::warn!(step = %step.name, error = %e, "failed to write prompt file");
+        }
+
+        // 5. Call Hermes API
         let result = client
             .execute_step(instructions.as_deref(), &prompt)
             .await?;
 
-        // 5. Post-hooks
+        // 6. Write the log file (request, response, extracted message)
+        if let Err(e) = file_log::write_log_file(
+            step_num,
+            &step.name,
+            &result.raw_request,
+            &result.raw_response,
+            &result.extracted_message,
+            &self.workspace_dir,
+        ) {
+            tracing::warn!(step = %step.name, error = %e, "failed to write log file");
+        }
+
+        // 7. Post-hooks
         self.run_hooks(&step.post_hooks)?;
 
         Ok(result)

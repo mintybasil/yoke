@@ -36,7 +36,6 @@ use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::config::AgentConfig;
-use crate::file_log;
 use crate::reload::WorkflowState;
 use crate::runner::WorkflowRunner;
 use crate::webhook::TriggerEvent;
@@ -510,21 +509,6 @@ impl Dispatcher {
                     workspace = %event_ws_dir.display(),
                     "Processing workflow event"
                 );
-
-                // Log the start of workflow processing
-                if let Err(e) = file_log::write_log_file(
-                    0,
-                    "Start",
-                    &format!("trigger_type={}", event.trigger_type.label()),
-                    "pending",
-                    &format!(
-                        "Workflow started for {}/{} event_id={}",
-                        owner, repo, event_id
-                    ),
-                    &event_ws_dir,
-                ) {
-                    tracing::warn!(%key, error = %e, "failed to write start log file");
-                }
 
                 // Find matching workflows from the hot-reloadable state
                 let workflows = workflow_state.load();
