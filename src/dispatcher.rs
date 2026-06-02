@@ -478,7 +478,7 @@ impl Dispatcher {
             }
         };
 
-        tracing::info!(%key, "Spawning workflow");
+        tracing::info!(%key, repo = %event.repo_path, event_id = %event_id, "Spawning workflow");
 
         // Clone what we need for the spawned task
         let dedup_sets = self.dedup_sets.clone();
@@ -518,6 +518,7 @@ impl Dispatcher {
                     tracing::warn!(
                         trigger_type = %event.trigger_type.label(),
                         repo = %event.repo_path,
+                        event_id = %event.event_id,
                         "No matching workflow found for trigger type, skipping"
                     );
                     return Ok(());
