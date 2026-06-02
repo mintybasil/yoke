@@ -123,7 +123,7 @@ impl WorkflowRunner {
     }
 
     /// Execute a single workflow step: resolve agent → pre-hooks → template render →
-    /// API call (with request logging) → post-hooks (with response logging).
+    /// write prompt file → log request → API call → log full exchange → post-hooks.
     #[instrument(skip(self), fields(step = %step.name, agent = %step.agent))]
     pub async fn execute_step(
         &self,
@@ -150,12 +150,24 @@ impl WorkflowRunner {
             tracing::warn!(step = %step.name, error = %e, "failed to write prompt file");
         }
 
-        // 5. Call Hermes API
+        // 5. Build and log the request body before the API call
+        //    This ensures the request is logged even if the API call fails.
+        let raw_request = client.build_request_body(instructions.as_deref(), &prompt);
+        if let Err(e) = file_log::write_request_log_file(
+            step_num,
+            &step.name,
+            &raw_request,
+            &self.workspace_dir,
+        ) {
+            tracing::warn!(step = %step.name, error = %e, "failed to write request log file");
+        }
+
+        // 6. Call Hermes API
         let result = client
             .execute_step(instructions.as_deref(), &prompt)
             .await?;
 
-        // 6. Write the log file (request, response, extracted message)
+        // 7. Overwrite the log file with the full exchange (request + response + message)
         if let Err(e) = file_log::write_log_file(
             step_num,
             &step.name,
@@ -167,7 +179,7 @@ impl WorkflowRunner {
             tracing::warn!(step = %step.name, error = %e, "failed to write log file");
         }
 
-        // 7. Post-hooks
+        // 8. Post-hooks
         self.run_hooks(&step.post_hooks)?;
 
         Ok(result)
