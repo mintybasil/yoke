@@ -149,11 +149,33 @@ impl WorkflowRunner {
 
     /// Run a list of hooks against the workspace directory.
     ///
+    /// Each hook's `path` field is rendered using the template engine (replacing
+    /// `{{variable}}` placeholders with values from `self.variables`) before
+    /// being resolved relative to the workspace directory. The `text` field in
+    /// `FileContains` hooks is also rendered to allow template variables there.
+    ///
     /// Each hook is executed in order. The first failing hook stops execution
-    /// and returns `Err(RunnerError::Hook)`.
+    /// and returns `Err(RunnerError::Hook)`. A template rendering error
+    /// (unknown variable, malformed syntax) returns `Err(RunnerError::Template)`.
     fn run_hooks(&self, hooks: &[crate::workflow::Hook]) -> Result<(), RunnerError> {
         for hook in hooks {
-            crate::hooks::run_hook(hook, self.workspace_dir.as_path())?;
+            let rendered_hook = match hook {
+                crate::workflow::Hook::FileNotEmpty { path } => {
+                    let rendered_path = crate::template::render(path, &self.variables)?;
+                    crate::workflow::Hook::FileNotEmpty {
+                        path: rendered_path,
+                    }
+                }
+                crate::workflow::Hook::FileContains { path, text } => {
+                    let rendered_path = crate::template::render(path, &self.variables)?;
+                    let rendered_text = crate::template::render(text, &self.variables)?;
+                    crate::workflow::Hook::FileContains {
+                        path: rendered_path,
+                        text: rendered_text,
+                    }
+                }
+            };
+            crate::hooks::run_hook(&rendered_hook, self.workspace_dir.as_path())?;
         }
         Ok(())
     }
@@ -473,5 +495,112 @@ mod tests {
         ];
         let result = runner.run_hooks(&hooks);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_run_hooks_templated_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_path = dir.path().join("output/plan.md");
+        std::fs::create_dir_all(dir.path().join("output")).unwrap();
+        std::fs::write(&workspace_path, "content").unwrap();
+
+        let workflow = test_workflow(vec![]);
+        let agents = test_agents();
+
+        let mut variables = HashMap::new();
+        variables.insert("output_dir".to_string(), "output".to_string());
+
+        let runner = WorkflowRunner::new(
+            workflow,
+            variables,
+            dir.path().to_path_buf(),
+            agents,
+            "key".to_string(),
+        );
+
+        let hooks = vec![Hook::FileNotEmpty {
+            path: "{{output_dir}}/plan.md".to_string(),
+        }];
+
+        // This should now succeed — the template variable is rendered before the hook runs
+        let result = runner.run_hooks(&hooks);
+        assert!(result.is_ok(), "Templated hook path should resolve and find the file");
+    }
+
+    #[test]
+    fn test_run_hooks_templated_path_file_contains() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("output")).unwrap();
+        std::fs::write(dir.path().join("output/result.md"), "implementation plan").unwrap();
+
+        let workflow = test_workflow(vec![]);
+        let agents = test_agents();
+
+        let mut variables = HashMap::new();
+        variables.insert("output_dir".to_string(), "output".to_string());
+        variables.insert("keyword".to_string(), "implementation".to_string());
+
+        let runner = WorkflowRunner::new(
+            workflow,
+            variables,
+            dir.path().to_path_buf(),
+            agents,
+            "key".to_string(),
+        );
+
+        let hooks = vec![Hook::FileContains {
+            path: "{{output_dir}}/result.md".to_string(),
+            text: "{{keyword}}".to_string(),
+        }];
+
+        let result = runner.run_hooks(&hooks);
+        assert!(result.is_ok(), "Templated hook path and text should resolve correctly");
+    }
+
+    #[test]
+    fn test_run_hooks_plain_path_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("plan.md"), "content").unwrap();
+
+        let workflow = test_workflow(vec![]);
+        let agents = test_agents();
+        let runner = WorkflowRunner::new(
+            workflow,
+            HashMap::new(),
+            dir.path().to_path_buf(),
+            agents,
+            "key".to_string(),
+        );
+
+        let hooks = vec![Hook::FileNotEmpty {
+            path: "plan.md".to_string(),
+        }];
+        assert!(runner.run_hooks(&hooks).is_ok());
+    }
+
+    #[test]
+    fn test_run_hooks_unknown_variable_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let workflow = test_workflow(vec![]);
+        let agents = test_agents();
+        let runner = WorkflowRunner::new(
+            workflow,
+            HashMap::new(),
+            dir.path().to_path_buf(),
+            agents,
+            "key".to_string(),
+        );
+
+        let hooks = vec![Hook::FileNotEmpty {
+            path: "{{unknown_var}}/plan.md".to_string(),
+        }];
+        let result = runner.run_hooks(&hooks);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RunnerError::Template(crate::template::TemplateError::UnknownVariable { name }) => {
+                assert_eq!(name, "unknown_var");
+            }
+            other => panic!("expected TemplateError::UnknownVariable, got {other:?}"),
+        }
     }
 }
