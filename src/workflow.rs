@@ -106,18 +106,13 @@ pub enum TriggerType {
     // GitHub triggers
     GithubIssueAssigned {
         assigned_to: Option<String>,
-        allowed_users: Option<Vec<String>>,
     },
     GithubIssueCommentMention {
         mentioned_user: Option<String>,
-        allowed_users: Option<Vec<String>>,
     },
-    GithubPullRequestReview {
-        allowed_users: Option<Vec<String>>,
-    },
+    GithubPullRequestReview,
     GithubPullRequestCommentMention {
         mentioned_user: Option<String>,
-        allowed_users: Option<Vec<String>>,
     },
     // GitLab triggers
     GitlabIssueAssigned {
@@ -125,14 +120,10 @@ pub enum TriggerType {
     },
     GitlabIssueMention {
         mentioned_user: Option<String>,
-        allowed_users: Option<Vec<String>>,
     },
-    GitlabMergeRequestReview {
-        allowed_users: Option<Vec<String>>,
-    },
+    GitlabMergeRequestReview,
     GitlabMergeRequestCommentMention {
         mentioned_user: Option<String>,
-        allowed_users: Option<Vec<String>>,
     },
 }
 
@@ -144,21 +135,16 @@ impl TriggerType {
         match trigger.r#type.as_str() {
             triggers::GITHUB_ISSUE_ASSIGNED => Some(TriggerType::GithubIssueAssigned {
                 assigned_to: trigger.assigned_to.clone(),
-                allowed_users: trigger.allowed_users.clone(),
             }),
             triggers::GITHUB_ISSUE_COMMENT_MENTION => {
                 Some(TriggerType::GithubIssueCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
-                    allowed_users: trigger.allowed_users.clone(),
                 })
             }
-            triggers::GITHUB_PULL_REQUEST_REVIEW => Some(TriggerType::GithubPullRequestReview {
-                allowed_users: trigger.allowed_users.clone(),
-            }),
+            triggers::GITHUB_PULL_REQUEST_REVIEW => Some(TriggerType::GithubPullRequestReview),
             triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION => {
                 Some(TriggerType::GithubPullRequestCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
-                    allowed_users: trigger.allowed_users.clone(),
                 })
             }
             triggers::GITLAB_ISSUE_ASSIGNED => Some(TriggerType::GitlabIssueAssigned {
@@ -166,15 +152,11 @@ impl TriggerType {
             }),
             triggers::GITLAB_ISSUE_MENTION => Some(TriggerType::GitlabIssueMention {
                 mentioned_user: trigger.mentioned_user.clone(),
-                allowed_users: trigger.allowed_users.clone(),
             }),
-            triggers::GITLAB_MERGE_REQUEST_REVIEW => Some(TriggerType::GitlabMergeRequestReview {
-                allowed_users: trigger.allowed_users.clone(),
-            }),
+            triggers::GITLAB_MERGE_REQUEST_REVIEW => Some(TriggerType::GitlabMergeRequestReview),
             triggers::GITLAB_MERGE_REQUEST_REVIEW_COMMENT => {
                 Some(TriggerType::GitlabMergeRequestCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
-                    allowed_users: trigger.allowed_users.clone(),
                 })
             }
             _ => None,
@@ -189,13 +171,13 @@ impl TriggerType {
         match self {
             TriggerType::GithubIssueAssigned { .. } => triggers::GITHUB_ISSUE_ASSIGNED,
             TriggerType::GithubIssueCommentMention { .. } => triggers::GITHUB_ISSUE_COMMENT_MENTION,
-            TriggerType::GithubPullRequestReview { .. } => triggers::GITHUB_PULL_REQUEST_REVIEW,
+            TriggerType::GithubPullRequestReview => triggers::GITHUB_PULL_REQUEST_REVIEW,
             TriggerType::GithubPullRequestCommentMention { .. } => {
                 triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION
             }
             TriggerType::GitlabIssueAssigned { .. } => triggers::GITLAB_ISSUE_ASSIGNED,
             TriggerType::GitlabIssueMention { .. } => triggers::GITLAB_ISSUE_MENTION,
-            TriggerType::GitlabMergeRequestReview { .. } => triggers::GITLAB_MERGE_REQUEST_REVIEW,
+            TriggerType::GitlabMergeRequestReview => triggers::GITLAB_MERGE_REQUEST_REVIEW,
             TriggerType::GitlabMergeRequestCommentMention { .. } => {
                 triggers::GITLAB_MERGE_REQUEST_REVIEW_COMMENT
             }
@@ -211,13 +193,48 @@ impl TriggerType {
         match self {
             TriggerType::GithubIssueAssigned { .. }
             | TriggerType::GithubIssueCommentMention { .. }
-            | TriggerType::GithubPullRequestReview { .. }
+            | TriggerType::GithubPullRequestReview
             | TriggerType::GithubPullRequestCommentMention { .. } => Some(Platform::Github),
             TriggerType::GitlabIssueAssigned { .. }
             | TriggerType::GitlabIssueMention { .. }
-            | TriggerType::GitlabMergeRequestReview { .. }
+            | TriggerType::GitlabMergeRequestReview
             | TriggerType::GitlabMergeRequestCommentMention { .. } => Some(Platform::Gitlab),
         }
+    }
+
+    /// Return the actor (user) associated with this trigger event, if available.
+    ///
+    /// The actor is the user whose action triggered the event — the person
+    /// assigned to an issue, the user mentioned in a comment, or the reviewer
+    /// who submitted a review. This is used to enforce `allowed_users`
+    /// filtering at dispatch time.
+    pub fn actor(&self) -> Option<&str> {
+        match self {
+            TriggerType::GithubIssueAssigned { assigned_to } => assigned_to.as_deref(),
+            TriggerType::GithubIssueCommentMention { mentioned_user } => {
+                mentioned_user.as_deref()
+            }
+            // PullRequestReview doesn't carry a specific actor from the payload
+            TriggerType::GithubPullRequestReview => None,
+            TriggerType::GithubPullRequestCommentMention { mentioned_user } => {
+                mentioned_user.as_deref()
+            }
+            TriggerType::GitlabIssueAssigned { assigned_to } => assigned_to.as_deref(),
+            TriggerType::GitlabIssueMention { mentioned_user } => mentioned_user.as_deref(),
+            TriggerType::GitlabMergeRequestReview => None,
+            TriggerType::GitlabMergeRequestCommentMention { mentioned_user } => {
+                mentioned_user.as_deref()
+            }
+        }
+    }
+
+    /// Whether this trigger type requires `allowed_users` to be specified
+    /// in the workflow configuration at startup.
+    ///
+    /// All webhook trigger types require `allowed_users` to prevent
+    /// prompt injection from unauthenticated/unfiltered events.
+    pub fn requires_allowed_users(&self) -> bool {
+        true
     }
 
     /// Return the platform-specific webhook event name for this trigger type.
@@ -234,7 +251,7 @@ impl TriggerType {
             TriggerType::GithubIssueCommentMention { .. } => {
                 crate::webhook::github::GITHUB_ISSUE_COMMENT
             }
-            TriggerType::GithubPullRequestReview { .. } => {
+            TriggerType::GithubPullRequestReview => {
                 crate::webhook::github::GITHUB_PULL_REQUEST_REVIEW
             }
             TriggerType::GithubPullRequestCommentMention { .. } => {
@@ -242,7 +259,7 @@ impl TriggerType {
             }
             TriggerType::GitlabIssueAssigned { .. } => "issues_events",
             TriggerType::GitlabIssueMention { .. } => "note_events",
-            TriggerType::GitlabMergeRequestReview { .. } => "note_events",
+            TriggerType::GitlabMergeRequestReview => "note_events",
             TriggerType::GitlabMergeRequestCommentMention { .. } => "note_events",
         }
     }
@@ -274,7 +291,7 @@ impl TriggerType {
                 vars.insert("comment_id".to_string());
                 vars.insert("comment_body".to_string());
             }
-            TriggerType::GithubPullRequestReview { .. } => {
+            TriggerType::GithubPullRequestReview => {
                 vars.insert("pr_number".to_string());
                 vars.insert("review_id".to_string());
                 vars.insert("review_body".to_string());
@@ -294,7 +311,7 @@ impl TriggerType {
                 vars.insert("note_id".to_string());
                 vars.insert("note_body".to_string());
             }
-            TriggerType::GitlabMergeRequestReview { .. } => {
+            TriggerType::GitlabMergeRequestReview => {
                 vars.insert("mr_iid".to_string());
                 vars.insert("note_id".to_string());
                 vars.insert("note_body".to_string());
@@ -351,6 +368,24 @@ impl Workflow {
         // Steps array must not be empty
         if self.steps.is_empty() {
             return Err("workflow must contain at least one step".to_string());
+        }
+
+        // allowed_users must be specified for all webhook trigger types.
+        // Omitting it would allow any user to trigger a workflow, which is
+        // a prompt injection risk.
+        if trigger_type.requires_allowed_users()
+            && self
+                .trigger
+                .allowed_users
+                .as_ref()
+                .map_or(true, |users| users.is_empty())
+        {
+            return Err(format!(
+                "workflow '{}' with trigger type '{}' must specify allowed_users \
+                 (non-empty list of usernames); omitting it would allow any user \
+                 to trigger the workflow",
+                self.path, self.trigger.r#type
+            ));
         }
 
         // Build the set of known variables for this trigger type
@@ -517,6 +552,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
             assigned_to = "alice"
 
             [git]
@@ -542,6 +578,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "gitlab_issue_assigned"
+            allowed_users = ["alice"]
             assigned_to = "alice"
 
             [git]
@@ -582,6 +619,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "unknown_event"
+            allowed_users = ["alice"]
             [git]
             clone = true
             worktree = true
@@ -600,6 +638,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
             [git]
             clone = true
             worktree = true
@@ -615,6 +654,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
             [git]
             clone = true
             worktree = true
@@ -633,6 +673,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
             [git]
             clone = true
             worktree = true
@@ -651,6 +692,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
 
             [[steps]]
             name = "Step"
@@ -670,6 +712,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
             [git]
             clone = true
             worktree = true
@@ -704,6 +747,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
             assigned_to = "alice"
 
             [git]
@@ -761,6 +805,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
 
             [[steps]]
             name = "Plan"
@@ -776,6 +821,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
 
             [[steps]]
             name = "Plan"
@@ -805,6 +851,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
 
             [[steps]]
             name = "Plan"
@@ -826,6 +873,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
 
             [[steps]]
             name = "Plan"
@@ -847,6 +895,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "gitlab_issue_assigned"
+            allowed_users = ["alice"]
 
             [[steps]]
             name = "Plan"
@@ -863,6 +912,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "gitlab_issue_assigned"
+            allowed_users = ["alice"]
 
             [[steps]]
             name = "Plan"
@@ -885,6 +935,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["alice"]
 
             [[steps]]
             name = "Plan"
@@ -904,6 +955,7 @@ mod tests {
         let valid_toml = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["alice"]
 
 [git]
 clone = true
@@ -936,6 +988,7 @@ prompt_template = "Plan it"
         let invalid_toml = r#"
 [trigger]
 type = "invalid_trigger"
+allowed_users = ["alice"]
 
 [git]
 clone = true
@@ -980,6 +1033,7 @@ prompt_template = "Plan"
             r#"
 [trigger]
 type = "{}"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Step"
@@ -1161,15 +1215,8 @@ prompt_template = "Do the thing"
         };
         let tt = TriggerType::from_trigger(&trigger).unwrap();
         match tt {
-            TriggerType::GithubIssueCommentMention {
-                mentioned_user,
-                allowed_users,
-            } => {
+            TriggerType::GithubIssueCommentMention { mentioned_user } => {
                 assert_eq!(mentioned_user, Some("carol".to_string()));
-                assert_eq!(
-                    allowed_users,
-                    Some(vec!["alice".to_string(), "bob".to_string()])
-                );
             }
             _ => panic!("expected GithubIssueCommentMention variant"),
         }
@@ -1331,7 +1378,6 @@ prompt_template = "Do the thing"
     fn test_known_variables_github_issue_assigned() {
         let tt = TriggerType::GithubIssueAssigned {
             assigned_to: None,
-            allowed_users: None,
         };
         let vars = tt.known_variables();
         // Global
@@ -1368,11 +1414,115 @@ prompt_template = "Do the thing"
     fn test_known_variables_gitlab_merge_request_comment() {
         let tt = TriggerType::GitlabMergeRequestCommentMention {
             mentioned_user: None,
-            allowed_users: None,
         };
         let vars = tt.known_variables();
         assert!(vars.contains("mr_iid"));
         assert!(vars.contains("note_id"));
         assert!(vars.contains("note_body"));
+    }
+
+    // --- actor() method tests ---
+
+    #[test]
+    fn test_actor_returns_assigned_to() {
+        let tt = TriggerType::GithubIssueAssigned {
+            assigned_to: Some("alice".to_string()),
+        };
+        assert_eq!(tt.actor(), Some("alice"));
+    }
+
+    #[test]
+    fn test_actor_returns_mentioned_user() {
+        let tt = TriggerType::GithubIssueCommentMention {
+            mentioned_user: Some("bob".to_string()),
+        };
+        assert_eq!(tt.actor(), Some("bob"));
+    }
+
+    #[test]
+    fn test_actor_returns_none_for_review() {
+        assert_eq!(TriggerType::GithubPullRequestReview.actor(), None);
+        assert_eq!(TriggerType::GitlabMergeRequestReview.actor(), None);
+    }
+
+    #[test]
+    fn test_actor_returns_none_when_field_is_none() {
+        let tt = TriggerType::GithubIssueAssigned { assigned_to: None };
+        assert_eq!(tt.actor(), None);
+    }
+
+    // --- requires_allowed_users() tests ---
+
+    #[test]
+    fn test_requires_allowed_users_all_trigger_types() {
+        assert!(TriggerType::GithubIssueAssigned { assigned_to: None }.requires_allowed_users());
+        assert!(TriggerType::GithubIssueCommentMention { mentioned_user: None }.requires_allowed_users());
+        assert!(TriggerType::GithubPullRequestReview.requires_allowed_users());
+        assert!(TriggerType::GithubPullRequestCommentMention { mentioned_user: None }.requires_allowed_users());
+        assert!(TriggerType::GitlabIssueAssigned { assigned_to: None }.requires_allowed_users());
+        assert!(TriggerType::GitlabIssueMention { mentioned_user: None }.requires_allowed_users());
+        assert!(TriggerType::GitlabMergeRequestReview.requires_allowed_users());
+        assert!(TriggerType::GitlabMergeRequestCommentMention { mentioned_user: None }.requires_allowed_users());
+    }
+
+    // --- allowed_users validation tests ---
+
+    #[test]
+    fn test_validate_missing_allowed_users_fails() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        let result = wf.validate();
+        assert!(result.is_err(), "expected validation to fail without allowed_users");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("must specify allowed_users"),
+            "expected error about allowed_users, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_empty_allowed_users_fails() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+            allowed_users = []
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        let result = wf.validate();
+        assert!(result.is_err(), "expected validation to fail with empty allowed_users");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("must specify allowed_users"),
+            "expected error about allowed_users, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_allowed_users_present_passes() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+            allowed_users = ["alice"]
+
+            [[steps]]
+            name = "Plan"
+            agent = "pm"
+            prompt_template = "Plan"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        assert!(wf.validate().is_ok());
     }
 }

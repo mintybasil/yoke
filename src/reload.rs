@@ -530,6 +530,7 @@ webhook_host = "yoke.example.com"
 [trigger]
 type = "github_issue_assigned"
 assigned_to = "alice"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"
@@ -570,6 +571,7 @@ prompt_template = "Plan the issue"
         let toml_content = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"
@@ -594,6 +596,7 @@ prompt_template = "Plan the issue"
         let toml_content = r#"
 [trigger]
 type = "gitlab_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"

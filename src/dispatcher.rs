@@ -541,6 +541,37 @@ impl Dispatcher {
                         .file_name()
                         .unwrap_or_default()
                         .to_string_lossy();
+
+                    // Enforce allowed_users filtering: if the workflow specifies
+                    // allowed_users, only run for events whose actor matches.
+                    if let Some(ref allowed) = workflow.trigger.allowed_users {
+                        let actor = event.trigger_type.actor();
+                        match actor {
+                            Some(actor_str) if allowed.iter().any(|u| u == actor_str) => {
+                                tracing::info!(
+                                    workflow = %workflow_name,
+                                    actor = %actor_str,
+                                    "User is in allowed_users, proceeding"
+                                );
+                            }
+                            Some(actor_str) => {
+                                tracing::warn!(
+                                    workflow = %workflow_name,
+                                    actor = %actor_str,
+                                    allowed = ?allowed,
+                                    "Skipping workflow: user not in allowed_users"
+                                );
+                                continue;
+                            }
+                            None => {
+                                tracing::warn!(
+                                    workflow = %workflow_name,
+                                    "Skipping workflow: no actor in event, but allowed_users requires one"
+                                );
+                                continue;
+                            }
+                        }
+                    }
                     tracing::info!(
                         workflow = %workflow_name,
                         steps = workflow.steps.len(),
@@ -688,7 +719,7 @@ pub fn extract_event_id(event: &TriggerEvent) -> String {
         // GitHub: event_id format is "pr-{pr_number}-review-{review_id}"
         // or "pr-{pr_number}-comment-{comment_id}"
         // event ID is "{pr_number}_review-{review_id}" or "{pr_number}_comment-{comment_id}"
-        TriggerType::GithubPullRequestReview { .. }
+        TriggerType::GithubPullRequestReview
         | TriggerType::GithubPullRequestCommentMention { .. } => {
             extract_github_pr_event_id(&event.event_id)
         }
@@ -699,7 +730,7 @@ pub fn extract_event_id(event: &TriggerEvent) -> String {
         }
         // GitLab: event_id format is "mr-{iid}-review-{note_id}" or "mr-{iid}-comment-{note_id}"
         // event ID is "{iid}_review-{note_id}" or "{iid}_comment-{note_id}"
-        TriggerType::GitlabMergeRequestReview { .. }
+        TriggerType::GitlabMergeRequestReview
         | TriggerType::GitlabMergeRequestCommentMention { .. } => {
             extract_gitlab_mr_event_id(&event.event_id)
         }
@@ -1179,7 +1210,6 @@ mod tests {
         let event = make_trigger_event(
             TriggerType::GithubIssueAssigned {
                 assigned_to: None,
-                allowed_users: None,
             },
             "issue-42",
         );
@@ -1191,7 +1221,6 @@ mod tests {
         let event = make_trigger_event(
             TriggerType::GithubIssueCommentMention {
                 mentioned_user: None,
-                allowed_users: None,
             },
             "issue-42-comment-12345",
         );
@@ -1201,9 +1230,7 @@ mod tests {
     #[test]
     fn test_extract_event_id_github_pr_review() {
         let event = make_trigger_event(
-            TriggerType::GithubPullRequestReview {
-                allowed_users: None,
-            },
+            TriggerType::GithubPullRequestReview,
             "pr-7-review-999",
         );
         assert_eq!(extract_event_id(&event), "7_review-999");
@@ -1214,7 +1241,6 @@ mod tests {
         let event = make_trigger_event(
             TriggerType::GithubPullRequestCommentMention {
                 mentioned_user: None,
-                allowed_users: None,
             },
             "pr-7-comment-555",
         );
@@ -1235,7 +1261,6 @@ mod tests {
         let event = make_trigger_event(
             TriggerType::GitlabIssueMention {
                 mentioned_user: None,
-                allowed_users: None,
             },
             "issue-7-note-99",
         );
@@ -1245,9 +1270,7 @@ mod tests {
     #[test]
     fn test_extract_event_id_gitlab_mr_review() {
         let event = make_trigger_event(
-            TriggerType::GitlabMergeRequestReview {
-                allowed_users: None,
-            },
+            TriggerType::GitlabMergeRequestReview,
             "mr-12-review-150",
         );
         assert_eq!(extract_event_id(&event), "12_review-150");
@@ -1258,7 +1281,6 @@ mod tests {
         let event = make_trigger_event(
             TriggerType::GitlabMergeRequestCommentMention {
                 mentioned_user: None,
-                allowed_users: None,
             },
             "mr-12-comment-250",
         );
@@ -1317,7 +1339,6 @@ mod tests {
         let event = make_trigger_event(
             TriggerType::GithubIssueAssigned {
                 assigned_to: None,
-                allowed_users: None,
             },
             "issue-42",
         );
@@ -1329,9 +1350,7 @@ mod tests {
     #[test]
     fn test_integration_pr_review_dedup_key() {
         let event = make_trigger_event(
-            TriggerType::GithubPullRequestReview {
-                allowed_users: None,
-            },
+            TriggerType::GithubPullRequestReview,
             "pr-7-review-999",
         );
         let event_id = extract_event_id(&event);
@@ -1342,9 +1361,7 @@ mod tests {
     #[test]
     fn test_integration_gitlab_mr_dedup_key() {
         let event = make_trigger_event(
-            TriggerType::GitlabMergeRequestReview {
-                allowed_users: None,
-            },
+            TriggerType::GitlabMergeRequestReview,
             "mr-12-review-150",
         );
         let event_id = extract_event_id(&event);

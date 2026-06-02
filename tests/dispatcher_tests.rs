@@ -76,7 +76,6 @@ async fn test_full_dispatch_flow_completes_and_persists() {
     let msg = make_message(
         TriggerType::GithubIssueAssigned {
             assigned_to: None,
-            allowed_users: None,
         },
         "issue-42",
     );
@@ -94,7 +93,6 @@ async fn test_full_dispatch_flow_completes_and_persists() {
     let event = make_event(
         TriggerType::GithubIssueAssigned {
             assigned_to: None,
-            allowed_users: None,
         },
         "issue-42",
     );
@@ -128,9 +126,8 @@ async fn test_duplicate_event_rejected() {
 
     // Send the same event twice
     let event_type = TriggerType::GithubIssueAssigned {
-        assigned_to: None,
-        allowed_users: None,
-    };
+            assigned_to: None,
+        };
     let msg1 = make_message(event_type.clone(), "issue-42");
     let msg2 = make_message(event_type, "issue-42");
 
@@ -175,14 +172,12 @@ async fn test_concurrency_limit() {
     let msg1 = make_message(
         TriggerType::GithubIssueAssigned {
             assigned_to: None,
-            allowed_users: None,
         },
         "issue-42",
     );
     let msg2 = make_message(
         TriggerType::GithubIssueAssigned {
             assigned_to: None,
-            allowed_users: None,
         },
         "issue-43",
     );
@@ -226,7 +221,6 @@ async fn test_completed_events_persisted_to_disk() {
     let msg = make_message(
         TriggerType::GithubIssueAssigned {
             assigned_to: None,
-            allowed_users: None,
         },
         "issue-42",
     );
@@ -248,7 +242,6 @@ async fn test_completed_events_persisted_to_disk() {
     let event = make_event(
         TriggerType::GithubIssueAssigned {
             assigned_to: None,
-            allowed_users: None,
         },
         "issue-42",
     );
@@ -278,9 +271,7 @@ async fn test_graceful_shutdown_drains_in_flight() {
 
     // Send an event
     let msg = make_message(
-        TriggerType::GithubPullRequestReview {
-            allowed_users: None,
-        },
+        TriggerType::GithubPullRequestReview,
         "pr-7-review-999",
     );
     tx.send(msg).await.unwrap();
@@ -325,9 +316,8 @@ async fn test_dispatcher_stops_when_channel_closed() {
     // Send an event and close the channel
     let msg = make_message(
         TriggerType::GithubIssueCommentMention {
-            mentioned_user: None,
-            allowed_users: None,
-        },
+                mentioned_user: None,
+            },
         "issue-42-comment-12345",
     );
     tx.send(msg).await.unwrap();
@@ -365,22 +355,18 @@ async fn test_multiple_different_events_processed() {
     let events = vec![
         make_message(
             TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-                allowed_users: None,
-            },
+            assigned_to: None,
+        },
             "issue-42",
         ),
         make_message(
             TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-                allowed_users: None,
-            },
+            assigned_to: None,
+        },
             "issue-43",
         ),
         make_message(
-            TriggerType::GithubPullRequestReview {
-                allowed_users: None,
-            },
+            TriggerType::GithubPullRequestReview,
             "pr-7-review-999",
         ),
     ];
@@ -562,9 +548,8 @@ async fn test_unlimited_throughput() {
     for i in 0..total_events {
         let msg = make_message(
             TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-                allowed_users: None,
-            },
+            assigned_to: None,
+        },
             &format!("issue-{i}"),
         );
         tx.send(msg).await.unwrap();
@@ -621,9 +606,8 @@ async fn test_concurrency_stress_with_semaphore() {
     for i in 0..total_events {
         let msg = make_message(
             TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-                allowed_users: None,
-            },
+            assigned_to: None,
+        },
             &format!("issue-{i}"),
         );
         tx.send(msg).await.unwrap();
@@ -718,9 +702,8 @@ async fn test_permits_released_after_completion() {
     for i in 0..6 {
         let msg = make_message(
             TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-                allowed_users: None,
-            },
+            assigned_to: None,
+        },
             &format!("issue-{i}"),
         );
         tx.send(msg).await.unwrap();
@@ -770,9 +753,8 @@ async fn test_active_count_decrements_after_spawn_workflow() {
     for i in 0..3 {
         let msg = make_message(
             TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-                allowed_users: None,
-            },
+            assigned_to: None,
+        },
             &format!("issue-{}0", 100 + i),
         );
         tx.send(msg).await.unwrap();
@@ -823,9 +805,8 @@ async fn test_active_count_stays_zero_with_unlimited_concurrency() {
     for i in 0..5 {
         let msg = make_message(
             TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-                allowed_users: None,
-            },
+            assigned_to: None,
+        },
             &format!("issue-{i}00"),
         );
         tx.send(msg).await.unwrap();

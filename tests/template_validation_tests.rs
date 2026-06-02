@@ -22,6 +22,7 @@ fn test_valid_workflow_with_known_variables_loads() {
     let toml = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"
@@ -43,6 +44,7 @@ fn test_workflow_with_unknown_variable_fails_to_load() {
     let toml = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"
@@ -79,6 +81,7 @@ fn test_workflow_with_syntax_error_fails_to_load() {
     let toml = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"
@@ -103,6 +106,7 @@ fn test_workflow_with_empty_placeholder_fails_to_load() {
     let toml = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"
@@ -128,6 +132,7 @@ fn test_cross_platform_variable_fails_to_load() {
     let toml = r#"
 [trigger]
 type = "gitlab_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"
@@ -157,6 +162,7 @@ fn test_gitlab_workflow_with_valid_variables_loads() {
 [trigger]
 type = "gitlab_issue_assigned"
 assigned_to = "alice"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"
@@ -177,6 +183,7 @@ fn test_multiple_steps_one_bad_variable_fails() {
     let toml = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"
@@ -215,6 +222,7 @@ fn test_workflow_with_no_variables_loads() {
     let toml = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"

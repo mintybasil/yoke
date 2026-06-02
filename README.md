@@ -218,7 +218,7 @@ Workflows are defined in `.toml` files in a directory (default: `./workflows`; o
 ```toml
 [trigger]
 type = "github_issue_assigned"
-assigned_to = "alice"
+allowed_users = ["alice"]
 
 [git]
 clone = true
@@ -249,7 +249,7 @@ Create a PR with your changes.
 | `[trigger].type` | Event type (e.g. `github_issue_assigned`) | required |
 | `[trigger].assigned_to` | Filter by assignee | optional |
 | `[trigger].mentioned_user` | Filter by mentioned user | optional |
-| `[trigger].allowed_users` | Filter by user list | optional |
+| `[trigger].allowed_users` | Allowed actor usernames (required, non-empty) | required |
 | `[git].clone` | Whether to git clone the repo | `true` |
 | `[git].worktree` | Whether to create a per-event worktree | `true` |
 | `[git].default_branch` | Branch for clone/worktree base | `"main"` |

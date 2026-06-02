@@ -263,17 +263,13 @@ pub fn map_to_trigger_event(event: &GitLabEvent) -> Option<TriggerType> {
             match (noteable_type, note_type) {
                 ("Issue", _) => Some(TriggerType::GitlabIssueMention {
                     mentioned_user: None,
-                    allowed_users: None,
                 }),
                 ("MergeRequest", "DiffNote") => {
                     Some(TriggerType::GitlabMergeRequestCommentMention {
                         mentioned_user: None,
-                        allowed_users: None,
                     })
                 }
-                ("MergeRequest", _) => Some(TriggerType::GitlabMergeRequestReview {
-                    allowed_users: None,
-                }),
+                ("MergeRequest", _) => Some(TriggerType::GitlabMergeRequestReview),
                 _ => None,
             }
         }
@@ -559,7 +555,7 @@ mod tests {
         let result = map_to_trigger_event(&event);
         assert!(matches!(
             result,
-            Some(TriggerType::GitlabMergeRequestReview { .. })
+            Some(TriggerType::GitlabMergeRequestReview)
         ));
     }
 
@@ -757,7 +753,7 @@ mod tests {
         let event = result.unwrap();
         assert!(matches!(
             event.trigger_type,
-            TriggerType::GitlabMergeRequestReview { .. }
+            TriggerType::GitlabMergeRequestReview
         ));
         assert_eq!(event.variables.get("note_id").unwrap(), "150");
         assert_eq!(event.variables.get("mr_iid").unwrap(), "12");
