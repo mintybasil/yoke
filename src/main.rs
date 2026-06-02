@@ -32,10 +32,10 @@ pub fn setup_signal_handler(shutdown_tx: watch::Sender<bool>) -> tokio::task::Jo
         // Wait for the first signal
         tokio::select! {
             _ = sigint.recv() => {
-                tracing::info!("SIGINT received, starting graceful shutdown");
+                tracing::info!("Shutdown signal received (SIGINT), starting graceful shutdown");
             }
             _ = sigterm.recv() => {
-                tracing::info!("SIGTERM received, starting graceful shutdown");
+                tracing::info!("Shutdown signal received (SIGTERM), starting graceful shutdown");
             }
         }
 
@@ -45,11 +45,11 @@ pub fn setup_signal_handler(shutdown_tx: watch::Sender<bool>) -> tokio::task::Jo
         // Wait for a second signal to force immediate exit
         tokio::select! {
             _ = sigint.recv() => {
-                tracing::warn!("Second SIGINT received: forcing immediate exit");
+                tracing::warn!("Second shutdown signal (SIGINT) received, forcing immediate exit");
                 std::process::exit(1);
             }
             _ = sigterm.recv() => {
-                tracing::warn!("Second SIGTERM received: forcing immediate exit");
+                tracing::warn!("Second shutdown signal (SIGTERM) received, forcing immediate exit");
                 std::process::exit(1);
             }
             // Safety net: if no second signal arrives within 60s, exit normally
@@ -81,7 +81,7 @@ async fn handle_webhooks_command(
     let client = match webhooks::WebhookClient::new(&config.platform, &owner, gitlab_url) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(error = %e, "Error creating webhook client");
+            tracing::error!(error = %e, "Failed to create webhook client");
             std::process::exit(1);
         }
     };
@@ -90,19 +90,19 @@ async fn handle_webhooks_command(
         WebhooksSubcommand::Add { workflows } => {
             let workflows_path = workflows.as_deref().unwrap_or(workflows_dir);
             if let Err(e) = webhooks::webhooks_add(config, &client, workflows_path).await {
-                tracing::error!(error = %e, "Error adding webhooks");
+                tracing::error!(error = %e, "Failed to add webhooks");
                 std::process::exit(1);
             }
         }
         WebhooksSubcommand::Remove => {
             if let Err(e) = webhooks::webhooks_remove(config, &client).await {
-                tracing::error!(error = %e, "Error removing webhooks");
+                tracing::error!(error = %e, "Failed to remove webhooks");
                 std::process::exit(1);
             }
         }
         WebhooksSubcommand::List => {
             if let Err(e) = webhooks::webhooks_list(config, &client).await {
-                tracing::error!(error = %e, "Error listing webhooks");
+                tracing::error!(error = %e, "Failed to list webhooks");
                 std::process::exit(1);
             }
         }
@@ -131,7 +131,7 @@ async fn main() {
         let config = match Config::load(&args.config) {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!(path = %args.config.display(), error = %e, "Error loading config");
+                tracing::error!(path = %args.config.display(), error = %e, "Failed to load config");
                 std::process::exit(1);
             }
         };
@@ -144,7 +144,7 @@ async fn main() {
     let mut config = match Config::load(&args.config) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(path = %args.config.display(), error = %e, "Error loading config");
+            tracing::error!(path = %args.config.display(), error = %e, "Failed to load config");
             std::process::exit(1);
         }
     };
@@ -185,7 +185,7 @@ async fn main() {
             tracing::error!(
                 path = %args.workflows.display(),
                 error = %e,
-                "Error loading workflows"
+                "Failed to load workflows"
             );
             std::process::exit(1);
         }
@@ -205,8 +205,8 @@ async fn main() {
     }
 
     tracing::info!(
-        "Configuration and {} workflow(s) loaded and validated successfully",
-        workflows.len()
+        workflow_count = workflows.len(),
+        "Configuration and workflow(s) loaded and validated successfully"
     );
 
     // Create shutdown watch channel — shared across signal handler, server, and dispatcher
@@ -222,15 +222,16 @@ async fn main() {
     let _file_watcher = match reload::setup_file_watcher(&args.workflows, reload_tx) {
         Ok(w) => {
             tracing::info!(
-                "Watching workflow directory for changes: {}",
-                args.workflows.display()
+                path = %args.workflows.display(),
+                "Watching workflow directory for changes"
             );
             Some(w)
         }
         Err(e) => {
             tracing::warn!(
-                "Failed to set up file watcher for {}: {e}; hot-reload disabled",
-                args.workflows.display()
+                path = %args.workflows.display(),
+                error = %e,
+                "Failed to set up file watcher; hot-reload disabled"
             );
             None
         }

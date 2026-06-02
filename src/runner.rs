@@ -147,7 +147,7 @@ impl WorkflowRunner {
         if let Err(e) =
             file_log::write_prompt_file(step_num, &step.name, &prompt, &self.workspace_dir)
         {
-            tracing::warn!(step = %step.name, error = %e, "failed to write prompt file");
+            tracing::warn!(step = %step.name, error = %e, "Failed to write prompt file");
         }
 
         // 5. Build and log the request body before the API call
@@ -159,7 +159,7 @@ impl WorkflowRunner {
             &raw_request,
             &self.workspace_dir,
         ) {
-            tracing::warn!(step = %step.name, error = %e, "failed to write request log file");
+            tracing::warn!(step = %step.name, error = %e, "Failed to write request log file");
         }
 
         // 6. Call Hermes API
@@ -176,7 +176,7 @@ impl WorkflowRunner {
             &result.extracted_message,
             &self.workspace_dir,
         ) {
-            tracing::warn!(step = %step.name, error = %e, "failed to write log file");
+            tracing::warn!(step = %step.name, error = %e, "Failed to write log file");
         }
 
         // 8. Post-hooks
@@ -223,7 +223,7 @@ impl WorkflowRunner {
     /// Each step is executed in order via `execute_step`. On the first error,
     /// the workflow stops and returns `Err(RunnerError::Execution)`.
     /// On success, returns `Ok(())`.
-    #[instrument(skip(self), fields(workflow = %self.workflow.path))]
+    #[instrument(skip(self), fields(workflow = %std::path::Path::new(&self.workflow.path).file_name().unwrap_or_default().to_string_lossy()))]
     pub async fn run(&mut self) -> Result<(), RunnerError> {
         for step in &self.workflow.steps {
             self.execute_step(step).await.map_err(|e| {
