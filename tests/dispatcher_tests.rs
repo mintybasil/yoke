@@ -38,6 +38,7 @@ fn make_event(trigger_type: TriggerType, event_id: &str) -> TriggerEvent {
         trigger_type,
         repo_path: "owner/repo".to_string(),
         event_id: event_id.to_string(),
+        actor: "test-user".to_string(),
         variables: std::collections::HashMap::new(),
     }
 }
@@ -518,7 +519,10 @@ async fn test_gitlab_event_dispatched() {
     });
 
     let msg = make_message(
-        TriggerType::GitlabIssueAssigned { assigned_to: None },
+        TriggerType::GitlabIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        },
         "issue-7",
     );
     tx.send(msg).await.unwrap();
@@ -530,7 +534,10 @@ async fn test_gitlab_event_dispatched() {
 
     let sets = dedup_sets.read().await;
     let event = make_event(
-        TriggerType::GitlabIssueAssigned { assigned_to: None },
+        TriggerType::GitlabIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        },
         "issue-7",
     );
     let key = build_dedup_key("owner", "repo", &extract_event_id(&event));

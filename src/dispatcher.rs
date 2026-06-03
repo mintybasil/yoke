@@ -517,14 +517,15 @@ impl Dispatcher {
 
                 // Find matching workflows from the hot-reloadable state
                 let workflows = workflow_state.load();
-                let matching = find_matching_workflows(&workflows, &event.trigger_type);
+                let matching = find_matching_workflows(&workflows, &event.trigger_type, &event.actor);
 
                 if matching.is_empty() {
                     tracing::warn!(
                         trigger_type = %event.trigger_type.label(),
                         repo = %event.repo_path,
                         event_id = %event.event_id,
-                        "No matching workflow found for trigger type, skipping"
+                        actor = %event.actor,
+                        "No matching workflow found for trigger type and actor, skipping"
                     );
                     return Ok(());
                 }
@@ -890,18 +891,32 @@ pub fn load_persistence(workdir: &Path) -> DedupSets {
     }
 }
 
-/// Find workflows whose trigger type matches the incoming event's trigger type.
+/// Find workflows whose trigger type matches the incoming event's trigger type
+/// **and** whose `allowed_users` list includes the event's actor.
 ///
 /// Matching is based on exact comparison between the workflow's `trigger.type`
-/// string and `TriggerType::label()`.
+/// string and `TriggerType::label()`. Additionally, the actor extracted from
+/// the webhook payload must be present in the workflow's `trigger.allowed_users`
+/// list — this is a security boundary that prevents unauthorized users from
+/// triggering workflows.
 fn find_matching_workflows(
     workflows: &Arc<Vec<(String, Workflow)>>,
     trigger_type: &TriggerType,
+    actor: &str,
 ) -> Vec<(String, Workflow)> {
     let label = trigger_type.label();
     workflows
         .iter()
         .filter(|(_, wf)| wf.trigger.r#type == label)
+        .filter(|(_, wf)| {
+            // Authorize: the actor must appear in the workflow's allowed_users list.
+            // This is a SECURITY BOUNDARY — without this check, any user could
+            // trigger any workflow.
+            wf.trigger
+                .allowed_users
+                .as_ref()
+                .is_some_and(|users| users.iter().any(|u| u == actor))
+        })
         .cloned()
         .collect()
 }
@@ -1170,6 +1185,7 @@ mod tests {
             trigger_type,
             repo_path: "owner/repo".to_string(),
             event_id: event_id.to_string(),
+            actor: "test-user".to_string(),
             variables: std::collections::HashMap::new(),
         }
     }
@@ -1224,7 +1240,10 @@ mod tests {
     #[test]
     fn test_extract_event_id_gitlab_issue_assigned() {
         let event = make_trigger_event(
-            TriggerType::GitlabIssueAssigned { assigned_to: None },
+            TriggerType::GitlabIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        },
             "issue-7",
         );
         assert_eq!(extract_event_id(&event), "7");

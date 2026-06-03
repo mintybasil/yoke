@@ -50,6 +50,7 @@ Create a `.toml` file in your workflows directory (default: `./workflows`):
 [trigger]
 type = "github_issue_assigned"
 assigned_to = "your-username"
+allowed_users = ["your-username"]
 
 [git]
 clone = true
@@ -219,6 +220,7 @@ Workflows are defined in `.toml` files in a directory (default: `./workflows`; o
 [trigger]
 type = "github_issue_assigned"
 assigned_to = "alice"
+allowed_users = ["alice"]
 
 [git]
 clone = true

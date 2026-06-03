@@ -39,6 +39,7 @@ fn create_workflows_dir() -> tempfile::TempDir {
     let toml = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Plan"

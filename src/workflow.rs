@@ -122,6 +122,7 @@ pub enum TriggerType {
     // GitLab triggers
     GitlabIssueAssigned {
         assigned_to: Option<String>,
+        allowed_users: Option<Vec<String>>,
     },
     GitlabIssueMention {
         mentioned_user: Option<String>,
@@ -163,6 +164,7 @@ impl TriggerType {
             }
             triggers::GITLAB_ISSUE_ASSIGNED => Some(TriggerType::GitlabIssueAssigned {
                 assigned_to: trigger.assigned_to.clone(),
+                allowed_users: trigger.allowed_users.clone(),
             }),
             triggers::GITLAB_ISSUE_MENTION => Some(TriggerType::GitlabIssueMention {
                 mentioned_user: trigger.mentioned_user.clone(),
@@ -244,6 +246,23 @@ impl TriggerType {
             TriggerType::GitlabIssueMention { .. } => "note_events",
             TriggerType::GitlabMergeRequestReview { .. } => "note_events",
             TriggerType::GitlabMergeRequestCommentMention { .. } => "note_events",
+        }
+    }
+
+    /// Return the `allowed_users` list for this trigger type, if configured.
+    ///
+    /// Used by the dispatcher to authorize incoming webhook events against
+    /// the workflow's security boundary.
+    pub fn allowed_users(&self) -> &Option<Vec<String>> {
+        match self {
+            TriggerType::GithubIssueAssigned { allowed_users, .. } => allowed_users,
+            TriggerType::GithubIssueCommentMention { allowed_users, .. } => allowed_users,
+            TriggerType::GithubPullRequestReview { allowed_users } => allowed_users,
+            TriggerType::GithubPullRequestCommentMention { allowed_users, .. } => allowed_users,
+            TriggerType::GitlabIssueAssigned { allowed_users, .. } => allowed_users,
+            TriggerType::GitlabIssueMention { allowed_users, .. } => allowed_users,
+            TriggerType::GitlabMergeRequestReview { allowed_users } => allowed_users,
+            TriggerType::GitlabMergeRequestCommentMention { allowed_users, .. } => allowed_users,
         }
     }
 
@@ -347,6 +366,16 @@ impl Workflow {
         // Validate trigger type is a known value via TriggerType enum
         let trigger_type = TriggerType::from_trigger(&self.trigger)
             .ok_or_else(|| format!("invalid trigger type: {}", self.trigger.r#type))?;
+
+        // allowed_users is a SECURITY BOUNDARY — it must be non-empty to prevent
+        // prompt injection attacks from unauthorized users
+        if self.trigger.allowed_users.as_ref().is_none_or(|u| u.is_empty()) {
+            return Err(format!(
+                "trigger.allowed_users must be defined and non-empty in workflow {} \
+                 (security boundary: prevents unauthorized users from triggering workflows)",
+                self.path
+            ));
+        }
 
         // Steps array must not be empty
         if self.steps.is_empty() {
@@ -517,6 +546,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
             assigned_to = "alice"
 
             [git]
@@ -542,6 +572,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "gitlab_issue_assigned"
+            allowed_users = ["testuser"]
             assigned_to = "alice"
 
             [git]
@@ -600,6 +631,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
             [git]
             clone = true
             worktree = true
@@ -615,6 +647,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
             [git]
             clone = true
             worktree = true
@@ -633,6 +666,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
             [git]
             clone = true
             worktree = true
@@ -651,6 +685,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
 
             [[steps]]
             name = "Step"
@@ -670,6 +705,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
             [git]
             clone = true
             worktree = true
@@ -704,6 +740,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
             assigned_to = "alice"
 
             [git]
@@ -761,6 +798,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
 
             [[steps]]
             name = "Plan"
@@ -776,6 +814,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
 
             [[steps]]
             name = "Plan"
@@ -805,6 +844,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
 
             [[steps]]
             name = "Plan"
@@ -826,6 +866,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
 
             [[steps]]
             name = "Plan"
@@ -847,6 +888,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "gitlab_issue_assigned"
+            allowed_users = ["testuser"]
 
             [[steps]]
             name = "Plan"
@@ -863,6 +905,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "gitlab_issue_assigned"
+            allowed_users = ["testuser"]
 
             [[steps]]
             name = "Plan"
@@ -885,6 +928,7 @@ mod tests {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
+            allowed_users = ["testuser"]
 
             [[steps]]
             name = "Plan"
@@ -904,6 +948,7 @@ mod tests {
         let valid_toml = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["testuser"]
 
 [git]
 clone = true
@@ -980,6 +1025,7 @@ prompt_template = "Plan"
             r#"
 [trigger]
 type = "{}"
+allowed_users = ["testuser"]
 
 [[steps]]
 name = "Step"
@@ -1352,7 +1398,10 @@ prompt_template = "Do the thing"
 
     #[test]
     fn test_known_variables_gitlab_issue_assigned() {
-        let tt = TriggerType::GitlabIssueAssigned { assigned_to: None };
+        let tt = TriggerType::GitlabIssueAssigned {
+            assigned_to: None,
+            allowed_users: None,
+        };
         let vars = tt.known_variables();
         // Global
         assert!(vars.contains("owner"));

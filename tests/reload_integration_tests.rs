@@ -35,6 +35,7 @@ fn github_workflow_toml(name: &str, agent: &str) -> String {
 [trigger]
 type = "github_issue_assigned"
 assigned_to = "alice"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "{name}"
@@ -131,6 +132,7 @@ async fn test_hot_reload_invalid_file_preserves_state() {
     let bad_toml = r#"
 [trigger]
 type = "github_issue_assigned"
+allowed_users = ["alice"]
 
 [[steps]]
 name = "Bad"

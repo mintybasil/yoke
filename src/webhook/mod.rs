@@ -19,6 +19,12 @@ pub struct TriggerEvent {
     pub repo_path: String,
     /// A unique event ID for deduplication (e.g. "issue-42").
     pub event_id: String,
+    /// The username of the user who performed the action that triggered
+    /// this event (the "actor"). Extracted from the webhook payload's
+    /// `sender.login` (GitHub) or `user.username` (GitLab).
+    /// Used by the dispatcher to authorize the event against the workflow's
+    /// `allowed_users` list.
+    pub actor: String,
     /// Trigger-specific template variables extracted from the webhook payload.
     /// These are merged with global variables in the dispatcher before
     /// being passed to the workflow runner for template rendering.

@@ -498,10 +498,23 @@ pub fn handle_github_webhook(
         }
     }
 
+    // Extract the actor (sender) from the webhook payload.
+    // Per the architecture design, the actor is the user who performed the
+    // action that created the webhook event (e.g. the person who assigned the
+    // issue, wrote the comment, or submitted the review). This is used to
+    // authorize the event against the workflow's `allowed_users` list.
+    let actor = match &event.payload {
+        GitHubPayload::Issues(p) => p.sender.login.clone(),
+        GitHubPayload::IssueComment(p) => p.sender.login.clone(),
+        GitHubPayload::PullRequestReview(p) => p.sender.login.clone(),
+        GitHubPayload::PullRequestReviewComment(p) => p.sender.login.clone(),
+    };
+
     Ok(TriggerEvent {
         trigger_type,
         repo_path,
         event_id,
+        actor,
         variables,
     })
 }
