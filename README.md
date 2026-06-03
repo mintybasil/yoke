@@ -249,7 +249,7 @@ Create a PR with your changes.
 | `[trigger].type` | Event type (e.g. `github_issue_assigned`) | required |
 | `[trigger].assigned_to` | Event-content filter: only fire when the issue is assigned to this user | optional |
 | `[trigger].mentioned_user` | Event-content filter: only fire when this user is @mentioned | optional |
-| `[trigger].allowed_users` | **SECURITY BOUNDARY**: which usernames are permitted to trigger this workflow (checks the actor, NOT the assignee/mentioned user) | required |
+| `[trigger].allowed_users` | **SECURITY BOUNDARY**: which usernames are permitted to trigger this workflow | required |
 | `[git].clone` | Whether to git clone the repo | `true` |
 | `[git].worktree` | Whether to create a per-event worktree | `true` |
 | `[git].default_branch` | Branch for clone/worktree base | `"main"` |
