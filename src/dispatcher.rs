@@ -517,7 +517,8 @@ impl Dispatcher {
 
                 // Find matching workflows from the hot-reloadable state
                 let workflows = workflow_state.load();
-                let matching = find_matching_workflows(&workflows, &event.trigger_type, &event.actor);
+                let matching =
+                    find_matching_workflows(&workflows, &event.trigger_type, &event.actor);
 
                 if matching.is_empty() {
                     tracing::warn!(
@@ -1241,9 +1242,9 @@ mod tests {
     fn test_extract_event_id_gitlab_issue_assigned() {
         let event = make_trigger_event(
             TriggerType::GitlabIssueAssigned {
-            assigned_to: None,
-            allowed_users: None,
-        },
+                assigned_to: None,
+                allowed_users: None,
+            },
             "issue-7",
         );
         assert_eq!(extract_event_id(&event), "7");

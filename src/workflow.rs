@@ -369,7 +369,12 @@ impl Workflow {
 
         // allowed_users is a SECURITY BOUNDARY — it must be non-empty to prevent
         // prompt injection attacks from unauthorized users
-        if self.trigger.allowed_users.as_ref().is_none_or(|u| u.is_empty()) {
+        if self
+            .trigger
+            .allowed_users
+            .as_ref()
+            .is_none_or(|u| u.is_empty())
+        {
             return Err(format!(
                 "trigger.allowed_users must be defined and non-empty in workflow {} \
                  (security boundary: prevents unauthorized users from triggering workflows)",

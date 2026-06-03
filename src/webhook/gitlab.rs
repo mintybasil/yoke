@@ -425,7 +425,9 @@ mod tests {
             },
             noteable_type: None,
             system: None,
-            user: Some(GitLabUser { username: "testuser".to_string() }),
+            user: Some(GitLabUser {
+                username: "testuser".to_string(),
+            }),
         }
     }
 
@@ -446,7 +448,9 @@ mod tests {
             },
             noteable_type: Some("Issue".to_string()),
             system: None,
-            user: Some(GitLabUser { username: "testuser".to_string() }),
+            user: Some(GitLabUser {
+                username: "testuser".to_string(),
+            }),
         }
     }
 
@@ -467,7 +471,9 @@ mod tests {
             },
             noteable_type: Some("MergeRequest".to_string()),
             system: None,
-            user: Some(GitLabUser { username: "testuser".to_string() }),
+            user: Some(GitLabUser {
+                username: "testuser".to_string(),
+            }),
         }
     }
 
@@ -490,7 +496,9 @@ mod tests {
             system: Some(GitLabSystem {
                 action: "DiffNote".to_string(),
             }),
-            user: Some(GitLabUser { username: "testuser".to_string() }),
+            user: Some(GitLabUser {
+                username: "testuser".to_string(),
+            }),
         }
     }
 
