@@ -247,7 +247,7 @@ Create a PR with your changes.
 | Field | Purpose | Default |
 |---|---|---|
 | `[trigger].type` | Event type (e.g. `github_issue_assigned`) | required |
-| `[trigger].allowed_users` | **SECURITY BOUNDARY**: which usernames are permitted to trigger this workflow | required |
+| `[trigger].allowed_users` | Users permitted to trigger this workflow | required |
 | `[git].clone` | Whether to git clone the repo | `true` |
 | `[git].worktree` | Whether to create a per-event worktree | `true` |
 | `[git].default_branch` | Branch for clone/worktree base | `"main"` |
@@ -256,8 +256,6 @@ Create a PR with your changes.
 | `[[steps]].prompt_template` | `{{variable}}` template rendered at runtime | required |
 | `[[steps]].pre_hooks` | Hooks to check before step | none |
 | `[[steps]].post_hooks` | Hooks to check after step | none |
-
-Trigger-specific event-content filters (`assigned_to`, `mentioned_user`) are defined in the [Trigger Reference](docs/Architecture%20Design.md#appendix-a-trigger-reference) — each filter applies only to trigger types that support it.
 
 ### Hooks
 
@@ -287,7 +285,7 @@ Step `prompt_template` fields use `{{variable}}` syntax. The following variables
 | `event_id` | Unique event identifier for deduplication |
 | `repo_path` | Full repository path (`owner/repo`) |
 
-Additional variables are available depending on the trigger type. See the [Architecture Design](docs/Architecture%20Design.md#appendix-a-trigger-reference) doc for the full trigger reference including all filters and event ID formats.
+Additional variables are available depending on the trigger type — see the trigger tables below. The [Architecture Design](docs/Architecture%20Design.md#appendix-a-trigger-reference) doc has the full reference including event ID formats and actor sources.
 
 ### Trigger types
 
@@ -295,21 +293,21 @@ Triggers are platform-specific and must match the `platform` setting in `config.
 
 **GitHub triggers** (`platform = "github"`):
 
-| Trigger | Event | Variables |
-|---|---|---|
-| `github_issue_assigned` | Issue assigned to a user | `issue_number`, `assignee`, `issue_title`, `issue_body` |
-| `github_issue_comment_mention` | Comment on an issue mentions a user | `issue_number`, `comment_id`, `comment_body` |
-| `github_pull_request_review` | Pull request review submitted | `pr_number`, `review_id`, `review_body` |
-| `github_pull_request_comment_mention` | Pull request review comment | `pr_number`, `review_id`, `comment_id`, `comment_body` |
+| Trigger | Event | Variables | Event Filter |
+|---|---|---|---|
+| `github_issue_assigned` | Issue assigned to a user | `issue_number`, `assignee`, `issue_title`, `issue_body` | `assigned_to` |
+| `github_issue_comment_mention` | Comment on an issue mentions a user | `issue_number`, `comment_id`, `comment_body` | `mentioned_user` |
+| `github_pull_request_review` | Pull request review submitted | `pr_number`, `review_id`, `review_body` | — |
+| `github_pull_request_comment_mention` | Pull request review comment | `pr_number`, `review_id`, `comment_id`, `comment_body` | `mentioned_user` |
 
 **GitLab triggers** (`platform = "gitlab"`):
 
-| Trigger | Event | Variables |
-|---|---|---|
-| `gitlab_issue_assigned` | Issue assigned to a user | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` |
-| `gitlab_issue_mention` | Note on an issue mentions a user | `issue_iid`, `note_id`, `comment_body` |
-| `gitlab_merge_request_review` | Note on a merge request | `mr_iid`, `review_id`, `review_body` |
-| `gitlab_merge_request_comment_mention` | DiffNote on a merge request | `mr_iid`, `note_id`, `comment_body` |
+| Trigger | Event | Variables | Event Filter |
+|---|---|---|---|
+| `gitlab_issue_assigned` | Issue assigned to a user | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` | `assigned_to` |
+| `gitlab_issue_mention` | Note on an issue mentions a user | `issue_iid`, `note_id`, `comment_body` | `mentioned_user` |
+| `gitlab_merge_request_review` | Note on a merge request | `mr_iid`, `review_id`, `review_body` | — |
+| `gitlab_merge_request_comment_mention` | DiffNote on a merge request | `mr_iid`, `note_id`, `comment_body` | `mentioned_user` |
 
 ### Hot-reload
 

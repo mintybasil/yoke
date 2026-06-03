@@ -1258,7 +1258,7 @@ This appendix consolidates all trigger types, event mappings, and template varia
 
 `allowed_users` is a **SECURITY BOUNDARY** that applies to every trigger type — it restricts which usernames are permitted to trigger a workflow. The actor checked against `allowed_users` is the user who performed the action (see the **Actor Source** column), not the assignee or mentioned user.
 
-The **Event Filters** column lists trigger-specific content filters (`assigned_to`, `mentioned_user`). These filters are required for trigger types that support them — omitting `assigned_to` on an `issue_assigned` trigger means the workflow fires on every assignment, and omitting `mentioned_user` on a `mention` trigger means it fires on every comment. Triggers that show `—` do not support any event-content filter.
+**Event Filters** are required for trigger types that support them (`—` = not applicable). Omitting a filter causes the trigger to fire on every matching event.
 
 ### GitHub Triggers
 
