@@ -169,6 +169,16 @@ Additional trigger-specific variables are also available. See Appendix A for det
 
 All repos listed in `config.toml` share the same set of loaded workflows. When a webhook arrives for a repo, the dispatcher finds all workflows whose `[trigger]` matches the event, then runs them. This means a single workflow file automatically applies to every configured repo.
 
+### Trigger Authorization
+
+`allowed_users` exists to prevent prompt injection attacks by restricting which users can invoke a workflow. Without this check, any user who can create a webhook event (by assigning an issue, writing a comment, or submitting a review) could trigger arbitrary agent workflows — including workflows that have access to production repositories and infrastructure.
+
+The **actor** is the user who **performed the action** that created the webhook event. This is the person who assigned the issue, wrote the comment, or submitted the review.
+
+The actor must be extracted from the webhook payload's `sender` field (GitHub) or equivalent (GitLab) at webhook receipt time.
+
+See **Appendix A** for the actor source mapping per trigger type.
+
 ### Field Reference
 
 **config.toml fields:**
@@ -195,7 +205,7 @@ All repos listed in `config.toml` share the same set of loaded workflows. When a
 | Field                       | Purpose                                                                  | Default  |
 |-----------------------------|--------------------------------------------------------------------------|----------|
 | `[trigger].type`            | Event type (e.g. `github_issue_assigned`, `gitlab_merge_request_review`) | required |
-| `[trigger].<filter>`        | Trigger-specific filter (see Appendix A)                                 |          |
+| `[trigger].allowed_users`   | **SECURITY BOUNDARY**: which usernames are permitted to trigger this workflow | required |
 | `[git].clone`               | Whether to git clone the repo                                            | `true`   |
 | `[git].worktree`            | Whether to create a per-event worktree                                   | `true`   |
 | `[git].default_branch`      | Branch for clone/worktree base                                           | `"main"` |
@@ -204,6 +214,8 @@ All repos listed in `config.toml` share the same set of loaded workflows. When a
 | `[[steps]].prompt_template` | `{{variable}}` template                                                  | required |
 | `[[steps]].pre_hooks`       | Hooks to check before step                                               | none     |
 | `[[steps]].post_hooks`      | Hooks to check after step                                                | none     |
+
+Trigger-specific event-content filters (`assigned_to`, `mentioned_user`) are defined in **Appendix A: Trigger Reference** — each filter applies only to trigger types that support it.
 
 ## 4. Event Sources (Webhooks)
 
@@ -320,6 +332,16 @@ The dispatcher consumes `DispatchMessage`s from the mpsc channel, manages dedup 
 ```
 
 The dispatcher loop runs as a single tokio task, so the dedup check + in_flight insert is sequential (no races). Workflow runners are spawned as independent tokio tasks.
+
+### Dispatch Flow
+
+When the dispatcher consumes a `DispatchMessage`, it follows these steps in order:
+
+1. **Dedup check**: Build the `{owner}/{repo}/{event_id}` key and check against `in_flight`, `completed`, and `permanently_failed` sets. If the event is already known, skip it.
+2. **Authorized-actor check**: The dispatcher extracts the actor from the webhook payload (the user who performed the action, e.g. the person who assigned the issue) and checks it against the workflow's `allowed_users`. If the actor is not in the list, the workflow is skipped. This is a security boundary, not a content filter. (See the **Trigger Authorization** section for details on how the actor is determined per trigger type.)
+3. **Semaphore acquire**: If the event is new and authorized, acquire a permit from the concurrency semaphore (or proceed immediately if `max_concurrent = 0`).
+4. **Track in_flight**: Insert the event key into the in_flight set.
+5. **Spawn workflow task**: Spawn a tokio task to run the workflow.
 
 ## 7. Workflow Engine
 
@@ -622,8 +644,8 @@ webhook_secret = "your-gitlab-webhook-token"
 ```toml
 [trigger]
 type = "github_issue_assigned"
-assigned_to = "alice"
-allowed_users = ["bob"]
+assigned_to = "alice"              # Event-content filter: only when alice is assigned
+allowed_users = ["bob"]            # Authorization: only bob may trigger this workflow
 
 [git]
 clone = true
@@ -651,7 +673,7 @@ Create a PR with your changes.
 ```toml
 [trigger]
 type = "github_pull_request_review"
-allowed_users = ["alice"]
+allowed_users = ["alice"]           # Authorization: only alice may trigger this workflow
 
 [git]
 clone = true
@@ -666,13 +688,15 @@ Review ID: {{review_id}}
 """
 ```
 
+This trigger has no `assigned_to` or `mentioned_user` filter — it fires on any PR review submission, but only if the review author (the actor) is `alice`. The actor for a review event is the person who submitted the review.
+
 ### Workflow: GitLab issue plan+implement
 
 ```toml
 [trigger]
 type = "gitlab_issue_assigned"
-assigned_to = "alice"
-allowed_users = ["bob"]
+assigned_to = "alice"              # Event-content filter: only when alice is assigned
+allowed_users = ["bob"]            # Authorization: only bob may trigger this workflow
 
 [git]
 clone = true
@@ -700,8 +724,8 @@ Create an MR with your changes.
 ```toml
 [trigger]
 type = "gitlab_merge_request_comment_mention"
-mentioned_user = "alice"
-allowed_users = ["bob"]
+mentioned_user = "alice"           # Event-content filter: only when alice is @mentioned
+allowed_users = ["bob"]            # Authorization: only bob may trigger this workflow
 
 [git]
 clone = true
@@ -736,7 +760,7 @@ Review ID: {{review_id}}
 
 9. **Named agents**: `[[agents]]` in `config.toml` defines named Hermes API instances. Each step in a workflow references an agent by name (`agent = "pm"`), keeping `base_url` out of workflow files and making it easy to retarget a step by changing the config.
 
-10. **Shared repos**: All repos in `config.toml` share the same workflow files. This simplifies the mental model — adding a new repo means one entry in the `repos` array, and every existing workflow automatically applies. Trigger filters (`assigned_to`, `allowed_users`) scope which events each workflow responds to.
+10. **Shared repos**: All repos in `config.toml` share the same workflow files. This simplifies the mental model — adding a new repo means one entry in the `repos` array, and every existing workflow automatically applies. Event-content filters (`assigned_to`, `mentioned_user`) scope which events match; `allowed_users` is a SECURITY BOUNDARY that controls who may invoke the workflow.
 
 11. **Step-level agent assignment**: Each step declares its own `agent` field rather than a single workflow-level agent. This allows a workflow to use different Hermes API instances for different steps (e.g., a planning step on the pm agent, an implementation step on the swe agent).
 
@@ -1232,26 +1256,30 @@ fn test_fixtures_are_valid_json() {
 
 This appendix consolidates all trigger types, event mappings, and template variables for both platforms.
 
+`allowed_users` is a **SECURITY BOUNDARY** that applies to every trigger type — it restricts which usernames are permitted to trigger a workflow. The actor checked against `allowed_users` is the user who performed the action (see the **Actor Source** column), not the assignee or mentioned user.
+
+**Event Filters** are required for trigger types that support them (`—` = not applicable).
+
 ### GitHub Triggers
 
-| Trigger Type                          | Event Header          | Action      | Variables                                               | Filters (Required)                | Event ID Format                             |
-|---------------------------------------|-----------------------|-------------|---------------------------------------------------------|-----------------------------------|---------------------------------------------|
-| `github_issue_assigned`               | `issues`              | `assigned`  | `issue_number`, `assignee`, `issue_title`, `issue_body` | `assigned_to`, `allowed_users`    | `issue-{issue_number}`                      |
-| `github_issue_comment_mention`        | `issue_comment`       | `created`   | `issue_number`, `comment_id`, `comment_body`            | `mentioned_user`, `allowed_users` | `issue-{issue_number}-comment-{comment_id}` |
-| `github_pull_request_review`          | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body`                 | `allowed_users`                   | `pr-{pr_number}-review-{review_id}`         |
-| `github_pull_request_comment_mention` | `issue_comment`       | `created`   | `pr_number`, `review_id`, `comment_id`, `comment_body`  | `mentioned_user`, `allowed_users` | `pr-{pr_number}-comment-{comment_id}`       |
+| Trigger Type                          | Event Header          | Action      | Variables                                               | Event Filters          | Actor Source                       | Event ID Format                             |
+|---------------------------------------|-----------------------|-------------|---------------------------------------------------------|-------------------------|------------------------------------|---------------------------------------------|
+| `github_issue_assigned`               | `issues`              | `assigned`  | `issue_number`, `assignee`, `issue_title`, `issue_body` | `assigned_to`            | `payload.sender.login`             | `issue-{issue_number}`                      |
+| `github_issue_comment_mention`        | `issue_comment`       | `created`   | `issue_number`, `comment_id`, `comment_body`            | `mentioned_user`         | `payload.sender.login`             | `issue-{issue_number}-comment-{comment_id}` |
+| `github_pull_request_review`          | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body`                 | —                        | `payload.sender.login`             | `pr-{pr_number}-review-{review_id}`         |
+| `github_pull_request_comment_mention` | `issue_comment`       | `created`   | `pr_number`, `review_id`, `comment_id`, `comment_body`  | `mentioned_user`         | `payload.sender.login`             | `pr-{pr_number}-comment-{comment_id}`       |
 
 _Note: Github considers PRs as a type of issue. `github_issue_comment` should only trigger for comments on issues, not 
 PRs. For comments on PRs, the `github_pull_request_comment` trigger should receive them._
 
 ### GitLab Triggers
 
-| Trigger Type                           | Event Header | Object Kind                           | Variables                                                               | Filters (Required)                | Event ID Format                    |
-|----------------------------------------|--------------|---------------------------------------|-------------------------------------------------------------------------|-----------------------------------|------------------------------------|
-| `gitlab_issue_assigned`                | `Issue Hook` | `issue` (action: `update`)            | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` | `assigned_to`                     | `issue-{issue_iid}`                |
-| `gitlab_issue_mention`                 | `Note Hook`  | `note` (noteable_type = Issue)        | `issue_iid` `note_id`, `comment_body`                                   | `mentioned_user`, `allowed_users` | `issue-{issue_iid}-note-{note_id}` |
-| `gitlab_merge_request_review`          | `Note Hook`  | `note` (noteable_type = MergeRequest) | `mr_iid`, `review_id`, `review_body`                                    | `allowed_users`                   | `mr-{mr_iid}-review-{note_id}`     |
-| `gitlab_merge_request_comment_mention` | `Note Hook`  | `note` (noteable_type = MergeRequest) | `mr_iid`, `note_id`, `comment_body`                                     | `mentioned_user`, `allowed_users` | `mr-{mr_iid}-comment-{note_id}`    |
+| Trigger Type                           | Event Header | Object Kind                           | Variables                                                               | Event Filters          | Actor Source               | Event ID Format                    |
+|----------------------------------------|--------------|---------------------------------------|-------------------------------------------------------------------------|-------------------------|----------------------------|------------------------------------|
+| `gitlab_issue_assigned`                | `Issue Hook` | `issue` (action: `update`)            | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` | `assigned_to`            | `payload.user.username`    | `issue-{issue_iid}`                |
+| `gitlab_issue_mention`                 | `Note Hook`  | `note` (noteable_type = Issue)        | `issue_iid` `note_id`, `comment_body`                                   | `mentioned_user`         | `payload.user.username`    | `issue-{issue_iid}-note-{note_id}` |
+| `gitlab_merge_request_review`          | `Note Hook`  | `note` (noteable_type = MergeRequest) | `mr_iid`, `review_id`, `review_body`                                    | —                        | `payload.user.username`    | `mr-{mr_iid}-review-{note_id}`     |
+| `gitlab_merge_request_comment_mention` | `Note Hook`  | `note` (noteable_type = MergeRequest) | `mr_iid`, `note_id`, `comment_body`                                     | `mentioned_user`         | `payload.user.username`    | `mr-{mr_iid}-comment-{note_id}`    |
 
 ### Known Limitations
 
