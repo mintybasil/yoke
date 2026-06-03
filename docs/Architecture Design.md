@@ -205,9 +205,7 @@ See **Appendix A** for the actor source mapping per trigger type.
 | Field                       | Purpose                                                                  | Default  |
 |-----------------------------|--------------------------------------------------------------------------|----------|
 | `[trigger].type`            | Event type (e.g. `github_issue_assigned`, `gitlab_merge_request_review`) | required |
-| `[trigger].allowed_users`  | **SECURITY BOUNDARY**: which usernames are permitted to trigger this workflow | required |
-| `[trigger].assigned_to`     | Event-content filter: only fire when the issue is assigned to this user (optional) | —        |
-| `[trigger].mentioned_user`  | Event-content filter: only fire when this user is @mentioned (optional) | —        |
+| `[trigger].allowed_users`   | **SECURITY BOUNDARY**: which usernames are permitted to trigger this workflow | required |
 | `[git].clone`               | Whether to git clone the repo                                            | `true`   |
 | `[git].worktree`            | Whether to create a per-event worktree                                   | `true`   |
 | `[git].default_branch`      | Branch for clone/worktree base                                           | `"main"` |
@@ -216,6 +214,8 @@ See **Appendix A** for the actor source mapping per trigger type.
 | `[[steps]].prompt_template` | `{{variable}}` template                                                  | required |
 | `[[steps]].pre_hooks`       | Hooks to check before step                                               | none     |
 | `[[steps]].post_hooks`      | Hooks to check after step                                                | none     |
+
+Trigger-specific event-content filters (`assigned_to`, `mentioned_user`) are defined in **Appendix A: Trigger Reference** — each filter applies only to trigger types that support it.
 
 ## 4. Event Sources (Webhooks)
 
@@ -338,7 +338,7 @@ The dispatcher loop runs as a single tokio task, so the dedup check + in_flight 
 When the dispatcher consumes a `DispatchMessage`, it follows these steps in order:
 
 1. **Dedup check**: Build the `{owner}/{repo}/{event_id}` key and check against `in_flight`, `completed`, and `permanently_failed` sets. If the event is already known, skip it.
-2. **Authorized-actor check**: The dispatcher extracts the actor from the webhook payload (the user who performed the action, e.g. the person who assigned the issue) and checks it against the workflow's `allowed_users`. If the actor is not in the list, the workflow is skipped with a warning. This is a security boundary, not a content filter. (See the **Trigger Authorization** section for details on how the actor is determined per trigger type.)
+2. **Authorized-actor check**: The dispatcher extracts the actor from the webhook payload (the user who performed the action, e.g. the person who assigned the issue) and checks it against the workflow's `allowed_users`. If the actor is not in the list, the workflow is skipped. This is a security boundary, not a content filter. (See the **Trigger Authorization** section for details on how the actor is determined per trigger type.)
 3. **Semaphore acquire**: If the event is new and authorized, acquire a permit from the concurrency semaphore (or proceed immediately if `max_concurrent = 0`).
 4. **Track in_flight**: Insert the event key into the in_flight set.
 5. **Spawn workflow task**: Spawn a tokio task to run the workflow.
@@ -1258,10 +1258,12 @@ This appendix consolidates all trigger types, event mappings, and template varia
 
 `allowed_users` is a **SECURITY BOUNDARY** that applies to every trigger type — it restricts which usernames are permitted to trigger a workflow. The actor checked against `allowed_users` is the user who performed the action (see the **Actor Source** column), not the assignee or mentioned user.
 
+The **Event Filters** column lists trigger-specific content filters (`assigned_to`, `mentioned_user`). These filters are required for trigger types that support them — omitting `assigned_to` on an `issue_assigned` trigger means the workflow fires on every assignment, and omitting `mentioned_user` on a `mention` trigger means it fires on every comment. Triggers that show `—` do not support any event-content filter.
+
 ### GitHub Triggers
 
-| Trigger Type                          | Event Header          | Action      | Variables                                               | Event Filters (optional) | Actor Source                       | Event ID Format                             |
-|---------------------------------------|-----------------------|-------------|---------------------------------------------------------|--------------------------|------------------------------------|---------------------------------------------|
+| Trigger Type                          | Event Header          | Action      | Variables                                               | Event Filters          | Actor Source                       | Event ID Format                             |
+|---------------------------------------|-----------------------|-------------|---------------------------------------------------------|-------------------------|------------------------------------|---------------------------------------------|
 | `github_issue_assigned`               | `issues`              | `assigned`  | `issue_number`, `assignee`, `issue_title`, `issue_body` | `assigned_to`            | `payload.sender.login`             | `issue-{issue_number}`                      |
 | `github_issue_comment_mention`        | `issue_comment`       | `created`   | `issue_number`, `comment_id`, `comment_body`            | `mentioned_user`         | `payload.sender.login`             | `issue-{issue_number}-comment-{comment_id}` |
 | `github_pull_request_review`          | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body`                 | —                        | `payload.sender.login`             | `pr-{pr_number}-review-{review_id}`         |
@@ -1272,8 +1274,8 @@ PRs. For comments on PRs, the `github_pull_request_comment` trigger should recei
 
 ### GitLab Triggers
 
-| Trigger Type                           | Event Header | Object Kind                           | Variables                                                               | Event Filters (optional) | Actor Source               | Event ID Format                    |
-|----------------------------------------|--------------|---------------------------------------|-------------------------------------------------------------------------|--------------------------|----------------------------|------------------------------------|
+| Trigger Type                           | Event Header | Object Kind                           | Variables                                                               | Event Filters          | Actor Source               | Event ID Format                    |
+|----------------------------------------|--------------|---------------------------------------|-------------------------------------------------------------------------|-------------------------|----------------------------|------------------------------------|
 | `gitlab_issue_assigned`                | `Issue Hook` | `issue` (action: `update`)            | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` | `assigned_to`            | `payload.user.username`    | `issue-{issue_iid}`                |
 | `gitlab_issue_mention`                 | `Note Hook`  | `note` (noteable_type = Issue)        | `issue_iid` `note_id`, `comment_body`                                   | `mentioned_user`         | `payload.user.username`    | `issue-{issue_iid}-note-{note_id}` |
 | `gitlab_merge_request_review`          | `Note Hook`  | `note` (noteable_type = MergeRequest) | `mr_iid`, `review_id`, `review_body`                                    | —                        | `payload.user.username`    | `mr-{mr_iid}-review-{note_id}`     |

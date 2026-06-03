@@ -247,8 +247,6 @@ Create a PR with your changes.
 | Field | Purpose | Default |
 |---|---|---|
 | `[trigger].type` | Event type (e.g. `github_issue_assigned`) | required |
-| `[trigger].assigned_to` | Event-content filter: only fire when the issue is assigned to this user | optional |
-| `[trigger].mentioned_user` | Event-content filter: only fire when this user is @mentioned | optional |
 | `[trigger].allowed_users` | **SECURITY BOUNDARY**: which usernames are permitted to trigger this workflow | required |
 | `[git].clone` | Whether to git clone the repo | `true` |
 | `[git].worktree` | Whether to create a per-event worktree | `true` |
@@ -258,6 +256,8 @@ Create a PR with your changes.
 | `[[steps]].prompt_template` | `{{variable}}` template rendered at runtime | required |
 | `[[steps]].pre_hooks` | Hooks to check before step | none |
 | `[[steps]].post_hooks` | Hooks to check after step | none |
+
+Trigger-specific event-content filters (`assigned_to`, `mentioned_user`) are defined in the [Trigger Reference](docs/Architecture%20Design.md#appendix-a-trigger-reference) — each filter applies only to trigger types that support it.
 
 ### Hooks
 
