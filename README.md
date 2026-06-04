@@ -105,7 +105,7 @@ Yoke listens for webhook events on `http://{host}:{port}/webhook`. The `webhook_
 
 ## Secure Webhook Exposure with Tailscale Funnel
 
-If you are running Yoke locally but need to receive webhooks from GitHub or GitLab, you can use **Tailscale Funnel** to securely expose your local server to the internet without configuring firewall rules or port forwarding.
+If you are running Yoke locally but need to receive webhooks from GitHub or GitLab, you can use [**Tailscale Funnel**](https://tailscale.com/docs/features/tailscale-funnel) to securely expose your local server to the internet without configuring firewall rules or port forwarding.
 
 ### Overview
 
@@ -124,7 +124,7 @@ Tailscale Funnel routes public internet traffic to a port on your machine over y
    webhook_host = "machine.tailnet-name.ts.net"
    ```
 
-For detailed configuration and advanced options, refer to the [official Tailscale Funnel documentation](https://tailscale.com/kb/1262/funnel/).
+For detailed configuration and advanced options, refer to the [official Tailscale Funnel documentation](https://tailscale.com/docs/features/tailscale-funnel).
 
 ## Configuration
 
