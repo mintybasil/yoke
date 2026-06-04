@@ -406,8 +406,13 @@ impl Dispatcher {
     async fn persist_state(&self) {
         tracing::info!("Persisting dispatcher state before exit");
         let sets = self.dedup_sets.read().await;
+        let completed_path = self.workdir.join("completed.json");
         if let Err(e) = sets.persist_completed(&self.workdir) {
-            tracing::error!(error = %e, "Failed to persist completed set during shutdown");
+            tracing::error!(
+                error = %e,
+                path = %completed_path.display(),
+                "Failed to persist completed set during shutdown"
+            );
         }
         // persist_failed only appends individual entries; we re-write the
         // permanent_failed keys as a safety net by writing the full file
@@ -428,7 +433,11 @@ impl Dispatcher {
                 }
             }
             if let Err(e) = save_dedup_file(&path, &failed_entries) {
-                tracing::error!(error = %e, "Failed to persist failed set during shutdown");
+                tracing::error!(
+                    error = %e,
+                    path = %path.display(),
+                    "Failed to persist failed set during shutdown"
+                );
             }
         }
     }
@@ -599,12 +608,14 @@ impl Dispatcher {
             match result {
                 Ok(()) => {
                     sets.mark_completed(&key);
+                    let completed_path = workdir.join("completed.json");
                     if let Err(e) = sets.persist_completed(&workdir) {
-                        tracing::error!(%key, error = %e, "Failed to persist completed set");
+                        tracing::error!(%key, error = %e, path = %completed_path.display(), "Failed to persist completed set");
                     }
                 }
                 Err(e) => {
                     sets.mark_failed(&key);
+                    let failed_path = workdir.join("failed.json");
                     if let Err(persist_err) = sets.persist_failed(
                         &workdir,
                         &FailedEntry {
@@ -613,7 +624,7 @@ impl Dispatcher {
                             error: e,
                         },
                     ) {
-                        tracing::error!(%key, error = %persist_err, "Failed to persist failed set");
+                        tracing::error!(%key, error = %persist_err, path = %failed_path.display(), "Failed to persist failed set");
                     }
                 }
             }
@@ -640,12 +651,14 @@ impl Dispatcher {
         match result {
             Ok(()) => {
                 sets.mark_completed(key);
+                let completed_path = self.workdir.join("completed.json");
                 if let Err(e) = sets.persist_completed(&self.workdir) {
-                    tracing::error!(%key, error = %e, "Failed to persist completed set");
+                    tracing::error!(%key, error = %e, path = %completed_path.display(), "Failed to persist completed set");
                 }
             }
             Err(e) => {
                 sets.mark_failed(key);
+                let failed_path = self.workdir.join("failed.json");
                 if let Err(persist_err) = sets.persist_failed(
                     &self.workdir,
                     &FailedEntry {
@@ -654,7 +667,7 @@ impl Dispatcher {
                         error: e,
                     },
                 ) {
-                    tracing::error!(%key, error = %persist_err, "Failed to persist failed set");
+                    tracing::error!(%key, error = %persist_err, path = %failed_path.display(), "Failed to persist failed set");
                 }
             }
         }
@@ -830,22 +843,25 @@ fn save_dedup_file<T: Serialize>(path: &Path, entries: &T) -> Result<(), Persist
 impl DedupSets {
     /// Persist the `completed` set to `completed.json` in the given directory.
     ///
-    /// Uses atomic file writes (`.tmp` + `rename`) to prevent data corruption.
+    /// Creates the directory if it doesn't exist. Uses atomic file writes
+    /// (`.tmp` + `rename`) to prevent data corruption.
     pub fn persist_completed(&self, workdir: &Path) -> Result<(), PersistenceError> {
+        std::fs::create_dir_all(workdir).map_err(PersistenceError::Io)?;
         let path = workdir.join("completed.json");
         save_dedup_file(&path, &self.completed)
     }
 
     /// Append a failed entry to `failed.json` in the given directory.
     ///
-    /// Loads existing failed entries, appends the new one, and atomically
-    /// rewrites the file. On missing or corrupted `failed.json`, starts
-    /// with an empty list.
+    /// Creates the directory if it doesn't exist. Loads existing failed entries,
+    /// appends the new one, and atomically rewrites the file. On missing or
+    /// corrupted `failed.json`, starts with an empty list.
     pub fn persist_failed(
         &self,
         workdir: &Path,
         entry: &FailedEntry,
     ) -> Result<(), PersistenceError> {
+        std::fs::create_dir_all(workdir).map_err(PersistenceError::Io)?;
         let path = workdir.join("failed.json");
         let mut failed: Vec<FailedEntry> = load_dedup_file(&path).unwrap_or_default();
         failed.push(entry.clone());
@@ -1676,6 +1692,42 @@ mod tests {
         assert!(loaded.completed.contains("owner/repo/42"));
         assert!(loaded.permanently_failed.contains("owner/repo/7"));
         assert!(loaded.in_flight.is_empty()); // in_flight is always empty on load
+    }
+
+    #[test]
+    fn test_persist_completed_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("non_existent_subdir");
+        let mut sets = DedupSets::new();
+        sets.mark_completed("owner/repo/42");
+
+        // Should succeed even if the workdir directory doesn't exist
+        let result = sets.persist_completed(&workdir);
+        assert!(result.is_ok(), "persist_completed should succeed even if workdir is missing: {result:?}");
+
+        // Verify the file was created
+        let completed_path = workdir.join("completed.json");
+        assert!(completed_path.exists(), "completed.json should be created");
+    }
+
+    #[test]
+    fn test_persist_failed_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path().join("non_existent_subdir");
+        let sets = DedupSets::new();
+        let entry = FailedEntry {
+            key: "owner/repo/42".to_string(),
+            timestamp: SystemTime::UNIX_EPOCH,
+            error: "test error".to_string(),
+        };
+
+        // Should succeed even if the workdir directory doesn't exist
+        let result = sets.persist_failed(&workdir, &entry);
+        assert!(result.is_ok(), "persist_failed should succeed even if workdir is missing: {result:?}");
+
+        // Verify the file was created
+        let failed_path = workdir.join("failed.json");
+        assert!(failed_path.exists(), "failed.json should be created");
     }
 
     // --- Dispatcher and Semaphore tests ---
