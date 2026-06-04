@@ -115,6 +115,57 @@ pub enum TriggerType {
     GitlabMergeRequestCommentMention { mentioned_user: Option<String> },
 }
 
+impl std::fmt::Display for TriggerType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TriggerType::GithubIssueAssigned { assigned_to } => {
+                write!(
+                    f,
+                    "GithubIssueAssigned {{ assigned_to: {} }}",
+                    assigned_to.as_deref().unwrap_or("None")
+                )
+            }
+            TriggerType::GithubIssueCommentMention { mentioned_user } => {
+                write!(
+                    f,
+                    "GithubIssueCommentMention {{ mentioned_user: {} }}",
+                    mentioned_user.as_deref().unwrap_or("None")
+                )
+            }
+            TriggerType::GithubPullRequestReview => write!(f, "GithubPullRequestReview"),
+            TriggerType::GithubPullRequestCommentMention { mentioned_user } => {
+                write!(
+                    f,
+                    "GithubPullRequestCommentMention {{ mentioned_user: {} }}",
+                    mentioned_user.as_deref().unwrap_or("None")
+                )
+            }
+            TriggerType::GitlabIssueAssigned { assigned_to } => {
+                write!(
+                    f,
+                    "GitlabIssueAssigned {{ assigned_to: {} }}",
+                    assigned_to.as_deref().unwrap_or("None")
+                )
+            }
+            TriggerType::GitlabIssueMention { mentioned_user } => {
+                write!(
+                    f,
+                    "GitlabIssueMention {{ mentioned_user: {} }}",
+                    mentioned_user.as_deref().unwrap_or("None")
+                )
+            }
+            TriggerType::GitlabMergeRequestReview => write!(f, "GitlabMergeRequestReview"),
+            TriggerType::GitlabMergeRequestCommentMention { mentioned_user } => {
+                write!(
+                    f,
+                    "GitlabMergeRequestCommentMention {{ mentioned_user: {} }}",
+                    mentioned_user.as_deref().unwrap_or("None")
+                )
+            }
+        }
+    }
+}
+
 impl TriggerType {
     /// Convert a `Trigger` struct into a typed `TriggerType` variant.
     ///
@@ -327,8 +378,7 @@ impl Workflow {
             .is_none_or(|u| u.is_empty())
         {
             return Err(format!(
-                "trigger.allowed_users must be defined and non-empty in workflow {} \
-                 (security boundary: prevents unauthorized users from triggering workflows)",
+                "trigger.allowed_users must be defined and non-empty in workflow {}",
                 self.path
             ));
         }

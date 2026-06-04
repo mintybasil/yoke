@@ -39,7 +39,15 @@ pub enum WebhookError {
     /// Payload could not be parsed (HTTP 400).
     BadRequest(String),
     /// Event type not supported or no matching trigger (HTTP 200, no-op).
-    NoMatchingTrigger(String),
+    /// Carries the event type and action as structured fields so callers
+    /// can log them as separate tracing parameters rather than a single
+    /// formatted string.
+    NoMatchingTrigger {
+        /// The platform-specific event type (e.g. "issues", "Issue Hook").
+        event: String,
+        /// The action within that event (e.g. "edited", "update").
+        action: String,
+    },
     /// Internal dispatcher error (HTTP 503).
     InternalError(String),
 }
@@ -49,7 +57,9 @@ impl std::fmt::Display for WebhookError {
         match self {
             WebhookError::Unauthorized(msg) => write!(f, "Unauthorized: {msg}"),
             WebhookError::BadRequest(msg) => write!(f, "Bad request: {msg}"),
-            WebhookError::NoMatchingTrigger(msg) => write!(f, "No matching trigger: {msg}"),
+            WebhookError::NoMatchingTrigger { event, action } => {
+                write!(f, "No matching trigger: event='{event}' action='{action}'")
+            }
             WebhookError::InternalError(msg) => write!(f, "Internal error: {msg}"),
         }
     }

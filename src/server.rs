@@ -134,8 +134,8 @@ async fn webhook_handler(
             tracing::warn!(reason = %msg, "Webhook request parsing failed");
             StatusCode::BAD_REQUEST
         }
-        Err(webhook::WebhookError::NoMatchingTrigger(msg)) => {
-            tracing::debug!(reason = %msg, "No matching trigger for webhook event");
+        Err(webhook::WebhookError::NoMatchingTrigger { event, action }) => {
+            tracing::debug!(event = %event, action = %action, "No matching trigger for webhook event");
             StatusCode::OK
         }
         Err(webhook::WebhookError::InternalError(msg)) => {

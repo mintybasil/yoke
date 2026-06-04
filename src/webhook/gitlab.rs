@@ -123,6 +123,30 @@ impl GitLabEvent {
         }
     }
 
+    /// Return the action string for this event, if available.
+    ///
+    /// For Issue hooks this is the `object_attributes.action` field
+    /// (e.g. "update"). For Note hooks this is derived from the
+    /// `noteable_type` and `system` metadata.
+    pub fn action(&self) -> Option<String> {
+        match self {
+            GitLabEvent::IssueHook(p) => p.object_attributes.action.clone(),
+            GitLabEvent::NoteHook(p) => p
+                .noteable_type
+                .as_ref()
+                .map(|t| {
+                    let kind = t.as_str();
+                    let suffix = p
+                        .system
+                        .as_ref()
+                        .map(|s| s.action.as_str())
+                        .unwrap_or("note");
+                    format!("{kind}/{suffix}")
+                })
+                .or_else(|| Some("note".to_string())),
+        }
+    }
+
     /// Return the full path of the project (e.g. "owner/repo").
     pub fn repo_path(&self) -> String {
         match self {
@@ -321,12 +345,11 @@ pub fn handle_gitlab_webhook(
     let event = parse_gitlab_event(body).map_err(WebhookError::BadRequest)?;
 
     // Step 3: Map to a trigger type
-    let trigger_type = map_to_trigger_event(&event).ok_or_else(|| {
-        WebhookError::NoMatchingTrigger(format!(
-            "No matching trigger for object_kind '{}'",
-            event.object_kind()
-        ))
-    })?;
+    let trigger_type =
+        map_to_trigger_event(&event).ok_or_else(|| WebhookError::NoMatchingTrigger {
+            event: event.object_kind().to_string(),
+            action: event.action().unwrap_or_default(),
+        })?;
 
     // Step 4: Extract repo path, event ID, actor, and variables
     let repo_path = event.repo_path();
@@ -938,7 +961,10 @@ mod tests {
         let body_bytes = body.to_string().into_bytes();
 
         let result = handle_gitlab_webhook(secret, "Issue Hook", &body_bytes, secret);
-        assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
+        assert!(matches!(
+            result,
+            Err(WebhookError::NoMatchingTrigger { .. })
+        ));
     }
 
     #[test]
@@ -965,6 +991,9 @@ mod tests {
         let body_bytes = body.to_string().into_bytes();
 
         let result = handle_gitlab_webhook(secret, "Note Hook", &body_bytes, secret);
-        assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
+        assert!(matches!(
+            result,
+            Err(WebhookError::NoMatchingTrigger { .. })
+        ));
     }
 }
