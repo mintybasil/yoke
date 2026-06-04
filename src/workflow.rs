@@ -104,37 +104,15 @@ pub use crate::hooks::Hook;
 #[derive(Debug, Clone, PartialEq)]
 pub enum TriggerType {
     // GitHub triggers
-    GithubIssueAssigned {
-        assigned_to: Option<String>,
-        allowed_users: Option<Vec<String>>,
-    },
-    GithubIssueCommentMention {
-        mentioned_user: Option<String>,
-        allowed_users: Option<Vec<String>>,
-    },
-    GithubPullRequestReview {
-        allowed_users: Option<Vec<String>>,
-    },
-    GithubPullRequestCommentMention {
-        mentioned_user: Option<String>,
-        allowed_users: Option<Vec<String>>,
-    },
+    GithubIssueAssigned { assigned_to: Option<String> },
+    GithubIssueCommentMention { mentioned_user: Option<String> },
+    GithubPullRequestReview,
+    GithubPullRequestCommentMention { mentioned_user: Option<String> },
     // GitLab triggers
-    GitlabIssueAssigned {
-        assigned_to: Option<String>,
-        allowed_users: Option<Vec<String>>,
-    },
-    GitlabIssueMention {
-        mentioned_user: Option<String>,
-        allowed_users: Option<Vec<String>>,
-    },
-    GitlabMergeRequestReview {
-        allowed_users: Option<Vec<String>>,
-    },
-    GitlabMergeRequestCommentMention {
-        mentioned_user: Option<String>,
-        allowed_users: Option<Vec<String>>,
-    },
+    GitlabIssueAssigned { assigned_to: Option<String> },
+    GitlabIssueMention { mentioned_user: Option<String> },
+    GitlabMergeRequestReview,
+    GitlabMergeRequestCommentMention { mentioned_user: Option<String> },
 }
 
 impl TriggerType {
@@ -145,38 +123,28 @@ impl TriggerType {
         match trigger.r#type.as_str() {
             triggers::GITHUB_ISSUE_ASSIGNED => Some(TriggerType::GithubIssueAssigned {
                 assigned_to: trigger.assigned_to.clone(),
-                allowed_users: trigger.allowed_users.clone(),
             }),
             triggers::GITHUB_ISSUE_COMMENT_MENTION => {
                 Some(TriggerType::GithubIssueCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
-                    allowed_users: trigger.allowed_users.clone(),
                 })
             }
-            triggers::GITHUB_PULL_REQUEST_REVIEW => Some(TriggerType::GithubPullRequestReview {
-                allowed_users: trigger.allowed_users.clone(),
-            }),
+            triggers::GITHUB_PULL_REQUEST_REVIEW => Some(TriggerType::GithubPullRequestReview),
             triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION => {
                 Some(TriggerType::GithubPullRequestCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
-                    allowed_users: trigger.allowed_users.clone(),
                 })
             }
             triggers::GITLAB_ISSUE_ASSIGNED => Some(TriggerType::GitlabIssueAssigned {
                 assigned_to: trigger.assigned_to.clone(),
-                allowed_users: trigger.allowed_users.clone(),
             }),
             triggers::GITLAB_ISSUE_MENTION => Some(TriggerType::GitlabIssueMention {
                 mentioned_user: trigger.mentioned_user.clone(),
-                allowed_users: trigger.allowed_users.clone(),
             }),
-            triggers::GITLAB_MERGE_REQUEST_REVIEW => Some(TriggerType::GitlabMergeRequestReview {
-                allowed_users: trigger.allowed_users.clone(),
-            }),
+            triggers::GITLAB_MERGE_REQUEST_REVIEW => Some(TriggerType::GitlabMergeRequestReview),
             triggers::GITLAB_MERGE_REQUEST_REVIEW_COMMENT => {
                 Some(TriggerType::GitlabMergeRequestCommentMention {
                     mentioned_user: trigger.mentioned_user.clone(),
-                    allowed_users: trigger.allowed_users.clone(),
                 })
             }
             _ => None,
@@ -191,13 +159,13 @@ impl TriggerType {
         match self {
             TriggerType::GithubIssueAssigned { .. } => triggers::GITHUB_ISSUE_ASSIGNED,
             TriggerType::GithubIssueCommentMention { .. } => triggers::GITHUB_ISSUE_COMMENT_MENTION,
-            TriggerType::GithubPullRequestReview { .. } => triggers::GITHUB_PULL_REQUEST_REVIEW,
+            TriggerType::GithubPullRequestReview => triggers::GITHUB_PULL_REQUEST_REVIEW,
             TriggerType::GithubPullRequestCommentMention { .. } => {
                 triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION
             }
             TriggerType::GitlabIssueAssigned { .. } => triggers::GITLAB_ISSUE_ASSIGNED,
             TriggerType::GitlabIssueMention { .. } => triggers::GITLAB_ISSUE_MENTION,
-            TriggerType::GitlabMergeRequestReview { .. } => triggers::GITLAB_MERGE_REQUEST_REVIEW,
+            TriggerType::GitlabMergeRequestReview => triggers::GITLAB_MERGE_REQUEST_REVIEW,
             TriggerType::GitlabMergeRequestCommentMention { .. } => {
                 triggers::GITLAB_MERGE_REQUEST_REVIEW_COMMENT
             }
@@ -213,11 +181,11 @@ impl TriggerType {
         match self {
             TriggerType::GithubIssueAssigned { .. }
             | TriggerType::GithubIssueCommentMention { .. }
-            | TriggerType::GithubPullRequestReview { .. }
+            | TriggerType::GithubPullRequestReview
             | TriggerType::GithubPullRequestCommentMention { .. } => Some(Platform::Github),
             TriggerType::GitlabIssueAssigned { .. }
             | TriggerType::GitlabIssueMention { .. }
-            | TriggerType::GitlabMergeRequestReview { .. }
+            | TriggerType::GitlabMergeRequestReview
             | TriggerType::GitlabMergeRequestCommentMention { .. } => Some(Platform::Gitlab),
         }
     }
@@ -236,7 +204,7 @@ impl TriggerType {
             TriggerType::GithubIssueCommentMention { .. } => {
                 crate::webhook::github::GITHUB_ISSUE_COMMENT
             }
-            TriggerType::GithubPullRequestReview { .. } => {
+            TriggerType::GithubPullRequestReview => {
                 crate::webhook::github::GITHUB_PULL_REQUEST_REVIEW
             }
             TriggerType::GithubPullRequestCommentMention { .. } => {
@@ -244,25 +212,8 @@ impl TriggerType {
             }
             TriggerType::GitlabIssueAssigned { .. } => "issues_events",
             TriggerType::GitlabIssueMention { .. } => "note_events",
-            TriggerType::GitlabMergeRequestReview { .. } => "note_events",
+            TriggerType::GitlabMergeRequestReview => "note_events",
             TriggerType::GitlabMergeRequestCommentMention { .. } => "note_events",
-        }
-    }
-
-    /// Return the `allowed_users` list for this trigger type, if configured.
-    ///
-    /// Used by the dispatcher to authorize incoming webhook events against
-    /// the workflow's security boundary.
-    pub fn allowed_users(&self) -> &Option<Vec<String>> {
-        match self {
-            TriggerType::GithubIssueAssigned { allowed_users, .. } => allowed_users,
-            TriggerType::GithubIssueCommentMention { allowed_users, .. } => allowed_users,
-            TriggerType::GithubPullRequestReview { allowed_users } => allowed_users,
-            TriggerType::GithubPullRequestCommentMention { allowed_users, .. } => allowed_users,
-            TriggerType::GitlabIssueAssigned { allowed_users, .. } => allowed_users,
-            TriggerType::GitlabIssueMention { allowed_users, .. } => allowed_users,
-            TriggerType::GitlabMergeRequestReview { allowed_users } => allowed_users,
-            TriggerType::GitlabMergeRequestCommentMention { allowed_users, .. } => allowed_users,
         }
     }
 
@@ -293,7 +244,7 @@ impl TriggerType {
                 vars.insert("comment_id".to_string());
                 vars.insert("comment_body".to_string());
             }
-            TriggerType::GithubPullRequestReview { .. } => {
+            TriggerType::GithubPullRequestReview => {
                 vars.insert("pr_number".to_string());
                 vars.insert("review_id".to_string());
                 vars.insert("review_body".to_string());
@@ -313,7 +264,7 @@ impl TriggerType {
                 vars.insert("note_id".to_string());
                 vars.insert("note_body".to_string());
             }
-            TriggerType::GitlabMergeRequestReview { .. } => {
+            TriggerType::GitlabMergeRequestReview => {
                 vars.insert("mr_iid".to_string());
                 vars.insert("note_id".to_string());
                 vars.insert("note_body".to_string());
@@ -1212,18 +1163,12 @@ prompt_template = "Do the thing"
         };
         let tt = TriggerType::from_trigger(&trigger).unwrap();
         match tt {
-            TriggerType::GithubIssueCommentMention {
-                mentioned_user,
-                allowed_users,
-            } => {
+            TriggerType::GithubIssueCommentMention { mentioned_user } => {
                 assert_eq!(mentioned_user, Some("carol".to_string()));
-                assert_eq!(
-                    allowed_users,
-                    Some(vec!["alice".to_string(), "bob".to_string()])
-                );
             }
             _ => panic!("expected GithubIssueCommentMention variant"),
         }
+        // allowed_users is now checked at the Trigger/workflow level, not TriggerType
     }
 
     // --- derive_required_events tests ---
@@ -1380,10 +1325,7 @@ prompt_template = "Do the thing"
 
     #[test]
     fn test_known_variables_github_issue_assigned() {
-        let tt = TriggerType::GithubIssueAssigned {
-            assigned_to: None,
-            allowed_users: None,
-        };
+        let tt = TriggerType::GithubIssueAssigned { assigned_to: None };
         let vars = tt.known_variables();
         // Global
         assert!(vars.contains("owner"));
@@ -1403,10 +1345,7 @@ prompt_template = "Do the thing"
 
     #[test]
     fn test_known_variables_gitlab_issue_assigned() {
-        let tt = TriggerType::GitlabIssueAssigned {
-            assigned_to: None,
-            allowed_users: None,
-        };
+        let tt = TriggerType::GitlabIssueAssigned { assigned_to: None };
         let vars = tt.known_variables();
         // Global
         assert!(vars.contains("owner"));
@@ -1422,7 +1361,6 @@ prompt_template = "Do the thing"
     fn test_known_variables_gitlab_merge_request_comment() {
         let tt = TriggerType::GitlabMergeRequestCommentMention {
             mentioned_user: None,
-            allowed_users: None,
         };
         let vars = tt.known_variables();
         assert!(vars.contains("mr_iid"));

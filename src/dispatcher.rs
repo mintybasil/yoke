@@ -1119,10 +1119,7 @@ mod tests {
     #[test]
     fn test_event_id_canonical_github_issue_assigned() {
         let event = make_trigger_event(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-                allowed_users: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             "issue-42",
         );
         assert_eq!(event.event_id, "issue-42");
@@ -1133,7 +1130,6 @@ mod tests {
         let event = make_trigger_event(
             TriggerType::GithubIssueCommentMention {
                 mentioned_user: None,
-                allowed_users: None,
             },
             "issue-42-comment-12345",
         );
@@ -1142,12 +1138,7 @@ mod tests {
 
     #[test]
     fn test_event_id_canonical_github_pr_review() {
-        let event = make_trigger_event(
-            TriggerType::GithubPullRequestReview {
-                allowed_users: None,
-            },
-            "pr-7-review-999",
-        );
+        let event = make_trigger_event(TriggerType::GithubPullRequestReview, "pr-7-review-999");
         assert_eq!(event.event_id, "pr-7-review-999");
     }
 
@@ -1156,7 +1147,6 @@ mod tests {
         let event = make_trigger_event(
             TriggerType::GithubPullRequestCommentMention {
                 mentioned_user: None,
-                allowed_users: None,
             },
             "pr-7-comment-555",
         );
@@ -1166,10 +1156,7 @@ mod tests {
     #[test]
     fn test_event_id_canonical_gitlab_issue_assigned() {
         let event = make_trigger_event(
-            TriggerType::GitlabIssueAssigned {
-                assigned_to: None,
-                allowed_users: None,
-            },
+            TriggerType::GitlabIssueAssigned { assigned_to: None },
             "issue-7",
         );
         assert_eq!(event.event_id, "issue-7");
@@ -1180,7 +1167,6 @@ mod tests {
         let event = make_trigger_event(
             TriggerType::GitlabIssueMention {
                 mentioned_user: None,
-                allowed_users: None,
             },
             "issue-7-note-99",
         );
@@ -1189,12 +1175,7 @@ mod tests {
 
     #[test]
     fn test_event_id_canonical_gitlab_mr_review() {
-        let event = make_trigger_event(
-            TriggerType::GitlabMergeRequestReview {
-                allowed_users: None,
-            },
-            "mr-12-review-150",
-        );
+        let event = make_trigger_event(TriggerType::GitlabMergeRequestReview, "mr-12-review-150");
         assert_eq!(event.event_id, "mr-12-review-150");
     }
 
@@ -1203,7 +1184,6 @@ mod tests {
         let event = make_trigger_event(
             TriggerType::GitlabMergeRequestCommentMention {
                 mentioned_user: None,
-                allowed_users: None,
             },
             "mr-12-comment-250",
         );
@@ -1260,10 +1240,7 @@ mod tests {
     #[test]
     fn test_integration_build_key_with_event_id() {
         let event = make_trigger_event(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-                allowed_users: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             "issue-42",
         );
         let key = build_dedup_key("mintybasil", "yoke", &event.event_id);
@@ -1272,24 +1249,14 @@ mod tests {
 
     #[test]
     fn test_integration_pr_review_dedup_key() {
-        let event = make_trigger_event(
-            TriggerType::GithubPullRequestReview {
-                allowed_users: None,
-            },
-            "pr-7-review-999",
-        );
+        let event = make_trigger_event(TriggerType::GithubPullRequestReview, "pr-7-review-999");
         let key = build_dedup_key("mintybasil", "yoke", &event.event_id);
         assert_eq!(key, "mintybasil/yoke/pr-7-review-999");
     }
 
     #[test]
     fn test_integration_gitlab_mr_dedup_key() {
-        let event = make_trigger_event(
-            TriggerType::GitlabMergeRequestReview {
-                allowed_users: None,
-            },
-            "mr-12-review-150",
-        );
+        let event = make_trigger_event(TriggerType::GitlabMergeRequestReview, "mr-12-review-150");
         let key = build_dedup_key("internal-team", "backend-service", &event.event_id);
         assert_eq!(key, "internal-team/backend-service/mr-12-review-150");
     }

@@ -314,7 +314,6 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
             };
             Some(TriggerType::GithubIssueAssigned {
                 assigned_to: payload.issue.assignee.as_ref().map(|a| a.login.clone()),
-                allowed_users: None,
             })
         }
         (GITHUB_ISSUE_COMMENT, "created") => {
@@ -328,12 +327,10 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
             if payload.pull_request.is_some() {
                 Some(TriggerType::GithubPullRequestCommentMention {
                     mentioned_user: None,
-                    allowed_users: None,
                 })
             } else {
                 Some(TriggerType::GithubIssueCommentMention {
                     mentioned_user: None,
-                    allowed_users: None,
                 })
             }
         }
@@ -342,9 +339,7 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 GitHubPayload::PullRequestReview(p) => p,
                 _ => return None,
             };
-            Some(TriggerType::GithubPullRequestReview {
-                allowed_users: None,
-            })
+            Some(TriggerType::GithubPullRequestReview)
         }
         (GITHUB_PULL_REQUEST_REVIEW_COMMENT, "created") => {
             let payload = match &event.payload {
@@ -357,7 +352,6 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 .unwrap_or(payload.comment.id);
             Some(TriggerType::GithubPullRequestCommentMention {
                 mentioned_user: None,
-                allowed_users: None,
             })
         }
         _ => None,
@@ -799,10 +793,7 @@ mod tests {
         let event = parse_github_event("pull_request_review", body.as_bytes()).unwrap();
         let trigger = map_to_trigger_event(&event).unwrap();
 
-        assert!(matches!(
-            trigger,
-            TriggerType::GithubPullRequestReview { .. }
-        ));
+        assert!(matches!(trigger, TriggerType::GithubPullRequestReview));
         assert_eq!(
             trigger.label(),
             crate::workflow::triggers::GITHUB_PULL_REQUEST_REVIEW
@@ -984,7 +975,7 @@ mod tests {
         let event = result.unwrap();
         assert!(matches!(
             event.trigger_type,
-            TriggerType::GithubPullRequestReview { .. }
+            TriggerType::GithubPullRequestReview
         ));
         assert_eq!(event.event_id, "pr-7-review-999");
         assert_eq!(event.variables.get("pr_number").unwrap(), "7");
