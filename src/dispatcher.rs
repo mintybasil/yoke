@@ -1103,8 +1103,8 @@ mod tests {
 
     // --- event_id canonical form tests ---
     // event_id is the canonical form defined per trigger type in the architecture
-    // design (Appendix A: Trigger Reference). It is used directly — never stripped
-    // or transformed — for dedup keys, workspace dirs, template variables, and logs.
+    // design (Appendix A: Trigger Reference). It is used for dedup keys,
+    // workspace dirs, template variables, and logs.
 
     fn make_trigger_event(trigger_type: TriggerType, event_id: &str) -> TriggerEvent {
         TriggerEvent {
