@@ -95,7 +95,6 @@ async fn test_graceful_shutdown_with_custom_drain_timeout() {
     let msg = make_message(
         TriggerType::GithubIssueAssigned {
             assigned_to: None,
-            allowed_users: None,
         },
         "issue-42",
     );
@@ -148,7 +147,6 @@ async fn test_state_persisted_on_graceful_shutdown() {
     let msg = make_message(
         TriggerType::GithubIssueAssigned {
             assigned_to: None,
-            allowed_users: None,
         },
         "issue-42",
     );
@@ -242,7 +240,6 @@ async fn test_drain_timeout_expires_gracefully() {
         let msg = make_message(
             TriggerType::GithubIssueAssigned {
                 assigned_to: None,
-                allowed_users: None,
             },
             &format!("issue-{}", 100 + i),
         );
@@ -286,9 +283,7 @@ async fn test_shutdown_signal_propagates_via_watch_channel() {
 
     // Send an event
     let msg = make_message(
-        TriggerType::GithubPullRequestReview {
-            allowed_users: None,
-        },
+        TriggerType::GithubPullRequestReview,
         "pr-7-review-999",
     );
     tx.send(msg).await.unwrap();

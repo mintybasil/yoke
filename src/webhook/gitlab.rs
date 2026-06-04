@@ -279,7 +279,6 @@ pub fn map_to_trigger_event(event: &GitLabEvent) -> Option<TriggerType> {
             if p.object_attributes.action.as_deref() == Some("update") {
                 Some(TriggerType::GitlabIssueAssigned {
                     assigned_to: None,
-                    allowed_users: None,
                 })
             } else {
                 None
@@ -292,17 +291,13 @@ pub fn map_to_trigger_event(event: &GitLabEvent) -> Option<TriggerType> {
             match (noteable_type, note_type) {
                 ("Issue", _) => Some(TriggerType::GitlabIssueMention {
                     mentioned_user: None,
-                    allowed_users: None,
                 }),
                 ("MergeRequest", "DiffNote") => {
                     Some(TriggerType::GitlabMergeRequestCommentMention {
                         mentioned_user: None,
-                        allowed_users: None,
                     })
                 }
-                ("MergeRequest", _) => Some(TriggerType::GitlabMergeRequestReview {
-                    allowed_users: None,
-                }),
+                ("MergeRequest", _) => Some(TriggerType::GitlabMergeRequestReview),
                 _ => None,
             }
         }
