@@ -162,6 +162,8 @@ These variables are available in all prompt templates, regardless of trigger typ
 | `owner`          | Repository owner (namespace)       |
 | `repo`           | Repository name                    |
 | `output_dir`     | Per-event workspace directory      |
+| `event_id`       | Canonical event identifier (e.g. `issue-42`, `pr-7-review-999`) — defined per trigger type in Appendix A |
+| `repo_path`      | Full repository path (`owner/repo`) |
 
 Additional trigger-specific variables are also available. See Appendix A for details.
 
@@ -295,7 +297,7 @@ The dispatcher consumes `DispatchMessage`s from the mpsc channel, manages dedup 
 
 ### Dedup Logic
 
-- `{owner}/{repo}/{event_id}` as the dedup key
+- Dedup keys use the canonical `event_id` from `TriggerEvent.event_id` (as defined per trigger type in Appendix A). The key format is `{owner}/{repo}/{event_id}` — e.g. `mintybasil/yoke/issue-42`, not `mintybasil/yoke/42`. The dispatcher must never strip or transform the canonical `event_id`.
 - Completed events are skipped
 - In-flight events are skipped
 - Permanently-failed events are skipped
@@ -337,7 +339,7 @@ The dispatcher loop runs as a single tokio task, so the dedup check + in_flight 
 
 When the dispatcher consumes a `DispatchMessage`, it follows these steps in order:
 
-1. **Dedup check**: Build the `{owner}/{repo}/{event_id}` key and check against `in_flight`, `completed`, and `permanently_failed` sets. If the event is already known, skip it.
+1. **Dedup check**: Build the `{owner}/{repo}/{event_id}` dedup key using the canonical `event_id` from `TriggerEvent.event_id` (see Appendix A for formats) and check against `in_flight`, `completed`, and `permanently_failed` sets. If the event is already known, skip it.
 2. **Authorized-actor check**: The dispatcher extracts the actor from the webhook payload (the user who performed the action, e.g. the person who assigned the issue) and checks it against the workflow's `allowed_users`. If the actor is not in the list, the workflow is skipped. This is a security boundary, not a content filter. (See the **Trigger Authorization** section for details on how the actor is determined per trigger type.)
 3. **Semaphore acquire**: If the event is new and authorized, acquire a permit from the concurrency semaphore (or proceed immediately if `max_concurrent = 0`).
 4. **Track in_flight**: Insert the event key into the in_flight set.
@@ -393,7 +395,7 @@ post_hooks = [{ type = "file_contains", path = "plan.md", text = "implementation
 
 ### Dedup & Persistence
 
-- **completed.json** — set of `{owner}/{repo}/{event_id}` strings for events that completed successfully
+- **completed.json** — set of `{owner}/{repo}/{event_id}` strings (using canonical `event_id`) for events that completed successfully
 - **failed.json** — array of `{key, timestamp, error}` entries for events that failed
 - Atomic file writes (write to `.tmp`, rename)
 - Loaded on startup, appended to on completion/failure
@@ -431,7 +433,7 @@ When the harness executes a step, it builds a request to the agent's `base_url`:
 - When `git.clone = true` or `git.worktree = true`: The `instructions` field includes the workspace directory path with an explicit `cd` directive
 - When both are `false`: The `instructions` field omits the workspace path (agent operates without local file access)
 
-The workspace directory is `{workdir}/{owner}/{repo}/{event_id}/` (or `{workdir}/{owner}/{repo}/{event_id}/worktree-{N}/` if worktrees are enabled).
+The workspace directory is `{workdir}/{owner}/{repo}/{event_id}/` (or `{workdir}/{owner}/{repo}/{event_id}/worktree-{N}/` if worktrees are enabled), where `{event_id}` is the canonical form from `TriggerEvent.event_id` (see Appendix A).
 
 ### Agent Resolution
 

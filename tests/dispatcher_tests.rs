@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yoke::dispatcher::{
-    DispatchMessage, Dispatcher, build_dedup_key, extract_event_id, load_persistence,
+    DispatchMessage, Dispatcher, build_dedup_key, load_persistence,
     new_dedup_sets,
 };
 use yoke::reload::WorkflowState;
@@ -99,7 +99,7 @@ async fn test_full_dispatch_flow_completes_and_persists() {
         },
         "issue-42",
     );
-    let key = build_dedup_key("owner", "repo", &extract_event_id(&event));
+    let key = build_dedup_key("owner", "repo", &event.event_id);
     assert!(
         sets.completed.contains(&key),
         "event should be in completed set"
@@ -253,7 +253,7 @@ async fn test_completed_events_persisted_to_disk() {
         },
         "issue-42",
     );
-    let key = build_dedup_key("owner", "repo", &extract_event_id(&event));
+    let key = build_dedup_key("owner", "repo", &event.event_id);
     assert!(
         loaded.contains(&key),
         "completed.json should contain the event key"
@@ -540,7 +540,7 @@ async fn test_gitlab_event_dispatched() {
         },
         "issue-7",
     );
-    let key = build_dedup_key("owner", "repo", &extract_event_id(&event));
+    let key = build_dedup_key("owner", "repo", &event.event_id);
     assert!(
         sets.completed.contains(&key),
         "GitLab event should be in completed set"

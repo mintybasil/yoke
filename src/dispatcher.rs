@@ -453,7 +453,7 @@ impl Dispatcher {
     #[instrument(skip_all, fields(event_id = %msg.event.event_id, repo = %msg.event.repo_path))]
     async fn spawn_workflow(&self, msg: DispatchMessage) {
         let event = msg.event;
-        let event_id = extract_event_id(&event);
+        let event_id = event.event_id.clone();
         let key = build_dedup_key(
             &parse_owner(&event.repo_path),
             &parse_repo(&event.repo_path),
@@ -676,105 +676,11 @@ impl Dispatcher {
 
 /// Build a dedup key from owner, repo, and event ID.
 ///
-/// The format is `{owner}/{repo}/{event_id}`, e.g.
-/// `mintybasil/yoke/42` or `internal-team/backend-service/7_review-999`.
+/// The format is `{owner}/{repo}/{event_id}`, where `event_id` is the canonical
+/// form defined per trigger type in the architecture design (e.g. `issue-42`,
+/// `pr-7-review-999`, `mr-12-comment-250`).
 pub fn build_dedup_key(owner: &str, repo: &str, event_id: &str) -> String {
     format!("{}/{}/{}", owner, repo, event_id)
-}
-
-/// Extract an event ID from a `TriggerEvent` for deduplication.
-///
-/// The event ID identifies the specific work context for an event:
-/// - GitHub issue assigned: the issue number (e.g. `42`)
-/// - GitHub issue comment: the issue number (e.g. `42`)
-/// - GitHub PR review: `{pr_number}_review-{review_id}` (e.g. `7_review-999`)
-/// - GitHub PR review comment: `{pr_number}_comment-{comment_id}` (e.g. `7_comment-555`)
-/// - GitLab issue assigned: the issue IID (e.g. `7`)
-/// - GitLab issue mention: the issue IID (e.g. `7`)
-/// - GitLab MR review: `{mr_iid}_review-{note_id}` (e.g. `12_review-150`)
-/// - GitLab MR comment: `{mr_iid}_comment-{note_id}` (e.g. `12_comment-250`)
-pub fn extract_event_id(event: &TriggerEvent) -> String {
-    match &event.trigger_type {
-        // GitHub: event_id format is "issue-{number}" or "issue-{number}-comment-{id}"
-        // event ID is just the issue number
-        TriggerType::GithubIssueAssigned { .. } | TriggerType::GithubIssueCommentMention { .. } => {
-            extract_github_issue_event_id(&event.event_id)
-        }
-        // GitHub: event_id format is "pr-{pr_number}-review-{review_id}"
-        // or "pr-{pr_number}-comment-{comment_id}"
-        // event ID is "{pr_number}_review-{review_id}" or "{pr_number}_comment-{comment_id}"
-        TriggerType::GithubPullRequestReview { .. }
-        | TriggerType::GithubPullRequestCommentMention { .. } => {
-            extract_github_pr_event_id(&event.event_id)
-        }
-        // GitLab: event_id format is "issue-{iid}" or "issue-{iid}-note-{note_id}"
-        // event ID is just the issue IID
-        TriggerType::GitlabIssueAssigned { .. } | TriggerType::GitlabIssueMention { .. } => {
-            extract_gitlab_issue_event_id(&event.event_id)
-        }
-        // GitLab: event_id format is "mr-{iid}-review-{note_id}" or "mr-{iid}-comment-{note_id}"
-        // event ID is "{iid}_review-{note_id}" or "{iid}_comment-{note_id}"
-        TriggerType::GitlabMergeRequestReview { .. }
-        | TriggerType::GitlabMergeRequestCommentMention { .. } => {
-            extract_gitlab_mr_event_id(&event.event_id)
-        }
-    }
-}
-
-/// For GitHub issue events, extract the issue number as event ID.
-/// Input: "issue-42" or "issue-42-comment-12345" -> "42"
-fn extract_github_issue_event_id(event_id: &str) -> String {
-    event_id
-        .strip_prefix("issue-")
-        .map(|s| {
-            s.split_once('-')
-                .map_or(s.to_string(), |(num, _)| num.to_string())
-        })
-        .unwrap_or_else(|| event_id.to_string())
-}
-
-/// For GitHub PR events, extract event ID from the TriggerEvent's event_id.
-/// Input: "pr-7-review-999" -> "7_review-999"
-/// Input: "pr-7-comment-555" -> "7_comment-555"
-fn extract_github_pr_event_id(event_id: &str) -> String {
-    event_id
-        .strip_prefix("pr-")
-        .map(|rest| {
-            if let Some((pr_num, after)) = rest.split_once('-') {
-                format!("{}_{}", pr_num, after)
-            } else {
-                rest.to_string()
-            }
-        })
-        .unwrap_or_else(|| event_id.to_string())
-}
-
-/// For GitLab issue events, extract the issue number as event ID.
-/// Input: "issue-7" or "issue-7-note-99" -> "7"
-fn extract_gitlab_issue_event_id(event_id: &str) -> String {
-    event_id
-        .strip_prefix("issue-")
-        .map(|s| {
-            s.split_once('-')
-                .map_or(s.to_string(), |(num, _)| num.to_string())
-        })
-        .unwrap_or_else(|| event_id.to_string())
-}
-
-/// For GitLab MR events, extract event ID from the TriggerEvent's event_id.
-/// Input: "mr-12-review-150" -> "12_review-150"
-/// Input: "mr-12-comment-250" -> "12_comment-250"
-fn extract_gitlab_mr_event_id(event_id: &str) -> String {
-    event_id
-        .strip_prefix("mr-")
-        .map(|rest| {
-            if let Some((mr_iid, after)) = rest.split_once('-') {
-                format!("{}_{}", mr_iid, after)
-            } else {
-                rest.to_string()
-            }
-        })
-        .unwrap_or_else(|| event_id.to_string())
 }
 
 /// Parse the owner part from a `repo_path` string (e.g. `"owner/repo"` → `"owner"`).
@@ -1179,23 +1085,26 @@ mod tests {
 
     #[test]
     fn test_build_dedup_key_basic() {
-        let key = build_dedup_key("owner", "repo", "42");
-        assert_eq!(key, "owner/repo/42");
+        let key = build_dedup_key("owner", "repo", "issue-42");
+        assert_eq!(key, "owner/repo/issue-42");
     }
 
     #[test]
     fn test_build_dedup_key_with_event_id() {
-        let key = build_dedup_key("mintybasil", "yoke", "7_review-999");
-        assert_eq!(key, "mintybasil/yoke/7_review-999");
+        let key = build_dedup_key("mintybasil", "yoke", "pr-7-review-999");
+        assert_eq!(key, "mintybasil/yoke/pr-7-review-999");
     }
 
     #[test]
     fn test_build_dedup_key_with_namespace() {
-        let key = build_dedup_key("internal-team", "backend-service", "42");
-        assert_eq!(key, "internal-team/backend-service/42");
+        let key = build_dedup_key("internal-team", "backend-service", "issue-42");
+        assert_eq!(key, "internal-team/backend-service/issue-42");
     }
 
-    // --- extract_event_id tests ---
+    // --- event_id canonical form tests ---
+    // event_id is the canonical form defined per trigger type in the architecture
+    // design (Appendix A: Trigger Reference). It is used directly — never stripped
+    // or transformed — for dedup keys, workspace dirs, template variables, and logs.
 
     fn make_trigger_event(trigger_type: TriggerType, event_id: &str) -> TriggerEvent {
         TriggerEvent {
@@ -1208,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_event_id_github_issue_assigned() {
+    fn test_event_id_canonical_github_issue_assigned() {
         let event = make_trigger_event(
             TriggerType::GithubIssueAssigned {
                 assigned_to: None,
@@ -1216,11 +1125,11 @@ mod tests {
             },
             "issue-42",
         );
-        assert_eq!(extract_event_id(&event), "42");
+        assert_eq!(event.event_id, "issue-42");
     }
 
     #[test]
-    fn test_extract_event_id_github_issue_comment() {
+    fn test_event_id_canonical_github_issue_comment() {
         let event = make_trigger_event(
             TriggerType::GithubIssueCommentMention {
                 mentioned_user: None,
@@ -1228,22 +1137,22 @@ mod tests {
             },
             "issue-42-comment-12345",
         );
-        assert_eq!(extract_event_id(&event), "42");
+        assert_eq!(event.event_id, "issue-42-comment-12345");
     }
 
     #[test]
-    fn test_extract_event_id_github_pr_review() {
+    fn test_event_id_canonical_github_pr_review() {
         let event = make_trigger_event(
             TriggerType::GithubPullRequestReview {
                 allowed_users: None,
             },
             "pr-7-review-999",
         );
-        assert_eq!(extract_event_id(&event), "7_review-999");
+        assert_eq!(event.event_id, "pr-7-review-999");
     }
 
     #[test]
-    fn test_extract_event_id_github_pr_review_comment() {
+    fn test_event_id_canonical_github_pr_review_comment() {
         let event = make_trigger_event(
             TriggerType::GithubPullRequestCommentMention {
                 mentioned_user: None,
@@ -1251,11 +1160,11 @@ mod tests {
             },
             "pr-7-comment-555",
         );
-        assert_eq!(extract_event_id(&event), "7_comment-555");
+        assert_eq!(event.event_id, "pr-7-comment-555");
     }
 
     #[test]
-    fn test_extract_event_id_gitlab_issue_assigned() {
+    fn test_event_id_canonical_gitlab_issue_assigned() {
         let event = make_trigger_event(
             TriggerType::GitlabIssueAssigned {
                 assigned_to: None,
@@ -1263,11 +1172,11 @@ mod tests {
             },
             "issue-7",
         );
-        assert_eq!(extract_event_id(&event), "7");
+        assert_eq!(event.event_id, "issue-7");
     }
 
     #[test]
-    fn test_extract_event_id_gitlab_issue_mention() {
+    fn test_event_id_canonical_gitlab_issue_mention() {
         let event = make_trigger_event(
             TriggerType::GitlabIssueMention {
                 mentioned_user: None,
@@ -1275,22 +1184,22 @@ mod tests {
             },
             "issue-7-note-99",
         );
-        assert_eq!(extract_event_id(&event), "7");
+        assert_eq!(event.event_id, "issue-7-note-99");
     }
 
     #[test]
-    fn test_extract_event_id_gitlab_mr_review() {
+    fn test_event_id_canonical_gitlab_mr_review() {
         let event = make_trigger_event(
             TriggerType::GitlabMergeRequestReview {
                 allowed_users: None,
             },
             "mr-12-review-150",
         );
-        assert_eq!(extract_event_id(&event), "12_review-150");
+        assert_eq!(event.event_id, "mr-12-review-150");
     }
 
     #[test]
-    fn test_extract_event_id_gitlab_mr_comment() {
+    fn test_event_id_canonical_gitlab_mr_comment() {
         let event = make_trigger_event(
             TriggerType::GitlabMergeRequestCommentMention {
                 mentioned_user: None,
@@ -1298,7 +1207,7 @@ mod tests {
             },
             "mr-12-comment-250",
         );
-        assert_eq!(extract_event_id(&event), "12_comment-250");
+        assert_eq!(event.event_id, "mr-12-comment-250");
     }
 
     // --- New dedup sets helper ---
@@ -1346,7 +1255,7 @@ mod tests {
         }
     }
 
-    // --- build_dedup_key + extract_event_id integration ---
+    // --- build_dedup_key + event_id integration ---
 
     #[test]
     fn test_integration_build_key_with_event_id() {
@@ -1357,9 +1266,8 @@ mod tests {
             },
             "issue-42",
         );
-        let event_id = extract_event_id(&event);
-        let key = build_dedup_key("mintybasil", "yoke", &event_id);
-        assert_eq!(key, "mintybasil/yoke/42");
+        let key = build_dedup_key("mintybasil", "yoke", &event.event_id);
+        assert_eq!(key, "mintybasil/yoke/issue-42");
     }
 
     #[test]
@@ -1370,9 +1278,8 @@ mod tests {
             },
             "pr-7-review-999",
         );
-        let event_id = extract_event_id(&event);
-        let key = build_dedup_key("mintybasil", "yoke", &event_id);
-        assert_eq!(key, "mintybasil/yoke/7_review-999");
+        let key = build_dedup_key("mintybasil", "yoke", &event.event_id);
+        assert_eq!(key, "mintybasil/yoke/pr-7-review-999");
     }
 
     #[test]
@@ -1383,9 +1290,8 @@ mod tests {
             },
             "mr-12-review-150",
         );
-        let event_id = extract_event_id(&event);
-        let key = build_dedup_key("internal-team", "backend-service", &event_id);
-        assert_eq!(key, "internal-team/backend-service/12_review-150");
+        let key = build_dedup_key("internal-team", "backend-service", &event.event_id);
+        assert_eq!(key, "internal-team/backend-service/mr-12-review-150");
     }
 
     // --- Persistence tests ---
@@ -1889,14 +1795,14 @@ mod tests {
     #[test]
     fn test_workspace_dir_basic() {
         let workdir = PathBuf::from("/tmp/yoke");
-        let ws = workspace_dir(&workdir, "mintybasil", "yoke", "42");
-        assert_eq!(ws, PathBuf::from("/tmp/yoke/mintybasil/yoke/42"));
+        let ws = workspace_dir(&workdir, "mintybasil", "yoke", "issue-42");
+        assert_eq!(ws, PathBuf::from("/tmp/yoke/mintybasil/yoke/issue-42"));
     }
 
     #[test]
     fn test_workspace_dir_with_complex_event_id() {
         let workdir = PathBuf::from("/tmp/yoke");
-        let ws = workspace_dir(&workdir, "org-name", "project", "7_review-999");
-        assert_eq!(ws, PathBuf::from("/tmp/yoke/org-name/project/7_review-999"));
+        let ws = workspace_dir(&workdir, "org-name", "project", "pr-7-review-999");
+        assert_eq!(ws, PathBuf::from("/tmp/yoke/org-name/project/pr-7-review-999"));
     }
 }
