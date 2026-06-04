@@ -103,6 +103,29 @@ cargo run -- --config /path/to/config.toml --workflows /path/to/workflows
 
 Yoke listens for webhook events on `http://{host}:{port}/webhook`. The `webhook_host` setting determines the hostname used in webhook registration URLs, which may differ from the bind address (`host`) — for example, binding to `0.0.0.0` locally while advertising `yoke.example.com` in webhook URLs. 
 
+## Secure Webhook Exposure with Tailscale Funnel
+
+If you are running Yoke locally but need to receive webhooks from GitHub or GitLab, you can use **Tailscale Funnel** to securely expose your local server to the internet without configuring firewall rules or port forwarding.
+
+### Overview
+
+Tailscale Funnel routes public internet traffic to a port on your machine over your Tailscale network. You advertise a public DNS name that GitHub or GitLab can send webhook events to, and Funnel forwards that traffic to your local Yoke instance.
+
+### Setup Steps
+
+1. **Ensure Funnel is enabled:** In the [Tailscale Admin Console](https://login.tailscale.com/admin/machines), enable Funnel for your node.
+2. **Expose the Yoke port:** Run the following command to expose Yoke's default port:
+   ```bash
+   tailscale funnel 8644
+   ```
+3. **Configure Yoke:** Use your Tailscale DNS name (e.g., `machine.tailnet-name.ts.net`) as the `webhook_host` in `config.toml`:
+   ```toml
+   [server]
+   webhook_host = "machine.tailnet-name.ts.net"
+   ```
+
+For detailed configuration and advanced options, refer to the [official Tailscale Funnel documentation](https://tailscale.com/kb/1262/funnel/).
+
 ## Configuration
 
 Yoke reads configuration from a `config.toml` file. The default path is `config.toml` in the current directory; override with `--config`.
