@@ -1268,7 +1268,7 @@ This appendix consolidates all trigger types, event mappings, and template varia
 |---------------------------------------|-----------------------|-------------|---------------------------------------------------------|-------------------------|------------------------------------|---------------------------------------------|
 | `github_issue_assigned`               | `issues`              | `assigned`  | `issue_number`, `assignee`, `issue_title`, `issue_body` | `assigned_to`            | `payload.sender.login`             | `issue-{issue_number}`                      |
 | `github_issue_comment_mention`        | `issue_comment`       | `created`   | `issue_number`, `comment_id`, `comment_body`            | `mentioned_user`         | `payload.sender.login`             | `issue-{issue_number}-comment-{comment_id}` |
-| `github_pull_request_review`          | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body`                 | —                        | `payload.sender.login`             | `pr-{pr_number}-review-{review_id}`         |
+| `github_pull_request_review`          | `pull_request_review` | `submitted` | `pr_number`, `review_id`, `review_body`                 | —                        | `payload.review.user.login` (fallback `payload.sender.login`) | `pr-{pr_number}-review-{review_id}`         |
 | `github_pull_request_comment_mention` | `issue_comment`       | `created`   | `pr_number`, `review_id`, `comment_id`, `comment_body`  | `mentioned_user`         | `payload.sender.login`             | `pr-{pr_number}-comment-{comment_id}`       |
 
 _Note: Github considers PRs as a type of issue. `github_issue_comment` should only trigger for comments on issues, not 
