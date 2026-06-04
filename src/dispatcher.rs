@@ -487,7 +487,7 @@ impl Dispatcher {
             }
         };
 
-        tracing::info!(%key, repo = %event.repo_path, event_id = %event_id, "Spawning workflow");
+        tracing::info!(%key, "Spawning workflow");
 
         // Clone what we need for the spawned task
         let dedup_sets = self.dedup_sets.clone();
@@ -517,7 +517,7 @@ impl Dispatcher {
         tokio::spawn(async move {
             let result = async {
                 tracing::info!(
-                    trigger_type = ?event.trigger_type,
+                    trigger = %event.trigger_type,
                     repo = %event.repo_path,
                     event_id = %event.event_id,
                     workspace = %event_ws_dir.display(),
@@ -531,7 +531,7 @@ impl Dispatcher {
 
                 if matching.is_empty() {
                     tracing::warn!(
-                        trigger_type = %event.trigger_type.label(),
+                        trigger = %event.trigger_type,
                         repo = %event.repo_path,
                         event_id = %event.event_id,
                         actor = %event.actor,
@@ -557,7 +557,7 @@ impl Dispatcher {
                         steps = workflow.steps.len(),
                         repo = %event.repo_path,
                         event_id = %event_id,
-                        "Running matching workflow"
+                        "Running workflow"
                     );
 
                     // Build template variables from the event context

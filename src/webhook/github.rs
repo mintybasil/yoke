@@ -396,18 +396,20 @@ pub fn handle_github_webhook(
     let event = parse_github_event(_event_header, body).map_err(|e| match e {
         GitHubWebhookError::UnknownEventType(t) => {
             // Unknown event types are a no-op — return 200 so the platform doesn't retry
-            WebhookError::NoMatchingTrigger(format!("unhandled event type: {t}"))
+            WebhookError::NoMatchingTrigger {
+                event: t,
+                action: String::new(),
+            }
         }
         _ => WebhookError::BadRequest(e.to_string()),
     })?;
 
     // Step 4: Map to a trigger type
-    let trigger_type = map_to_trigger_event(&event).ok_or_else(|| {
-        WebhookError::NoMatchingTrigger(format!(
-            "no matching trigger for event '{}' action '{}'",
-            event.event_type, event.action
-        ))
-    })?;
+    let trigger_type =
+        map_to_trigger_event(&event).ok_or_else(|| WebhookError::NoMatchingTrigger {
+            event: event.event_type.clone(),
+            action: event.action.clone(),
+        })?;
 
     // Step 5: Build result with trigger-specific variables and repo_path
     let repo_path = event.repository.full_name.clone();
@@ -1039,7 +1041,10 @@ mod tests {
         // "push" is unknown — parse_github_event returns UnknownEventType,
         // which maps to NoMatchingTrigger
         let result = handle_github_webhook(&signature, GITHUB_PUSH, body, secret);
-        assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
+        assert!(matches!(
+            result,
+            Err(WebhookError::NoMatchingTrigger { .. })
+        ));
     }
 
     #[test]
@@ -1051,7 +1056,10 @@ mod tests {
         let signature = make_signature(payload, secret);
 
         let result = handle_github_webhook(&signature, GITHUB_ISSUES, payload, secret);
-        assert!(matches!(result, Err(WebhookError::NoMatchingTrigger(_))));
+        assert!(matches!(
+            result,
+            Err(WebhookError::NoMatchingTrigger { .. })
+        ));
     }
 
     #[test]
