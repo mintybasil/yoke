@@ -104,27 +104,15 @@ pub use crate::hooks::Hook;
 #[derive(Debug, Clone, PartialEq)]
 pub enum TriggerType {
     // GitHub triggers
-    GithubIssueAssigned {
-        assigned_to: Option<String>,
-    },
-    GithubIssueCommentMention {
-        mentioned_user: Option<String>,
-    },
+    GithubIssueAssigned { assigned_to: Option<String> },
+    GithubIssueCommentMention { mentioned_user: Option<String> },
     GithubPullRequestReview,
-    GithubPullRequestCommentMention {
-        mentioned_user: Option<String>,
-    },
+    GithubPullRequestCommentMention { mentioned_user: Option<String> },
     // GitLab triggers
-    GitlabIssueAssigned {
-        assigned_to: Option<String>,
-    },
-    GitlabIssueMention {
-        mentioned_user: Option<String>,
-    },
+    GitlabIssueAssigned { assigned_to: Option<String> },
+    GitlabIssueMention { mentioned_user: Option<String> },
     GitlabMergeRequestReview,
-    GitlabMergeRequestCommentMention {
-        mentioned_user: Option<String>,
-    },
+    GitlabMergeRequestCommentMention { mentioned_user: Option<String> },
 }
 
 impl TriggerType {
@@ -1175,9 +1163,7 @@ prompt_template = "Do the thing"
         };
         let tt = TriggerType::from_trigger(&trigger).unwrap();
         match tt {
-            TriggerType::GithubIssueCommentMention {
-                mentioned_user,
-            } => {
+            TriggerType::GithubIssueCommentMention { mentioned_user } => {
                 assert_eq!(mentioned_user, Some("carol".to_string()));
             }
             _ => panic!("expected GithubIssueCommentMention variant"),
@@ -1339,9 +1325,7 @@ prompt_template = "Do the thing"
 
     #[test]
     fn test_known_variables_github_issue_assigned() {
-        let tt = TriggerType::GithubIssueAssigned {
-            assigned_to: None,
-        };
+        let tt = TriggerType::GithubIssueAssigned { assigned_to: None };
         let vars = tt.known_variables();
         // Global
         assert!(vars.contains("owner"));
@@ -1361,9 +1345,7 @@ prompt_template = "Do the thing"
 
     #[test]
     fn test_known_variables_gitlab_issue_assigned() {
-        let tt = TriggerType::GitlabIssueAssigned {
-            assigned_to: None,
-        };
+        let tt = TriggerType::GitlabIssueAssigned { assigned_to: None };
         let vars = tt.known_variables();
         // Global
         assert!(vars.contains("owner"));

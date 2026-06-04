@@ -75,9 +75,7 @@ async fn test_full_dispatch_flow_completes_and_persists() {
 
     // Send a single event
     let msg = make_message(
-        TriggerType::GithubIssueAssigned {
-            assigned_to: None,
-        },
+        TriggerType::GithubIssueAssigned { assigned_to: None },
         "issue-42",
     );
     tx.send(msg).await.unwrap();
@@ -92,9 +90,7 @@ async fn test_full_dispatch_flow_completes_and_persists() {
     // Verify the event was tracked in completed set
     let sets = dedup_sets.read().await;
     let event = make_event(
-        TriggerType::GithubIssueAssigned {
-            assigned_to: None,
-        },
+        TriggerType::GithubIssueAssigned { assigned_to: None },
         "issue-42",
     );
     let key = build_dedup_key("owner", "repo", &extract_event_id(&event));
@@ -126,9 +122,7 @@ async fn test_duplicate_event_rejected() {
     });
 
     // Send the same event twice
-    let event_type = TriggerType::GithubIssueAssigned {
-        assigned_to: None,
-    };
+    let event_type = TriggerType::GithubIssueAssigned { assigned_to: None };
     let msg1 = make_message(event_type.clone(), "issue-42");
     let msg2 = make_message(event_type, "issue-42");
 
@@ -171,15 +165,11 @@ async fn test_concurrency_limit() {
 
     // Send two events with different event IDs
     let msg1 = make_message(
-        TriggerType::GithubIssueAssigned {
-            assigned_to: None,
-        },
+        TriggerType::GithubIssueAssigned { assigned_to: None },
         "issue-42",
     );
     let msg2 = make_message(
-        TriggerType::GithubIssueAssigned {
-            assigned_to: None,
-        },
+        TriggerType::GithubIssueAssigned { assigned_to: None },
         "issue-43",
     );
 
@@ -220,9 +210,7 @@ async fn test_completed_events_persisted_to_disk() {
     });
 
     let msg = make_message(
-        TriggerType::GithubIssueAssigned {
-            assigned_to: None,
-        },
+        TriggerType::GithubIssueAssigned { assigned_to: None },
         "issue-42",
     );
     tx.send(msg).await.unwrap();
@@ -241,9 +229,7 @@ async fn test_completed_events_persisted_to_disk() {
     let loaded: HashSet<String> =
         serde_json::from_str(&std::fs::read_to_string(&completed_path).unwrap()).unwrap();
     let event = make_event(
-        TriggerType::GithubIssueAssigned {
-            assigned_to: None,
-        },
+        TriggerType::GithubIssueAssigned { assigned_to: None },
         "issue-42",
     );
     let key = build_dedup_key("owner", "repo", &extract_event_id(&event));
@@ -271,10 +257,7 @@ async fn test_graceful_shutdown_drains_in_flight() {
     });
 
     // Send an event
-    let msg = make_message(
-        TriggerType::GithubPullRequestReview,
-        "pr-7-review-999",
-    );
+    let msg = make_message(TriggerType::GithubPullRequestReview, "pr-7-review-999");
     tx.send(msg).await.unwrap();
 
     // Give it a moment to start processing
@@ -355,21 +338,14 @@ async fn test_multiple_different_events_processed() {
     // Send multiple different events
     let events = vec![
         make_message(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             "issue-42",
         ),
         make_message(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             "issue-43",
         ),
-        make_message(
-            TriggerType::GithubPullRequestReview,
-            "pr-7-review-999",
-        ),
+        make_message(TriggerType::GithubPullRequestReview, "pr-7-review-999"),
     ];
 
     for msg in events {
@@ -505,9 +481,7 @@ async fn test_gitlab_event_dispatched() {
     });
 
     let msg = make_message(
-        TriggerType::GitlabIssueAssigned {
-            assigned_to: None,
-        },
+        TriggerType::GitlabIssueAssigned { assigned_to: None },
         "issue-7",
     );
     tx.send(msg).await.unwrap();
@@ -519,9 +493,7 @@ async fn test_gitlab_event_dispatched() {
 
     let sets = dedup_sets.read().await;
     let event = make_event(
-        TriggerType::GitlabIssueAssigned {
-            assigned_to: None,
-        },
+        TriggerType::GitlabIssueAssigned { assigned_to: None },
         "issue-7",
     );
     let key = build_dedup_key("owner", "repo", &extract_event_id(&event));
@@ -552,9 +524,7 @@ async fn test_unlimited_throughput() {
     let total_events = 500;
     for i in 0..total_events {
         let msg = make_message(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             &format!("issue-{i}"),
         );
         tx.send(msg).await.unwrap();
@@ -610,9 +580,7 @@ async fn test_concurrency_stress_with_semaphore() {
     let total_events = 50;
     for i in 0..total_events {
         let msg = make_message(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             &format!("issue-{i}"),
         );
         tx.send(msg).await.unwrap();
@@ -706,9 +674,7 @@ async fn test_permits_released_after_completion() {
     // They should all complete because permits are released after each task
     for i in 0..6 {
         let msg = make_message(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             &format!("issue-{i}"),
         );
         tx.send(msg).await.unwrap();
@@ -757,9 +723,7 @@ async fn test_active_count_decrements_after_spawn_workflow() {
     // Send 3 events — each will increment active_count on spawn
     for i in 0..3 {
         let msg = make_message(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             &format!("issue-{}0", 100 + i),
         );
         tx.send(msg).await.unwrap();
@@ -809,9 +773,7 @@ async fn test_active_count_stays_zero_with_unlimited_concurrency() {
     // Send multiple events — with unlimited concurrency, active_count stays 0
     for i in 0..5 {
         let msg = make_message(
-            TriggerType::GithubIssueAssigned {
-                assigned_to: None,
-            },
+            TriggerType::GithubIssueAssigned { assigned_to: None },
             &format!("issue-{i}00"),
         );
         tx.send(msg).await.unwrap();

@@ -277,9 +277,7 @@ pub fn map_to_trigger_event(event: &GitLabEvent) -> Option<TriggerType> {
         GitLabEvent::IssueHook(p) => {
             // Only trigger on "update" action (assignment fires as an update)
             if p.object_attributes.action.as_deref() == Some("update") {
-                Some(TriggerType::GitlabIssueAssigned {
-                    assigned_to: None,
-                })
+                Some(TriggerType::GitlabIssueAssigned { assigned_to: None })
             } else {
                 None
             }
