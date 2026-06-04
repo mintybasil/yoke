@@ -34,6 +34,7 @@ fn make_event(trigger_type: TriggerType, event_id: &str) -> TriggerEvent {
         trigger_type,
         repo_path: "owner/repo".to_string(),
         event_id: event_id.to_string(),
+        actor: "test-user".to_string(),
         variables: std::collections::HashMap::new(),
     }
 }

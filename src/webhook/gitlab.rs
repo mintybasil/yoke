@@ -49,6 +49,10 @@ pub struct GitLabPayload {
     /// DiffNote from regular notes when on a MergeRequest.
     #[serde(default)]
     pub system: Option<GitLabSystem>,
+    /// The user who triggered the event (the "actor").
+    /// Used to authorize the event against the workflow's `allowed_users` list.
+    #[serde(default)]
+    pub user: Option<GitLabUser>,
 }
 
 /// Attributes of the GitLab object (issue or note).
@@ -89,6 +93,16 @@ pub struct GitLabSystem {
     pub action: String,
 }
 
+/// The user who triggered a GitLab webhook event.
+///
+/// Per the architecture design, the actor (this user) is checked against
+/// the workflow's `allowed_users` list to authorize the event.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GitLabUser {
+    /// The username of the GitLab user who triggered the event.
+    pub username: String,
+}
+
 // ── Event enum ───────────────────────────────────────────────────────────────
 
 /// Parsed GitLab webhook event, discriminated by `object_kind`.
@@ -114,6 +128,18 @@ impl GitLabEvent {
         match self {
             GitLabEvent::IssueHook(p) => p.project.path_with_namespace.clone(),
             GitLabEvent::NoteHook(p) => p.project.path_with_namespace.clone(),
+        }
+    }
+
+    /// Return the username of the user who triggered this event (the "actor").
+    ///
+    /// Per the architecture design, the actor is the user who performed the
+    /// action that created the webhook event. This is extracted from
+    /// `user.username` in the GitLab payload.
+    pub fn actor(&self) -> Option<String> {
+        match self {
+            GitLabEvent::IssueHook(p) => p.user.as_ref().map(|u| u.username.clone()),
+            GitLabEvent::NoteHook(p) => p.user.as_ref().map(|u| u.username.clone()),
         }
     }
 
@@ -251,7 +277,10 @@ pub fn map_to_trigger_event(event: &GitLabEvent) -> Option<TriggerType> {
         GitLabEvent::IssueHook(p) => {
             // Only trigger on "update" action (assignment fires as an update)
             if p.object_attributes.action.as_deref() == Some("update") {
-                Some(TriggerType::GitlabIssueAssigned { assigned_to: None })
+                Some(TriggerType::GitlabIssueAssigned {
+                    assigned_to: None,
+                    allowed_users: None,
+                })
             } else {
                 None
             }
@@ -306,15 +335,28 @@ pub fn handle_gitlab_webhook(
         ))
     })?;
 
-    // Step 4: Extract repo path, event ID, and variables
+    // Step 4: Extract repo path, event ID, actor, and variables
     let repo_path = event.repo_path();
     let event_id = event.event_id();
     let variables = event.variables();
+
+    // Extract the actor (user) from the GitLab payload.
+    // Per the architecture design, the actor is the user who performed the
+    // action that created the webhook event (e.g. the person who assigned the
+    // issue or wrote the comment). This is used to authorize the event against
+    // the workflow's `allowed_users` list.
+    let actor = event.actor().unwrap_or_default();
+    if actor.is_empty() {
+        return Err(WebhookError::BadRequest(
+            "GitLab webhook payload missing user field: cannot determine actor".to_string(),
+        ));
+    }
 
     Ok(TriggerEvent {
         trigger_type,
         repo_path,
         event_id,
+        actor,
         variables,
     })
 }
@@ -383,6 +425,9 @@ mod tests {
             },
             noteable_type: None,
             system: None,
+            user: Some(GitLabUser {
+                username: "testuser".to_string(),
+            }),
         }
     }
 
@@ -403,6 +448,9 @@ mod tests {
             },
             noteable_type: Some("Issue".to_string()),
             system: None,
+            user: Some(GitLabUser {
+                username: "testuser".to_string(),
+            }),
         }
     }
 
@@ -423,6 +471,9 @@ mod tests {
             },
             noteable_type: Some("MergeRequest".to_string()),
             system: None,
+            user: Some(GitLabUser {
+                username: "testuser".to_string(),
+            }),
         }
     }
 
@@ -445,6 +496,9 @@ mod tests {
             system: Some(GitLabSystem {
                 action: "DiffNote".to_string(),
             }),
+            user: Some(GitLabUser {
+                username: "testuser".to_string(),
+            }),
         }
     }
 
@@ -461,6 +515,9 @@ mod tests {
             "project": {
                 "id": 1,
                 "path_with_namespace": "internal-team/backend-service"
+            },
+            "user": {
+                "username": "testuser"
             }
         });
         let result = parse_gitlab_event(json.to_string().as_bytes());
@@ -485,7 +542,10 @@ mod tests {
                 "id": 1,
                 "path_with_namespace": "owner/repo"
             },
-            "noteable_type": "Issue"
+            "noteable_type": "Issue",
+            "user": {
+                "username": "testuser"
+            }
         });
         let result = parse_gitlab_event(json.to_string().as_bytes());
         assert!(result.is_ok());
@@ -683,6 +743,9 @@ mod tests {
             "project": {
                 "id": 1,
                 "path_with_namespace": "internal-team/backend-service"
+            },
+            "user": {
+                "username": "alice"
             }
         });
         let body_bytes = body.to_string().into_bytes();
@@ -696,6 +759,7 @@ mod tests {
         ));
         assert_eq!(event.repo_path, "internal-team/backend-service");
         assert_eq!(event.event_id, "issue-7");
+        assert_eq!(event.actor, "alice");
         assert_eq!(event.variables.get("issue_iid").unwrap(), "7");
         assert_eq!(event.variables.get("issue_action").unwrap(), "update");
     }
@@ -716,7 +780,10 @@ mod tests {
                 "id": 1,
                 "path_with_namespace": "owner/repo"
             },
-            "noteable_type": "Issue"
+            "noteable_type": "Issue",
+            "user": {
+                "username": "bob"
+            }
         });
         let body_bytes = body.to_string().into_bytes();
 
@@ -728,6 +795,7 @@ mod tests {
             TriggerType::GitlabIssueMention { .. }
         ));
         assert_eq!(event.repo_path, "owner/repo");
+        assert_eq!(event.actor, "bob");
         assert_eq!(event.variables.get("note_id").unwrap(), "99");
         assert_eq!(event.variables.get("issue_iid").unwrap(), "7");
     }
@@ -748,7 +816,10 @@ mod tests {
                 "id": 1,
                 "path_with_namespace": "owner/repo"
             },
-            "noteable_type": "MergeRequest"
+            "noteable_type": "MergeRequest",
+            "user": {
+                "username": "charlie"
+            }
         });
         let body_bytes = body.to_string().into_bytes();
 
@@ -761,6 +832,7 @@ mod tests {
         ));
         assert_eq!(event.variables.get("note_id").unwrap(), "150");
         assert_eq!(event.variables.get("mr_iid").unwrap(), "12");
+        assert_eq!(event.actor, "charlie");
     }
 
     #[test]
@@ -782,6 +854,9 @@ mod tests {
             "noteable_type": "MergeRequest",
             "system": {
                 "action": "DiffNote"
+            },
+            "user": {
+                "username": "dave"
             }
         });
         let body_bytes = body.to_string().into_bytes();
@@ -795,6 +870,7 @@ mod tests {
         ));
         assert_eq!(event.variables.get("note_id").unwrap(), "250");
         assert_eq!(event.variables.get("mr_iid").unwrap(), "12");
+        assert_eq!(event.actor, "dave");
     }
 
     #[test]
@@ -861,6 +937,9 @@ mod tests {
             "project": {
                 "id": 1,
                 "path_with_namespace": "owner/repo"
+            },
+            "user": {
+                "username": "someuser"
             }
         });
         let body_bytes = body.to_string().into_bytes();
@@ -885,7 +964,10 @@ mod tests {
                 "id": 1,
                 "path_with_namespace": "owner/repo"
             },
-            "noteable_type": "Commit"
+            "noteable_type": "Commit",
+            "user": {
+                "username": "someuser"
+            }
         });
         let body_bytes = body.to_string().into_bytes();
 

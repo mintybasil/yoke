@@ -386,6 +386,9 @@ mod tests {
             "project": {
                 "id": 1,
                 "path_with_namespace": "owner/repo"
+            },
+            "user": {
+                "username": "testuser"
             }
         });
 
@@ -857,6 +860,9 @@ mod tests {
             "project": {
                 "id": 1,
                 "path_with_namespace": "owner/repo"
+            },
+            "user": {
+                "username": "testuser"
             }
         });
 
