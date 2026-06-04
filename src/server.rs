@@ -168,7 +168,7 @@ fn build_router(state: AppState, config: &ServerConfig) -> Router {
 ///
 /// # Arguments
 ///
-/// * `config` — Server configuration (host, port, webhook secret, etc.)
+/// * `config` — Server configuration (host, port, etc.)
 /// * `platform` — The platform type (GitHub or GitLab)
 /// * `max_concurrent` — Maximum concurrent workflows (0 = unlimited)
 /// * `workdir` — Directory for persisting dispatcher state
@@ -213,7 +213,8 @@ pub async fn run_server(
     let state = AppState {
         webhook_handler: webhook::WebhookHandler::new(
             platform.clone(),
-            config.webhook_secret.clone(),
+            std::env::var(crate::config::env::WEBHOOK_SECRET)
+                .expect("WEBHOOK_SECRET env var must be set"),
             tx,
         ),
         dispatcher: dispatcher.clone(),
@@ -277,7 +278,6 @@ mod tests {
             host: "0.0.0.0".to_string(),
             webhook_host: "yoke.example.com".to_string(),
             port: 0, // not used for in-memory tests
-            webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
         }
     }
@@ -572,7 +572,7 @@ mod tests {
         let app = build_router(state, &config);
 
         let body = r#"{}"#;
-        let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
+        let sig = compute_signature(body.as_bytes(), "test-secret");
 
         let response = app
             .oneshot(
@@ -610,7 +610,7 @@ mod tests {
             "sender": {"login": "bob"},
             "repository": {"full_name": "owner/repo"}
         }"#;
-        let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
+        let sig = compute_signature(body.as_bytes(), "test-secret");
 
         let response = app
             .oneshot(
@@ -649,7 +649,7 @@ mod tests {
             "sender": {"login": "charlie"},
             "repository": {"full_name": "owner/repo"}
         }"#;
-        let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
+        let sig = compute_signature(body.as_bytes(), "test-secret");
 
         let response = app
             .oneshot(
@@ -687,7 +687,7 @@ mod tests {
             "sender": {"login": "reviewer"},
             "repository": {"full_name": "owner/repo"}
         }"#;
-        let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
+        let sig = compute_signature(body.as_bytes(), "test-secret");
 
         let response = app
             .oneshot(
@@ -725,7 +725,7 @@ mod tests {
             "sender": {"login": "commenter"},
             "repository": {"full_name": "owner/repo"}
         }"#;
-        let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
+        let sig = compute_signature(body.as_bytes(), "test-secret");
 
         let response = app
             .oneshot(
@@ -761,7 +761,7 @@ mod tests {
             "sender": {"login": "bob"},
             "repository": {"full_name": "owner/repo"}
         }"#;
-        let sig = compute_signature(body.as_bytes(), &config.webhook_secret);
+        let sig = compute_signature(body.as_bytes(), "test-secret");
 
         let response = app
             .oneshot(
@@ -788,7 +788,6 @@ mod tests {
             host: "0.0.0.0".to_string(),
             webhook_host: "yoke.example.com".to_string(),
             port: 0,
-            webhook_secret: "test-secret".to_string(),
             max_body_size: 10,
         };
         let (state, _rx) = test_state();

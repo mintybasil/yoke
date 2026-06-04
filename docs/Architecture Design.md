@@ -107,7 +107,6 @@ workdir = "~/.yoke"       # runtime data directory
 [server]
 host = "0.0.0.0"
 port = 8644
-webhook_secret = "your-webhook-secret"  # GitHub HMAC key or GitLab token
 max_body_size = 1048576                # 1MB default
 
 # GitLab-specific (only when platform = "gitlab")
@@ -199,7 +198,6 @@ See **Appendix A** for the actor source mapping per trigger type.
 | `[runtime].workdir`        | Runtime data directory                               | `~/.yoke`               |
 | `[server].host`            | Bind address                                         | `0.0.0.0`               |
 | `[server].port`            | Listen port                                          | `8644`                  |
-| `[server].webhook_secret`  | Webhook auth key (HMAC for GitHub, token for GitLab) | required                |
 | `[server].max_body_size`   | Request body limit (bytes)                           | `1048576`               |
 
 **Workflow file fields:**
@@ -229,7 +227,7 @@ When `platform = "github"`, the handler at `POST /webhook` receives GitHub webho
 
 - `X-GitHub-Event` header — the event type (`issues`, `issue_comment`, `pull_request_review`, `pull_request_review_comment`)
 - `X-Hub-Signature-256` header — HMAC-SHA256 signature for verification
-- `webhook_secret` is the HMAC-SHA256 key
+- `WEBHOOK_SECRET` env var provides the HMAC-SHA256 key
 - JSON payload — the event data
 
 ### GitLab Webhooks
@@ -238,15 +236,15 @@ When `platform = "gitlab"`, the handler at `POST /webhook` receives GitLab webho
 
 - `X-GitLab-Event` header — the event type (`Issue Hook`, `Note Hook`)
 - `X-Gitlab-Token` header — static token for verification
-- `webhook_secret` is the token value compared against this header
+- `WEBHOOK_SECRET` env var provides the token value compared against this header
 - JSON payload — the event data
 
 ### Verification
 
-| Platform | Header                | Mechanism                                                             |
-|----------|-----------------------|-----------------------------------------------------------------------|
-| GitHub   | `X-Hub-Signature-256` | HMAC-SHA256 of the request body with `webhook_secret`                 |
-| GitLab   | `X-Gitlab-Token`      | Constant-time comparison of the header value against `webhook_secret` |
+| Platform | Header                | Mechanism                                                                          |
+|----------|-----------------------|------------------------------------------------------------------------------------|
+| GitHub   | `X-Hub-Signature-256` | HMAC-SHA256 of the request body with the `WEBHOOK_SECRET` env var                  |
+| GitLab   | `X-Gitlab-Token`      | Constant-time comparison of the header value against the `WEBHOOK_SECRET` env var |
 
 Unverified payloads receive a `401` response and are logged as a warning. This prevents forgery and ensures the daemon only processes legitimate events.
 
@@ -523,7 +521,7 @@ Two-tier model: startup errors are hard exits, runtime errors are per-event soft
 - Missing platform token env var (`GITHUB_TOKEN` for github, `GITLAB_TOKEN` for gitlab)
 - Missing `HERMES_API_KEY` env var
 - Invalid `agents[].base_url` (must be a valid HTTP URL)
-- Missing `webhook_secret` in `[server]`
+- Missing `WEBHOOK_SECRET` env var
 - Data directory not writable
 - No workflow `.toml` files found
 - Trigger type with wrong platform prefix (e.g., `gitlab_issue_assigned` when `platform = "github"`)
@@ -580,7 +578,7 @@ Options:
 | `GITHUB_TOKEN`   | GitHub authentication for git clone/pull                  | When `platform = "github"` |
 | `GITLAB_TOKEN`   | GitLab authentication for git clone/pull                  | When `platform = "gitlab"` |
 | `HERMES_API_KEY` | Bearer token for Hermes REST API                          | Yes                        |
-| `WEBHOOK_SECRET` | Webhook auth key (overrides config.toml `webhook_secret`) | No (config fallback)       |
+| `WEBHOOK_SECRET` | Webhook auth key (GitHub HMAC key or GitLab token)        | Yes                        |
 
 ## 16. Example Configs
 
@@ -609,7 +607,6 @@ workdir = "~/.yoke"
 [server]
 host = "0.0.0.0"
 port = 8644
-webhook_secret = "your-github-webhook-secret"
 ```
 
 ### config.toml (GitLab, self-hosted)
@@ -638,7 +635,6 @@ workdir = "~/.yoke"
 [server]
 host = "0.0.0.0"
 port = 8644
-webhook_secret = "your-gitlab-webhook-token"
 ```
 
 ### Workflow: GitHub issue plan+implement
@@ -752,7 +748,7 @@ Review ID: {{review_id}}
 
 4. **HTTPS/TLS**: Reverse proxy is the expected pattern. The HTTP server listens on plain HTTP. For production, put it behind Caddy, nginx, or a cloudflare tunnel. TLS termination is not Yoke's job — it's infrastructure.
 
-5. **Webhook secret rotation**: Restart required. Changing the secret in the platform's webhook settings and then restarting Yoke is a simple, reliable workflow. Hot-reloading secrets adds complexity (race conditions between the old and new secret during rotation) for marginal benefit.
+5. **Webhook secret rotation**: Restart required. Changing the secret in the platform's webhook settings, updating the `WEBHOOK_SECRET` env var, and then restarting Yoke is a simple, reliable workflow. Hot-reloading secrets adds complexity (race conditions between the old and new secret during rotation) for marginal benefit.
 
 6. **Multi-workflow dedup**: Shared dedup sets. If two workflows match the same event (e.g., both `github_issue_assigned` for overlapping repos), the first workflow loaded runs. Per-workflow dedup would require tracking completed events per-workflow-file, which doubles the persistence complexity for a marginal use case. If this becomes a problem, the user should scope triggers more tightly.
 
@@ -817,7 +813,7 @@ For each repo in `config.toml`:
 ### Initial Setup
 
 1. Deploy Yoke and note its public URL (e.g., `https://yoke.example.com`)
-2. Set `webhook_secret` in `config.toml`
+2. Set the `WEBHOOK_SECRET` environment variable
 3. Run `yoke webhooks add --config config.toml --workflows ./workflows`
 4. Verify with `yoke webhooks list --config config.toml`
 5. Start Yoke daemon
@@ -839,11 +835,11 @@ The `webhooks add` command configures the platform to send events for the specif
 To rotate the webhook secret:
 
 1. Generate a new secret (e.g., `openssl rand -hex 32`)
-2. Update `webhook_secret` in `config.toml`
+2. Update the `WEBHOOK_SECRET` environment variable
 3. Run `yoke webhooks add --config config.toml` — this updates the secret on all platform webhooks
 4. Restart Yoke to load the new secret
 
-There is no grace period — the secret changes atomically. If the restart fails, the platform will be sending webhooks with the new secret but Yoke will reject them (logged as 401). Roll back by reverting `config.toml` and running `webhooks add` again.
+There is no grace period — the secret changes atomically. If the restart fails, the platform will be sending webhooks with the new secret but Yoke will reject them (logged as 401). Roll back by reverting the `WEBHOOK_SECRET` env var and running `webhooks add` again.
 
 ### Decommissioning
 
@@ -866,7 +862,7 @@ This prevents the platform from continuing to send webhooks to a dead endpoint, 
 
 **401 errors in Yoke logs:**
 
-- Secret mismatch between `config.toml` and platform webhook configuration
+- Secret mismatch between `WEBHOOK_SECRET` env var and platform webhook configuration
 - Run `webhooks add` to sync the secret, then restart
 
 **503 Service Unavailable:**
@@ -969,7 +965,7 @@ async fn test_webhook_valid_github_issue() {
     let response = reqwest::Client::new()
         .post(format!("{}/webhook", harness.server.url()))
         .header("X-GitHub-Event", "issues")
-        .header("X-Hub-Signature-256", compute_hmac(payload, harness.config.webhook_secret))
+        .header("X-Hub-Signature-256", compute_hmac(payload, &std::env::var("WEBHOOK_SECRET").unwrap()))
         .body(payload)
         .send()
         .await
@@ -1028,11 +1024,13 @@ ngrok http 8644
 
 # Copy the ngrok URL (e.g., https://abc123.ngrok.io)
 
+# Set required environment variables
+export WEBHOOK_SECRET="dev-secret"
+
 # Update config.toml
 [server]
 host = "0.0.0.0"
 port = 8644
-webhook_secret = "dev-secret"
 
 # Start Yoke
 cargo run -- --config config.toml

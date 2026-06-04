@@ -39,7 +39,6 @@ workdir = "~/.yoke"
 host = "0.0.0.0"
 port = 8644
 webhook_host = "yoke.example.com"
-webhook_secret = "your-webhook-secret"
 ```
 
 ### 3. Create a workflow
@@ -72,9 +71,9 @@ post_hooks = [{ type = "file_not_empty", path = "plan.md" }]
 ### 4. Set environment variables
 
 ```bash
-export HERMES_API_KEY="your-hermes-api-key"
+export HERMES_API_KEY="your-h...-key"
 export WEBHOOK_SECRET="your-webhook-secret"
-export GITHUB_TOKEN="your-github-token"
+export GITHUB_TOKEN="***"
 ```
 
 ### 5. Register webhooks on your repositories
@@ -139,7 +138,6 @@ drain_timeout_secs = 30  # seconds to wait for in-flight workflows on shutdown
 host = "0.0.0.0"
 port = 8644
 webhook_host = "yoke.example.com"
-webhook_secret = "your-webhook-secret"
 max_body_size = 1048576   # 1MB default
 
 # GitLab-specific (only when platform = "gitlab")
@@ -150,7 +148,6 @@ max_body_size = 1048576   # 1MB default
 
 - `platform` — must be `"github"` or `"gitlab"`
 - `agents` — at least one agent with a unique `name` and valid `base_url`
-- `server.webhook_secret` — webhook authentication key
 - `server.webhook_host` — external hostname used in webhook registration URLs. This must be explicitly set (e.g., `yoke.example.com`) — it is the hostname that GitHub/GitLab will send webhook events to, which typically differs from the bind address (`server.host`).
 
 ### Environment Variables
@@ -158,7 +155,7 @@ max_body_size = 1048576   # 1MB default
 | Variable | Purpose | Required |
 |---|---|---|
 | `HERMES_API_KEY` | Bearer token for Hermes REST API | Always |
-| `WEBHOOK_SECRET` | Webhook authentication key (overrides `server.webhook_secret` in config) | No (config fallback) |
+| `WEBHOOK_SECRET` | Webhook authentication key (GitHub HMAC key or GitLab token) | Always |
 | `GITHUB_TOKEN` | GitHub auth for webhook management and git operations | When `platform = "github"` |
 | `GITLAB_TOKEN` | GitLab auth for webhook management and git operations | When `platform = "gitlab"` |
 

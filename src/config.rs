@@ -14,7 +14,7 @@ pub mod env {
     pub const GITHUB_TOKEN: &str = "GITHUB_TOKEN";
     /// GitLab personal access token (required when platform = "gitlab").
     pub const GITLAB_TOKEN: &str = "GITLAB_TOKEN";
-    /// Optional webhook secret override (overrides `server.webhook_secret` from config).
+    /// Webhook secret (required, must be provided via this env var).
     pub const WEBHOOK_SECRET: &str = "WEBHOOK_SECRET";
 }
 
@@ -89,7 +89,6 @@ pub struct ServerConfig {
     #[serde(default = "default_port")]
     pub port: u16,
     pub webhook_host: String,
-    pub webhook_secret: String,
     #[serde(default = "default_max_body_size")]
     pub max_body_size: u64,
 }
@@ -265,15 +264,12 @@ pub fn resolve_agents(config: &Config, workflows: &[Workflow]) -> Result<(), Con
 
 /// Validate that required environment variables are set based on the configured platform.
 ///
-/// Checks globally required variables (`HERMES_API_KEY`) and
+/// Checks globally required variables (`HERMES_API_KEY`, `WEBHOOK_SECRET`) and
 /// platform-specific variables (`GITHUB_TOKEN` for GitHub, `GITLAB_TOKEN` for GitLab).
-/// Note: `WEBHOOK_SECRET` is not required as an env var because the webhook secret
-/// can be provided via `config.toml` (`server.webhook_secret`). The env var is
-/// optional and overrides the config value when set.
 /// Returns `Ok(())` if all required variables are present, or `Err(ConfigError::EnvVar)`
 /// with a descriptive message naming the first missing variable.
 pub fn validate_env_vars(platform: &Platform) -> Result<(), ConfigError> {
-    let required_globals = [env::HERMES_API_KEY];
+    let required_globals = [env::HERMES_API_KEY, env::WEBHOOK_SECRET];
     for var in required_globals {
         if std::env::var(var).is_err() {
             return Err(ConfigError::EnvVar(format!(
@@ -336,7 +332,6 @@ workdir = "/tmp/.yoke"
 host = "0.0.0.0"
 webhook_host = "yoke.example.com"
 port = 8644
-webhook_secret = "secret"
 max_body_size = 1048576
 "#
     }
@@ -356,7 +351,6 @@ max_body_size = 1048576
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.server.webhook_host, "yoke.example.com");
         assert_eq!(config.server.port, 8644);
-        assert_eq!(config.server.webhook_secret, "secret");
         assert_eq!(config.server.max_body_size, 1_048_576);
     }
 
@@ -371,7 +365,6 @@ base_url = "http://localhost:8000"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "secret"
 "#;
         let config = Config::from_str(minimal).expect("should parse minimal config");
         assert!(config.repos.is_empty());
@@ -397,7 +390,6 @@ workdir = "~/.yoke"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "secret"
 "#;
         let config = Config::from_str(toml).expect("should parse config with tilde");
         assert!(
@@ -421,7 +413,6 @@ base_url = "http://localhost:8000"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
         assert!(result.is_err(), "should fail without platform");
@@ -443,7 +434,6 @@ base_url = "http://localhost:8000"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
         assert!(result.is_err(), "should fail with invalid platform");
@@ -479,7 +469,6 @@ base_url = "not-a-url"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
         assert!(result.is_err(), "should fail with invalid URL");
@@ -487,29 +476,6 @@ webhook_secret = "secret"
         assert!(
             err_msg.contains("base_url") || err_msg.contains("URL") || err_msg.contains("url"),
             "error should mention URL issue, got: {err_msg}"
-        );
-    }
-
-    #[test]
-    fn test_missing_webhook_secret() {
-        let toml = r#"
-platform = "github"
-
-[[agents]]
-name = "pm"
-base_url = "http://localhost:8000"
-
-[server]
-webhook_host = "yoke.example.com"
-host = "0.0.0.0"
-port = 8644
-"#;
-        let result = Config::from_str(toml);
-        assert!(result.is_err(), "should fail without webhook_secret");
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("webhook_secret"),
-            "error should mention webhook_secret, got: {err_msg}"
         );
     }
 
@@ -523,7 +489,6 @@ name = "pm"
 base_url = "http://localhost:8000"
 
 [server]
-webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
         assert!(result.is_err(), "should fail without webhook_host");
@@ -546,7 +511,6 @@ base_url = "http://localhost:8000"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "gitlab-token"
 "#;
         let config = Config::from_str(toml).expect("should parse gitlab config");
         assert_eq!(config.platform, Platform::Gitlab);
@@ -571,7 +535,6 @@ base_url = "http://localhost:8000"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "token"
 "#;
         let config = Config::from_str(toml).expect("should parse gitlab section");
         assert_eq!(config.platform, Platform::Gitlab);
@@ -589,7 +552,6 @@ platform = "github"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
         assert!(result.is_err(), "should fail without agents");
@@ -615,7 +577,6 @@ base_url = "http://localhost:8001"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
         assert!(result.is_err(), "should fail with duplicate agent names");
@@ -638,7 +599,6 @@ base_url = "http://localhost:8000"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "secret"
 "#;
         let config = Config::from_str(toml).expect("empty repos is valid");
         assert!(config.repos.is_empty());
@@ -663,7 +623,6 @@ base_url = "http://localhost:8000"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "secret"
 "#;
         let config = Config::from_str(toml).expect("should parse multiple repos");
         assert_eq!(config.repos.len(), 2);
@@ -690,7 +649,6 @@ base_url = "ftp://localhost:8000"
 
 [server]
 webhook_host = "yoke.example.com"
-webhook_secret = "secret"
 "#;
         let result = Config::from_str(toml);
         assert!(result.is_err(), "should fail with non-http URL scheme");
@@ -737,7 +695,6 @@ webhook_secret = "secret"
                 host: "0.0.0.0".to_string(),
                 webhook_host: "yoke.example.com".to_string(),
                 port: 8644,
-                webhook_secret: "secret".to_string(),
                 max_body_size: 1_048_576,
             },
             github: None,
@@ -847,25 +804,6 @@ webhook_secret = "secret"
         assert!(
             err_msg.contains(env::HERMES_API_KEY),
             "error should mention HERMES_API_KEY, got: {err_msg}"
-        );
-    }
-
-    #[test]
-    fn test_validate_env_vars_webhook_secret_not_required() {
-        // WEBHOOK_SECRET is no longer required by validate_env_vars;
-        // it can be provided via config.toml instead.
-        let _guard = ENV_MUTEX.lock().unwrap();
-        unsafe {
-            std::env::set_var(env::HERMES_API_KEY, "test-key");
-            std::env::set_var(env::GITHUB_TOKEN, "gh-token");
-            std::env::remove_var(env::WEBHOOK_SECRET);
-        }
-
-        let result = validate_env_vars(&Platform::Github);
-        assert!(
-            result.is_ok(),
-            "WEBHOOK_SECRET should be optional: {:?}",
-            result
         );
     }
 
