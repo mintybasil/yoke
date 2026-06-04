@@ -13,8 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yoke::dispatcher::{
-    DispatchMessage, Dispatcher, build_dedup_key, load_persistence,
-    new_dedup_sets,
+    DispatchMessage, Dispatcher, build_dedup_key, load_persistence, new_dedup_sets,
 };
 use yoke::reload::WorkflowState;
 use yoke::webhook::TriggerEvent;

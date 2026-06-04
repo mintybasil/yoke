@@ -1803,6 +1803,9 @@ mod tests {
     fn test_workspace_dir_with_complex_event_id() {
         let workdir = PathBuf::from("/tmp/yoke");
         let ws = workspace_dir(&workdir, "org-name", "project", "pr-7-review-999");
-        assert_eq!(ws, PathBuf::from("/tmp/yoke/org-name/project/pr-7-review-999"));
+        assert_eq!(
+            ws,
+            PathBuf::from("/tmp/yoke/org-name/project/pr-7-review-999")
+        );
     }
 }
