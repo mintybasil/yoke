@@ -38,7 +38,7 @@ tests/
 
 ## Key Design Decisions
 
-- **Canonical `event_id` convention**: Every `TriggerEvent` carries an `event_id` field in canonical form, defined per trigger type in Appendix A of the architecture design. Examples: `issue-42` (GitHub issue assigned or comment mention), `pr-7-review-999` (GitHub PR review), `pr-7-comment-12345` (GitHub PR comment mention), `issue-7` (GitLab issue assigned or mention), `mr-5-review-88` (GitLab MR review), `mr-5-comment-204` (GitLab MR comment mention). The webhook handlers construct these canonical forms; the dispatcher consumes `TriggerEvent.event_id` directly — never stripping or transforming it. Dedup keys, workspace directories, template variables, and log fields all use the canonical form. There is no `extract_event_id` function.
+- **Canonical `event_id` convention**: Every `TriggerEvent` carries an `event_id` field in canonical form, defined per trigger type in Appendix A of the architecture design. Examples: `issue-42` (GitHub issue assigned or comment mention), `pr-7-review-999` (GitHub PR review), `pr-7-comment-12345` (GitHub PR comment mention), `issue-7` (GitLab issue assigned or mention), `mr-5-review-88` (GitLab MR review), `mr-5-comment-204` (GitLab MR comment mention). Dedup keys, workspace directories, template variables, and log fields all use the canonical form.
 
 - **Library + binary crate**: Yoke is both a library and a binary. `src/lib.rs` re-exports all modules as `pub` so integration tests (`tests/`) can import from `yoke::`. `src/main.rs` uses `use yoke::` imports instead of inline `mod` declarations.
 - **Fail-fast on startup**: Invalid config is a hard exit. Errors produce clear messages.

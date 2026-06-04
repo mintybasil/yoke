@@ -297,7 +297,7 @@ The dispatcher consumes `DispatchMessage`s from the mpsc channel, manages dedup 
 
 ### Dedup Logic
 
-- Dedup keys use the canonical `event_id` from `TriggerEvent.event_id` (as defined per trigger type in Appendix A). The key format is `{owner}/{repo}/{event_id}` — e.g. `mintybasil/yoke/issue-42`, not `mintybasil/yoke/42`. The dispatcher must never strip or transform the canonical `event_id`.
+- Dedup keys use the canonical `event_id` from `TriggerEvent.event_id` (as defined per trigger type in Appendix A). The key format is `{owner}/{repo}/{event_id}` — e.g. `mintybasil/yoke/issue-42`.
 - Completed events are skipped
 - In-flight events are skipped
 - Permanently-failed events are skipped
