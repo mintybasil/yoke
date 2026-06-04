@@ -500,7 +500,12 @@ pub fn handle_github_webhook(
     let actor = match &event.payload {
         GitHubPayload::Issues(p) => p.sender.login.clone(),
         GitHubPayload::IssueComment(p) => p.sender.login.clone(),
-        GitHubPayload::PullRequestReview(p) => p.sender.login.clone(),
+        GitHubPayload::PullRequestReview(p) => p
+            .review
+            .user
+            .as_ref()
+            .map(|u| u.login.clone())
+            .unwrap_or_else(|| p.sender.login.clone()),
         GitHubPayload::PullRequestReviewComment(p) => p.sender.login.clone(),
     };
 
@@ -1164,6 +1169,31 @@ mod tests {
         } else {
             panic!("Expected IssueCommentPayload");
         }
+    }
+
+    #[test]
+    fn test_handle_github_webhook_pr_review_actor_is_reviewer() {
+        let secret = "test-secret";
+        let body = r#"{
+            "action": "submitted",
+            "review": {
+                "id": 999,
+                "body": "LGTM",
+                "user": {"login": "actual-reviewer"}
+            },
+            "pull_request": {"number": 7},
+            "sender": {"login": "event-sender"},
+            "repository": {"full_name": "owner/repo"}
+        }"#;
+        let payload = body.as_bytes();
+        let signature = make_signature(payload, secret);
+
+        let result = handle_github_webhook(&signature, GITHUB_PULL_REQUEST_REVIEW, payload, secret);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+
+        // The actor should be the review author, not the event sender
+        assert_eq!(event.actor, "actual-reviewer");
     }
 
     #[test]
