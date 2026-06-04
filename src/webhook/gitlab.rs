@@ -612,7 +612,7 @@ mod tests {
         let result = map_to_trigger_event(&event);
         assert!(matches!(
             result,
-            Some(TriggerType::GitlabMergeRequestReview { .. })
+            Some(TriggerType::GitlabMergeRequestReview)
         ));
     }
 
@@ -821,7 +821,7 @@ mod tests {
         let event = result.unwrap();
         assert!(matches!(
             event.trigger_type,
-            TriggerType::GitlabMergeRequestReview { .. }
+            TriggerType::GitlabMergeRequestReview
         ));
         assert_eq!(event.variables.get("note_id").unwrap(), "150");
         assert_eq!(event.variables.get("mr_iid").unwrap(), "12");

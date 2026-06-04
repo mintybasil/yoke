@@ -793,10 +793,7 @@ mod tests {
         let event = parse_github_event("pull_request_review", body.as_bytes()).unwrap();
         let trigger = map_to_trigger_event(&event).unwrap();
 
-        assert!(matches!(
-            trigger,
-            TriggerType::GithubPullRequestReview { .. }
-        ));
+        assert!(matches!(trigger, TriggerType::GithubPullRequestReview));
         assert_eq!(
             trigger.label(),
             crate::workflow::triggers::GITHUB_PULL_REQUEST_REVIEW
@@ -978,7 +975,7 @@ mod tests {
         let event = result.unwrap();
         assert!(matches!(
             event.trigger_type,
-            TriggerType::GithubPullRequestReview { .. }
+            TriggerType::GithubPullRequestReview
         ));
         assert_eq!(event.event_id, "pr-7-review-999");
         assert_eq!(event.variables.get("pr_number").unwrap(), "7");

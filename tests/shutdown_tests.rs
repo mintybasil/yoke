@@ -291,7 +291,7 @@ async fn test_shutdown_signal_propagates_via_watch_channel() {
 
     let sets = dedup_sets.read().await;
     assert!(
-        sets.completed.contains("owner/repo/7_review-999"),
+        sets.completed.contains("owner/repo/pr-7-review-999"),
         "event should be completed after shutdown"
     );
 }
