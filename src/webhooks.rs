@@ -543,7 +543,10 @@ pub async fn webhooks_add(
 
     let hook_config = WebhookConfig {
         url: yoke_url.clone(),
-        secret: Some(config.server.webhook_secret.clone()),
+        secret: Some(
+            std::env::var(crate::config::env::WEBHOOK_SECRET)
+                .expect("WEBHOOK_SECRET env var must be set"),
+        ),
         events,
     };
 

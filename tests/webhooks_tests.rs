@@ -4,8 +4,44 @@
 //! verify that the high-level handler functions behave correctly.
 
 use std::fs;
+use std::sync::Mutex as StdMutex;
 use yoke::config::{Config, Repo, ServerConfig};
 use yoke::webhooks::{self, AddSummary, GitHubWebhookClient, RemoveSummary, WebhookClient};
+
+/// Mutex to serialize tests that read/write the `WEBHOOK_SECRET` env var.
+/// Uses `tokio::sync::Mutex` so the guard can be held across `.await` points.
+static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Std mutex used only for the brief set_var/remove_var calls (no await).
+static ENV_SET_MUTEX: StdMutex<()> = StdMutex::new(());
+
+/// Set `WEBHOOK_SECRET` env var for the duration of the returned guard.
+///
+/// Acquires `ENV_MUTEX` to prevent concurrent tests from interfering,
+/// then sets the env var. The guard holds `ENV_MUTEX` for the entire
+/// test, preventing other tests from clearing the var mid-test.
+/// On drop, the var is cleared and the mutex is released.
+struct WebhookSecretGuard {
+    _env_mutex_guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+/// Set the env var synchronously (called outside of holding the tokio mutex guard
+/// across await — we acquire a std mutex briefly just for the set_var call).
+fn set_env_var_sync() {
+    let _g = ENV_SET_MUTEX.lock().unwrap();
+    unsafe { std::env::set_var("WEBHOOK_SECRET", "test-secret") };
+}
+
+fn clear_env_var_sync() {
+    let _g = ENV_SET_MUTEX.lock().unwrap();
+    unsafe { std::env::remove_var("WEBHOOK_SECRET") };
+}
+
+impl Drop for WebhookSecretGuard {
+    fn drop(&mut self) {
+        clear_env_var_sync();
+    }
+}
 
 /// Helper to create a test config with a single repo.
 fn test_config() -> Config {
@@ -24,7 +60,6 @@ fn test_config() -> Config {
             host: "0.0.0.0".to_string(),
             webhook_host: "yoke.example.com".to_string(),
             port: 8644,
-            webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
         },
         github: None,
@@ -85,7 +120,7 @@ async fn test_webhooks_list_with_hooks() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let body = r#"{"id":1,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/1","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["issues"],"active":true}"#;
+    let body = r#"{"id":1,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/1","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret": "***"},"events":["issues"],"active":true}"#;
     let mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -107,7 +142,7 @@ async fn test_webhooks_remove_no_matching() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let body = r#"[{"id":1,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/1","config":{"url":"https://other.example.com/hook","content_type":"json","secret":"***"},"events":["push"],"active":true}]"#;
+    let body = r#"[{"id":1,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/1","config":{"url":"https://other.example.com/hook","content_type":"json","secret": "***"},"events":["push"],"active":true}]"#;
     let mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -138,7 +173,7 @@ async fn test_webhooks_remove_matching() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let body = r#"[{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["issues"],"active":true}]"#;
+    let body = r#"[{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret": "***"},"events":["issues"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -173,10 +208,16 @@ async fn test_webhooks_remove_matching() {
 
 #[tokio::test]
 async fn test_webhooks_add_creates_new() {
+    let env_guard = ENV_MUTEX.lock().await;
+    set_env_var_sync();
+    let _secret_guard = WebhookSecretGuard {
+        _env_mutex_guard: env_guard,
+    };
+
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let list_body = r#"[{"id":1,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/1","config":{"url":"https://other.example.com/hook","content_type":"json","secret":"***"},"events":["push"],"active":true}]"#;
+    let list_body = r#"[{"id":1,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/1","config":{"url":"https://other.example.com/hook","content_type":"json","secret": "***"},"events":["push"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -185,7 +226,7 @@ async fn test_webhooks_add_creates_new() {
         .create_async()
         .await;
 
-    let create_body = r#"{"id":99,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/99","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["issues"],"active":true}"#;
+    let create_body = r#"{"id":99,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/99","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret": "***"},"events":["issues"],"active":true}"#;
     let create_mock = server
         .mock("POST", "/repos/test-owner/test-repo/hooks")
         .with_status(201)
@@ -216,10 +257,16 @@ async fn test_webhooks_add_creates_new() {
 
 #[tokio::test]
 async fn test_webhooks_add_updates_existing() {
+    let env_guard = ENV_MUTEX.lock().await;
+    set_env_var_sync();
+    let _secret_guard = WebhookSecretGuard {
+        _env_mutex_guard: env_guard,
+    };
+
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let list_body = r#"[{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["push"],"active":true}]"#;
+    let list_body = r#"[{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret": "***"},"events":["push"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)
@@ -228,7 +275,7 @@ async fn test_webhooks_add_updates_existing() {
         .create_async()
         .await;
 
-    let update_body = r#"{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["issues"],"active":true}"#;
+    let update_body = r#"{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret": "***"},"events":["issues"],"active":true}"#;
     let update_mock = server
         .mock("PATCH", "/repos/test-owner/test-repo/hooks/42")
         .with_status(200)
@@ -259,6 +306,12 @@ async fn test_webhooks_add_updates_existing() {
 
 #[tokio::test]
 async fn test_webhooks_add_empty_repos() {
+    let env_guard = ENV_MUTEX.lock().await;
+    set_env_var_sync();
+    let _secret_guard = WebhookSecretGuard {
+        _env_mutex_guard: env_guard,
+    };
+
     let config = Config {
         platform: yoke::config::Platform::Github,
         repos: vec![],
@@ -271,7 +324,6 @@ async fn test_webhooks_add_empty_repos() {
             host: "0.0.0.0".to_string(),
             webhook_host: "yoke.example.com".to_string(),
             port: 8644,
-            webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
         },
         github: None,
@@ -310,7 +362,6 @@ async fn test_webhooks_remove_empty_repos() {
             host: "0.0.0.0".to_string(),
             webhook_host: "yoke.example.com".to_string(),
             port: 8644,
-            webhook_secret: "test-secret".to_string(),
             max_body_size: 1_048_576,
         },
         github: None,
@@ -335,6 +386,12 @@ async fn test_webhooks_remove_empty_repos() {
 
 #[tokio::test]
 async fn test_webhooks_add_api_error_on_list() {
+    let env_guard = ENV_MUTEX.lock().await;
+    set_env_var_sync();
+    let _secret_guard = WebhookSecretGuard {
+        _env_mutex_guard: env_guard,
+    };
+
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
@@ -396,7 +453,7 @@ async fn test_webhooks_remove_delete_error() {
     let mut server = mockito::Server::new_async().await;
     let url = server.url();
 
-    let list_body = r#"[{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret":"***"},"events":["issues"],"active":true}]"#;
+    let list_body = r#"[{"id":42,"url":"https://api.github.com/repos/test-owner/test-repo/hooks/42","config":{"url":"https://yoke.example.com/webhook","content_type":"json","secret": "***"},"events":["issues"],"active":true}]"#;
     let list_mock = server
         .mock("GET", "/repos/test-owner/test-repo/hooks")
         .with_status(200)

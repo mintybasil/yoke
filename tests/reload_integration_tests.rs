@@ -22,7 +22,6 @@ name = "swe"
 base_url = "http://localhost:8001"
 
 [server]
-webhook_secret = "test-secret"
 webhook_host = "yoke.example.com"
 "#,
     )
