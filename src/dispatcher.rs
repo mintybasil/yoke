@@ -1703,7 +1703,10 @@ mod tests {
 
         // Should succeed even if the workdir directory doesn't exist
         let result = sets.persist_completed(&workdir);
-        assert!(result.is_ok(), "persist_completed should succeed even if workdir is missing: {result:?}");
+        assert!(
+            result.is_ok(),
+            "persist_completed should succeed even if workdir is missing: {result:?}"
+        );
 
         // Verify the file was created
         let completed_path = workdir.join("completed.json");
@@ -1723,7 +1726,10 @@ mod tests {
 
         // Should succeed even if the workdir directory doesn't exist
         let result = sets.persist_failed(&workdir, &entry);
-        assert!(result.is_ok(), "persist_failed should succeed even if workdir is missing: {result:?}");
+        assert!(
+            result.is_ok(),
+            "persist_failed should succeed even if workdir is missing: {result:?}"
+        );
 
         // Verify the file was created
         let failed_path = workdir.join("failed.json");
