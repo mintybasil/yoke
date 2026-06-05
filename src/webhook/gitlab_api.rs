@@ -390,12 +390,10 @@ impl ProjectEvent {
             ("opened" | "updated", Some("Issue")) => {
                 Some(TriggerType::GitlabIssueAssigned { assigned_to: None })
             }
-            ("commented", Some("Issue")) => {
-                Some(TriggerType::GitlabIssueMention { mentioned_user: None })
-            }
-            ("commented", Some("MergeRequest")) => {
-                Some(TriggerType::GitlabMergeRequestReview)
-            }
+            ("commented", Some("Issue")) => Some(TriggerType::GitlabIssueMention {
+                mentioned_user: None,
+            }),
+            ("commented", Some("MergeRequest")) => Some(TriggerType::GitlabMergeRequestReview),
             _ => None,
         };
 
@@ -910,7 +908,10 @@ mod tests {
 
         server
             .mock("GET", "/projects/1/events")
-            .match_query(mockito::Matcher::UrlEncoded("after".to_string(), "2023-01-01T00:00:00Z".to_string()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "after".to_string(),
+                "2023-01-01T00:00:00Z".to_string(),
+            ))
             .with_status(200)
             .with_body(mock_body)
             .create_async()
@@ -957,11 +958,17 @@ mod tests {
 
         server
             .mock("GET", "/projects/1/events")
-            .match_query(mockito::Matcher::UrlEncoded("after".to_string(), "2023-01-01T00:00:00Z".to_string()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "after".to_string(),
+                "2023-01-01T00:00:00Z".to_string(),
+            ))
             .with_status(200)
             .with_header(
                 "link",
-                &format!(r#"<{}/projects/1/events?after=2023-01-01T00:00:00Z&page=2>; rel="next""#, url),
+                &format!(
+                    r#"<{}/projects/1/events?after=2023-01-01T00:00:00Z&page=2>; rel="next""#,
+                    url
+                ),
             )
             .with_body(page1)
             .create_async()
@@ -970,7 +977,10 @@ mod tests {
         server
             .mock("GET", "/projects/1/events")
             .match_query(mockito::Matcher::AllOf(vec![
-                mockito::Matcher::UrlEncoded("after".to_string(), "2023-01-01T00:00:00Z".to_string()),
+                mockito::Matcher::UrlEncoded(
+                    "after".to_string(),
+                    "2023-01-01T00:00:00Z".to_string(),
+                ),
                 mockito::Matcher::UrlEncoded("page".to_string(), "2".to_string()),
             ]))
             .with_status(200)
@@ -996,7 +1006,10 @@ mod tests {
 
         server
             .mock("GET", "/projects/1/events")
-            .match_query(mockito::Matcher::UrlEncoded("after".to_string(), "2023-01-01T00:00:00Z".to_string()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "after".to_string(),
+                "2023-01-01T00:00:00Z".to_string(),
+            ))
             .with_status(401)
             .create_async()
             .await;
@@ -1016,7 +1029,10 @@ mod tests {
 
         server
             .mock("GET", "/projects/999/events")
-            .match_query(mockito::Matcher::UrlEncoded("after".to_string(), "2023-01-01T00:00:00Z".to_string()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "after".to_string(),
+                "2023-01-01T00:00:00Z".to_string(),
+            ))
             .with_status(404)
             .create_async()
             .await;
@@ -1101,7 +1117,9 @@ mod tests {
         assert_eq!(trigger.event_id, "issue-7");
         assert!(matches!(
             trigger.trigger_type,
-            crate::workflow::TriggerType::GitlabIssueMention { mentioned_user: None }
+            crate::workflow::TriggerType::GitlabIssueMention {
+                mentioned_user: None
+            }
         ));
     }
 
