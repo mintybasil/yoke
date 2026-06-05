@@ -100,6 +100,34 @@ impl WebhookOrchestrationSummary {
     }
 }
 
+/// Summary of a webhook delivery from GitHub.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebhookDelivery {
+    pub id: u64,
+    pub guid: String,
+    pub event: String,
+    pub action: Option<String>,
+    pub delivered_at: chrono::DateTime<chrono::Utc>,
+    pub status: String,
+}
+
+/// Detail of a single webhook delivery, including the original request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebhookDeliveryDetail {
+    #[serde(flatten)]
+    pub summary: WebhookDelivery,
+    pub request: DeliveryRequest,
+}
+
+/// The original HTTP request sent by GitHub for a webhook delivery.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeliveryRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: std::collections::HashMap<String, String>,
+    pub body: String,
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -315,6 +343,113 @@ impl GitHubClient {
             .await?;
 
         if response.status() != reqwest::StatusCode::NO_CONTENT
+            && response.status() != reqwest::StatusCode::OK
+        {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "could not read body".to_string());
+            return Err(Self::map_status_with_body(status, &body));
+        }
+
+        Ok(())
+    }
+
+    /// List recent webhook deliveries for the given hook.
+    ///
+    /// Handles pagination transparently — iterates until the GitHub API
+    /// no longer returns a `rel="next"` Link header.
+    pub async fn list_deliveries(
+        &self,
+        owner: &str,
+        repo: &str,
+        hook_id: u64,
+    ) -> Result<Vec<WebhookDelivery>, GitHubError> {
+        let mut all_deliveries = Vec::new();
+        let mut next_url: Option<String> = Some(format!(
+            "{}/repos/{}/{}/hooks/{}/deliveries",
+            self.base_url, owner, repo, hook_id
+        ));
+
+        while let Some(url) = next_url {
+            let response = self
+                .client
+                .get(&url)
+                .headers(self.auth_headers())
+                .send()
+                .await?;
+
+            if response.status() != reqwest::StatusCode::OK {
+                let status = response.status();
+                let body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "could not read body".to_string());
+                return Err(Self::map_status_with_body(status, &body));
+            }
+
+            next_url = Self::parse_next_link(response.headers());
+            let page: Vec<WebhookDelivery> = response.json().await?;
+            all_deliveries.extend(page);
+        }
+
+        Ok(all_deliveries)
+    }
+
+    /// Get details of a specific webhook delivery, including the full request payload.
+    pub async fn get_delivery(
+        &self,
+        owner: &str,
+        repo: &str,
+        hook_id: u64,
+        delivery_id: u64,
+    ) -> Result<WebhookDeliveryDetail, GitHubError> {
+        let url = format!(
+            "{}/repos/{}/{}/hooks/{}/deliveries/{}",
+            self.base_url, owner, repo, hook_id, delivery_id
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.auth_headers())
+            .send()
+            .await?;
+
+        if response.status() != reqwest::StatusCode::OK {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "could not read body".to_string());
+            return Err(Self::map_status_with_body(status, &body));
+        }
+
+        response.json().await.map_err(GitHubError::RequestError)
+    }
+
+    /// Trigger GitHub to re-send a specific webhook delivery.
+    pub async fn redeliver_delivery(
+        &self,
+        owner: &str,
+        repo: &str,
+        hook_id: u64,
+        delivery_id: u64,
+    ) -> Result<(), GitHubError> {
+        let url = format!(
+            "{}/repos/{}/{}/hooks/{}/deliveries/{}/attempts",
+            self.base_url, owner, repo, hook_id, delivery_id
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(self.auth_headers())
+            .send()
+            .await?;
+
+        if response.status() != reqwest::StatusCode::ACCEPTED
             && response.status() != reqwest::StatusCode::OK
         {
             let status = response.status();
@@ -938,5 +1073,203 @@ mod tests {
         let summary = client.orchestrate_webhooks(repos, &config).await.unwrap();
         assert_eq!(summary.created, 1);
         assert_eq!(summary.updated, 1);
+    }
+
+    // -- list_deliveries tests -----------------------------------------------
+
+    #[tokio::test]
+    async fn test_list_deliveries_success() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let mock_response = r#"[
+            { "id": 100, "guid": "abc-123", "event": "issues", "action": "opened", "delivered_at": "2024-01-15T10:30:00Z", "status": "completed" }
+        ]"#;
+
+        server
+            .mock("GET", "/repos/owner/repo/hooks/42/deliveries")
+            .with_status(200)
+            .with_body(mock_response)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.list_deliveries("owner", "repo", 42).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, 100);
+        assert_eq!(result[0].event, "issues");
+        assert_eq!(result[0].action, Some("opened".to_string()));
+        assert_eq!(result[0].status, "completed");
+    }
+
+    #[tokio::test]
+    async fn test_list_deliveries_empty() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("GET", "/repos/owner/repo/hooks/42/deliveries")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.list_deliveries("owner", "repo", 42).await.unwrap();
+
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_deliveries_pagination() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let page1 = r#"[{ "id": 1, "guid": "g1", "event": "push", "action": null, "delivered_at": "2024-01-15T10:30:00Z", "status": "completed" }]"#;
+        let page2 = r#"[{ "id": 2, "guid": "g2", "event": "pull_request", "action": "opened", "delivered_at": "2024-01-15T11:00:00Z", "status": "completed" }]"#;
+
+        server
+            .mock("GET", "/repos/owner/repo/hooks/42/deliveries")
+            .with_status(200)
+            .with_header(
+                "link",
+                &format!(
+                    r#"<{}/repos/owner/repo/hooks/42/deliveries?page=2>; rel="next""#,
+                    url
+                ),
+            )
+            .with_body(page1)
+            .create_async()
+            .await;
+
+        server
+            .mock("GET", "/repos/owner/repo/hooks/42/deliveries?page=2")
+            .with_status(200)
+            .with_body(page2)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.list_deliveries("owner", "repo", 42).await.unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, 1);
+        assert_eq!(result[1].id, 2);
+        assert_eq!(result[1].event, "pull_request");
+    }
+
+    #[tokio::test]
+    async fn test_list_deliveries_not_found() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("GET", "/repos/owner/repo/hooks/999/deliveries")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.list_deliveries("owner", "repo", 999).await;
+
+        assert!(matches!(result, Err(GitHubError::NotFound)));
+    }
+
+    // -- get_delivery tests --------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_delivery_success() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let mock_response = r#"{
+            "id": 200,
+            "guid": "def-456",
+            "event": "push",
+            "action": null,
+            "delivered_at": "2024-01-15T10:30:00Z",
+            "status": "completed",
+            "request": {
+                "method": "POST",
+                "url": "https://example.com/webhook",
+                "headers": { "X-GitHub-Event": "push", "Content-Type": "application/json" },
+                "body": "{\"ref\":\"refs/heads/main\"}"
+            }
+        }"#;
+
+        server
+            .mock("GET", "/repos/owner/repo/hooks/42/deliveries/200")
+            .with_status(200)
+            .with_body(mock_response)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.get_delivery("owner", "repo", 42, 200).await.unwrap();
+
+        assert_eq!(result.summary.id, 200);
+        assert_eq!(result.summary.event, "push");
+        assert_eq!(result.request.method, "POST");
+        assert_eq!(result.request.url, "https://example.com/webhook");
+        assert_eq!(
+            result.request.headers.get("X-GitHub-Event").unwrap(),
+            &"push"
+        );
+        assert!(result.request.body.contains("refs/heads/main"));
+    }
+
+    #[tokio::test]
+    async fn test_get_delivery_unauthorized() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("GET", "/repos/owner/repo/hooks/42/deliveries/200")
+            .with_status(401)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("bad-token".to_string(), Some(url));
+        let result = client.get_delivery("owner", "repo", 42, 200).await;
+
+        assert!(matches!(result, Err(GitHubError::Unauthorized)));
+    }
+
+    // -- redeliver_delivery tests --------------------------------------------
+
+    #[tokio::test]
+    async fn test_redeliver_delivery_success() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("POST", "/repos/owner/repo/hooks/42/deliveries/200/attempts")
+            .with_status(202)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.redeliver_delivery("owner", "repo", 42, 200).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_redeliver_delivery_api_error() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        server
+            .mock("POST", "/repos/owner/repo/hooks/42/deliveries/200/attempts")
+            .with_status(500)
+            .with_body(r#"{"message":"Internal Server Error"}"#)
+            .create_async()
+            .await;
+
+        let client = GitHubClient::new("test-token".to_string(), Some(url));
+        let result = client.redeliver_delivery("owner", "repo", 42, 200).await;
+
+        assert!(matches!(result, Err(GitHubError::ApiError(_))));
     }
 }
