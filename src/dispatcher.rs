@@ -656,11 +656,17 @@ impl Dispatcher {
                     let repo_key = format!("{}/{}", owner, repo);
                     {
                         let mut wm_store = watermark_store.write().await;
-                        wm_store.marks.insert(repo_key, Watermark {
-                            last_delivery_id: event.variables.get("github_delivery_id").cloned(),
-                            last_event_id: event.variables.get("gitlab_event_id").cloned(),
-                            last_processed_at: Utc::now(),
-                        });
+                        wm_store.marks.insert(
+                            repo_key,
+                            Watermark {
+                                last_delivery_id: event
+                                    .variables
+                                    .get("github_delivery_id")
+                                    .cloned(),
+                                last_event_id: event.variables.get("gitlab_event_id").cloned(),
+                                last_processed_at: Utc::now(),
+                            },
+                        );
                         if let Err(e) = wm_store.persist(&workdir) {
                             tracing::error!(%key, error = %e, "Failed to persist watermarks");
                         }
@@ -1886,7 +1892,9 @@ mod tests {
             last_event_id: None,
             last_processed_at: Utc::now(),
         };
-        store.marks.insert("mintybasil/yoke".to_string(), watermark.clone());
+        store
+            .marks
+            .insert("mintybasil/yoke".to_string(), watermark.clone());
         assert!(store.marks.contains_key("mintybasil/yoke"));
         let wm = store.marks.get("mintybasil/yoke").unwrap();
         assert_eq!(wm.last_delivery_id, Some("abc-123".to_string()));

@@ -16,7 +16,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::{AgentConfig, Platform, ServerConfig};
-use crate::dispatcher::{Dispatcher, new_dedup_sets, load_watermarks};
+use crate::dispatcher::{Dispatcher, load_watermarks, new_dedup_sets};
 use crate::reload::WorkflowState;
 use crate::webhook;
 use tracing::instrument;
@@ -107,7 +107,10 @@ async fn webhook_handler(
             };
             // Extract the X-GitHub-Delivery header for watermark tracking
             let mut vars = HashMap::new();
-            if let Some(v) = headers.get(headers::GITHUB_DELIVERY).and_then(|v| v.to_str().ok()) {
+            if let Some(v) = headers
+                .get(headers::GITHUB_DELIVERY)
+                .and_then(|v| v.to_str().ok())
+            {
                 vars.insert("github_delivery_id".to_string(), v.to_string());
             }
             (sig, evt, vars)
@@ -207,7 +210,14 @@ pub async fn run_server(
     let dedup_sets = new_dedup_sets();
     let watermark_store = load_watermarks(&workdir);
     let watermark_store = Arc::new(RwLock::new(watermark_store));
-    let dispatcher = Dispatcher::new(dedup_sets, watermark_store, max_concurrent, workdir, workflow_state, agents);
+    let dispatcher = Dispatcher::new(
+        dedup_sets,
+        watermark_store,
+        max_concurrent,
+        workdir,
+        workflow_state,
+        agents,
+    );
 
     // Spawn dispatcher run loop as a background task, passing drain_timeout
     let dispatcher_handle = tokio::spawn({

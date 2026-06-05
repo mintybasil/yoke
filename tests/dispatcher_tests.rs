@@ -28,7 +28,14 @@ fn test_dispatcher(
 ) -> Dispatcher {
     let workflow_state = Arc::new(WorkflowState::new(vec![]));
     let watermark_store = new_watermark_store();
-    Dispatcher::new(dedup, watermark_store, max_concurrent, workdir, workflow_state, vec![])
+    Dispatcher::new(
+        dedup,
+        watermark_store,
+        max_concurrent,
+        workdir,
+        workflow_state,
+        vec![],
+    )
 }
 
 // --- Helper functions ---
