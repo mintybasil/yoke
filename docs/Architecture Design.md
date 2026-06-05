@@ -395,6 +395,7 @@ post_hooks = [{ type = "file_contains", path = "plan.md", text = "implementation
 
 - **completed.json** — set of `{owner}/{repo}/{event_id}` strings (using canonical `event_id`) for events that completed successfully
 - **failed.json** — array of `{key, timestamp, error}` entries for events that failed
+- **watermark.json** — map of `{owner}/{repo}` to `{last_delivery_id, last_event_id, last_processed_at}`, tracking the last-processed webhook delivery per repository for resume-after-restart semantics
 - Atomic file writes (write to `.tmp`, rename)
 - Loaded on startup, appended to on completion/failure
 
@@ -496,6 +497,7 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
 {workdir}/
   completed.json              # Set of completed event keys
   failed.json                 # Array of failure entries
+  watermark.json              # Per-repo watermark tracking (delivery IDs, timestamps)
   {owner}/{repo}/
     repo/                     # git clone
     {event_id}/           # per-event workspace

@@ -5,17 +5,18 @@ use axum::{
     routing::{get, post},
 };
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio::sync::{RwLock, watch};
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::{AgentConfig, Platform, ServerConfig};
-use crate::dispatcher::{Dispatcher, new_dedup_sets};
+use crate::dispatcher::{Dispatcher, new_dedup_sets, load_watermarks};
 use crate::reload::WorkflowState;
 use crate::webhook;
 use tracing::instrument;
@@ -26,6 +27,8 @@ pub mod headers {
     pub const GITHUB_SIGNATURE: &str = "X-Hub-Signature-256";
     /// GitHub event type header.
     pub const GITHUB_EVENT: &str = "X-GitHub-Event";
+    /// GitHub delivery identifier header (unique per webhook delivery).
+    pub const GITHUB_DELIVERY: &str = "X-GitHub-Delivery";
     /// GitLab webhook token header.
     pub const GITLAB_TOKEN: &str = "X-Gitlab-Token";
     /// GitLab event type header.
@@ -73,7 +76,7 @@ async fn webhook_handler(
     body: axum::body::Bytes,
 ) -> StatusCode {
     // Extract authentication header based on platform
-    let (token_header, event_header) = match state.webhook_handler.platform {
+    let (token_header, event_header, extra_variables) = match state.webhook_handler.platform {
         Platform::Github => {
             // GitHub uses X-Hub-Signature-256 for HMAC and X-GitHub-Event for type
             let sig = match headers.get(headers::GITHUB_SIGNATURE) {
@@ -102,7 +105,12 @@ async fn webhook_handler(
                     return StatusCode::BAD_REQUEST;
                 }
             };
-            (sig, evt)
+            // Extract the X-GitHub-Delivery header for watermark tracking
+            let mut vars = HashMap::new();
+            if let Some(v) = headers.get(headers::GITHUB_DELIVERY).and_then(|v| v.to_str().ok()) {
+                vars.insert("github_delivery_id".to_string(), v.to_string());
+            }
+            (sig, evt, vars)
         }
         Platform::Gitlab => {
             // GitLab uses X-Gitlab-Token for auth and X-Gitlab-Event for type
@@ -116,13 +124,13 @@ async fn webhook_handler(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
-            (token, evt)
+            (token, evt, HashMap::new())
         }
     };
 
     match state
         .webhook_handler
-        .handle_webhook(&token_header, &event_header, &body)
+        .handle_webhook(&token_header, &event_header, &body, extra_variables)
         .await
     {
         Ok(_) => StatusCode::OK,
@@ -197,7 +205,9 @@ pub async fn run_server(
     let (tx, rx) = tokio::sync::mpsc::channel(100);
 
     let dedup_sets = new_dedup_sets();
-    let dispatcher = Dispatcher::new(dedup_sets, max_concurrent, workdir, workflow_state, agents);
+    let watermark_store = load_watermarks(&workdir);
+    let watermark_store = Arc::new(RwLock::new(watermark_store));
+    let dispatcher = Dispatcher::new(dedup_sets, watermark_store, max_concurrent, workdir, workflow_state, agents);
 
     // Spawn dispatcher run loop as a background task, passing drain_timeout
     let dispatcher_handle = tokio::spawn({
@@ -285,8 +295,10 @@ mod tests {
     fn test_state() -> (AppState, mpsc::Receiver<DispatchMessage>) {
         let (tx, rx) = mpsc::channel(100);
         let dedup_sets = crate::dispatcher::new_dedup_sets();
+        let watermark_store = crate::dispatcher::new_watermark_store();
         let dispatcher = crate::dispatcher::Dispatcher::new(
             dedup_sets,
+            watermark_store,
             0,
             PathBuf::from("/tmp/yoke-test"),
             test_workflow_state(),
@@ -302,8 +314,10 @@ mod tests {
     fn test_state_github() -> (AppState, mpsc::Receiver<DispatchMessage>) {
         let (tx, rx) = mpsc::channel(100);
         let dedup_sets = crate::dispatcher::new_dedup_sets();
+        let watermark_store = crate::dispatcher::new_watermark_store();
         let dispatcher = crate::dispatcher::Dispatcher::new(
             dedup_sets,
+            watermark_store,
             0,
             PathBuf::from("/tmp/yoke-test"),
             test_workflow_state(),
@@ -838,6 +852,7 @@ mod tests {
             webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
             dispatcher: crate::dispatcher::Dispatcher::new(
                 crate::dispatcher::new_dedup_sets(),
+                crate::dispatcher::new_watermark_store(),
                 0,
                 PathBuf::from("/tmp/yoke-test"),
                 test_workflow_state(),

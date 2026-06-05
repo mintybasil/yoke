@@ -6,6 +6,7 @@ pub mod gitlab_api;
 use crate::config::Platform;
 use crate::dispatcher::DispatchMessage;
 use crate::workflow::TriggerType;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
@@ -96,14 +97,17 @@ impl WebhookHandler {
         token_or_signature: &str,
         event_header: &str,
         body: &[u8],
+        extra_variables: HashMap<String, String>,
     ) -> Result<(), WebhookError> {
-        let trigger_event = dispatch_webhook(
+        let mut trigger_event = dispatch_webhook(
             &self.platform,
             token_or_signature,
             event_header,
             body,
             &self.secret,
         )?;
+        // Merge extra variables (e.g. delivery IDs from webhook headers)
+        trigger_event.variables.extend(extra_variables);
         // Wrap TriggerEvent in DispatchMessage and send to dispatcher
         self.sender
             .send(DispatchMessage {
