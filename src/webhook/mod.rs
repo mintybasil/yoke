@@ -29,6 +29,10 @@ pub struct TriggerEvent {
     /// These are merged with global variables in the dispatcher before
     /// being passed to the workflow runner for template rendering.
     pub variables: std::collections::HashMap<String, String>,
+    /// Platform-specific delivery ID for watermark tracking.
+    /// GitHub: the `X-GitHub-Delivery` header UUID.
+    /// GitLab: not currently extracted (reserved for future use).
+    pub delivery_id: Option<String>,
 }
 
 /// Errors that can occur during webhook processing.
@@ -96,14 +100,16 @@ impl WebhookHandler {
         token_or_signature: &str,
         event_header: &str,
         body: &[u8],
+        delivery_id: Option<String>,
     ) -> Result<(), WebhookError> {
-        let trigger_event = dispatch_webhook(
+        let mut trigger_event = dispatch_webhook(
             &self.platform,
             token_or_signature,
             event_header,
             body,
             &self.secret,
         )?;
+        trigger_event.delivery_id = delivery_id;
         // Wrap TriggerEvent in DispatchMessage and send to dispatcher
         self.sender
             .send(DispatchMessage {

@@ -25,12 +25,13 @@
 //! `completed.json` and `failed.json` from the work directory, gracefully
 //! handling missing or corrupted files.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
@@ -51,6 +52,32 @@ pub struct FailedEntry {
     pub timestamp: SystemTime,
     /// Description of the error that caused the failure.
     pub error: String,
+}
+
+/// Last-processed watermark per repository.
+///
+/// Persists the timestamp and platform-specific event/delivery ID of the
+/// most recently processed webhook event for each repo. This enables
+/// catch-up orchestration: on restart or after downtime, Yoke can query
+/// the platform APIs for events newer than the watermark to process
+/// anything that was missed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Watermark {
+    /// GitHub delivery ID (from `X-GitHub-Delivery` header).
+    pub last_delivery_id: Option<String>,
+    /// GitLab event ID (from GitLab webhook payload).
+    pub last_event_id: Option<String>,
+    /// When Yoke last processed an event for this repo.
+    pub last_processed_at: DateTime<Utc>,
+}
+
+/// Wrapper for the watermark map, keyed by `{owner}/{repo}`.
+///
+/// Follows the same atomic persistence pattern as `DedupSets`:
+/// write to `.tmp`, then `rename` for crash safety.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WatermarkStore {
+    pub marks: HashMap<String, Watermark>,
 }
 
 /// Message sent from the webhook handler to the dispatcher loop.
@@ -178,6 +205,8 @@ pub type SharedDedupSets = Arc<RwLock<DedupSets>>;
 pub struct Dispatcher {
     /// Shared deduplication state for tracking event lifecycles.
     pub dedup_sets: SharedDedupSets,
+    /// Last-processed watermark per repository, persisted to `watermark.json`.
+    pub watermark_store: Arc<RwLock<WatermarkStore>>,
     /// Optional concurrency-limiting semaphore. `None` means unlimited.
     semaphore: Option<Arc<Semaphore>>,
     /// Counter for permits currently held (for observability).
@@ -208,6 +237,7 @@ impl Dispatcher {
     /// provides the Hermes API configurations for constructing clients.
     pub fn new(
         dedup_sets: SharedDedupSets,
+        watermark_store: Arc<RwLock<WatermarkStore>>,
         max_concurrent: usize,
         workdir: PathBuf,
         workflow_state: Arc<WorkflowState>,
@@ -231,6 +261,7 @@ impl Dispatcher {
 
         Self {
             dedup_sets,
+            watermark_store,
             semaphore,
             active_count: Arc::new(AtomicUsize::new(0)),
             max_concurrent,
@@ -440,6 +471,13 @@ impl Dispatcher {
                 );
             }
         }
+        drop(sets);
+
+        // Persist watermarks
+        let wm = self.watermark_store.read().await;
+        if let Err(e) = wm.persist(&self.workdir) {
+            tracing::error!(error = %e, "Failed to persist watermarks during shutdown");
+        }
     }
 
     /// Process a single dispatch message: dedup check, permit acquisition,
@@ -491,6 +529,7 @@ impl Dispatcher {
 
         // Clone what we need for the spawned task
         let dedup_sets = self.dedup_sets.clone();
+        let watermark_store = self.watermark_store.clone();
         let workdir = self.workdir.clone();
         let workflow_state = self.workflow_state.clone();
         let agents = self.agents.clone();
@@ -611,6 +650,23 @@ impl Dispatcher {
                     let completed_path = workdir.join("completed.json");
                     if let Err(e) = sets.persist_completed(&workdir) {
                         tracing::error!(%key, error = %e, path = %completed_path.display(), "Failed to persist completed set");
+                    }
+
+                    // Update watermark for this repo
+                    let repo_key = format!("{}/{}", owner, repo);
+                    {
+                        let mut wm_store = watermark_store.write().await;
+                        wm_store.marks.insert(
+                            repo_key,
+                            Watermark {
+                                last_delivery_id: event.delivery_id.clone(),
+                                last_event_id: Some(event.event_id.clone()),
+                                last_processed_at: Utc::now(),
+                            },
+                        );
+                        if let Err(e) = wm_store.persist(&workdir) {
+                            tracing::error!(%key, error = %e, "Failed to persist watermarks");
+                        }
                     }
                 }
                 Err(e) => {
@@ -775,6 +831,21 @@ impl DedupSets {
     }
 }
 
+impl WatermarkStore {
+    /// Persist the watermark map to `watermark.json` in the given directory.
+    ///
+    /// Uses atomic file writes (`.tmp` + `rename`) for crash safety,
+    /// same pattern as `DedupSets::persist_completed`.
+    pub fn persist(&self, workdir: &Path) -> Result<(), PersistenceError> {
+        if self.marks.is_empty() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(workdir).map_err(PersistenceError::Io)?;
+        let path = workdir.join("watermark.json");
+        save_dedup_file(&path, &self.marks)
+    }
+}
+
 /// Load dedup persistence state from the work directory.
 ///
 /// Reads `completed.json` and `failed.json` from `workdir`. Missing files are
@@ -812,6 +883,30 @@ pub fn load_persistence(workdir: &Path) -> DedupSets {
         completed,
         permanently_failed,
     }
+}
+
+/// Load watermark persistence state from the work directory.
+///
+/// Reads `watermark.json` from `workdir`. Missing files are treated as
+/// empty (no error). Corrupted files produce a warning and are treated
+/// as empty. Returns a `WatermarkStore` ready for wrapping in `Arc<RwLock<...>>`.
+pub fn load_watermarks(workdir: &Path) -> WatermarkStore {
+    let watermark_path = workdir.join("watermark.json");
+    let marks = load_dedup_file::<HashMap<String, Watermark>>(&watermark_path).unwrap_or_else(|e| {
+        if !matches!(
+            &e,
+            PersistenceError::Io(io_err) if io_err.kind() == std::io::ErrorKind::NotFound
+        ) {
+            tracing::warn!(error = %e, "Corrupted watermark.json, treating as empty; data will be rebuilt");
+        }
+        HashMap::new()
+    });
+    WatermarkStore { marks }
+}
+
+/// Create a new empty `WatermarkStore` (for first-run or when no persistence file exists).
+pub fn new_watermark_store() -> Arc<RwLock<WatermarkStore>> {
+    Arc::new(RwLock::new(WatermarkStore::default()))
 }
 
 /// Find workflows whose trigger type matches the incoming event's trigger type
@@ -852,8 +947,10 @@ mod tests {
     /// Helper to create a test Dispatcher with an empty WorkflowState and no agents.
     fn test_dispatcher(dedup: SharedDedupSets, max_concurrent: usize) -> Dispatcher {
         let workflow_state = Arc::new(WorkflowState::new(vec![]));
+        let watermark_store = new_watermark_store();
         Dispatcher::new(
             dedup,
+            watermark_store,
             max_concurrent,
             PathBuf::from("/tmp/yoke-test"),
             workflow_state,
@@ -1113,6 +1210,7 @@ mod tests {
             event_id: event_id.to_string(),
             actor: "test-user".to_string(),
             variables: std::collections::HashMap::new(),
+            delivery_id: None,
         }
     }
 
@@ -1774,5 +1872,132 @@ mod tests {
             ws,
             PathBuf::from("/tmp/yoke/org-name/project/pr-7-review-999")
         );
+    }
+
+    // --- Watermark tests ---
+
+    #[test]
+    fn test_watermark_store_default_is_empty() {
+        let store = WatermarkStore::default();
+        assert!(store.marks.is_empty());
+    }
+
+    #[test]
+    fn test_watermark_store_insert_and_get() {
+        let mut store = WatermarkStore::default();
+        let watermark = Watermark {
+            last_delivery_id: Some("abc-123".to_string()),
+            last_event_id: None,
+            last_processed_at: Utc::now(),
+        };
+        store
+            .marks
+            .insert("mintybasil/yoke".to_string(), watermark.clone());
+        assert!(store.marks.contains_key("mintybasil/yoke"));
+        let wm = store.marks.get("mintybasil/yoke").unwrap();
+        assert_eq!(wm.last_delivery_id, Some("abc-123".to_string()));
+        assert!(wm.last_event_id.is_none());
+    }
+
+    #[test]
+    fn test_watermark_store_persist_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = WatermarkStore::default();
+        let now = Utc::now();
+        store.marks.insert(
+            "owner/repo".to_string(),
+            Watermark {
+                last_delivery_id: Some("delivery-1".to_string()),
+                last_event_id: Some("event-1".to_string()),
+                last_processed_at: now,
+            },
+        );
+        store.marks.insert(
+            "other/repo".to_string(),
+            Watermark {
+                last_delivery_id: None,
+                last_event_id: Some("event-2".to_string()),
+                last_processed_at: now,
+            },
+        );
+
+        store.persist(dir.path()).unwrap();
+
+        // Load back
+        let loaded = load_watermarks(dir.path());
+        assert_eq!(loaded.marks.len(), 2);
+        let wm1 = loaded.marks.get("owner/repo").unwrap();
+        assert_eq!(wm1.last_delivery_id, Some("delivery-1".to_string()));
+        assert_eq!(wm1.last_event_id, Some("event-1".to_string()));
+        let wm2 = loaded.marks.get("other/repo").unwrap();
+        assert!(wm2.last_delivery_id.is_none());
+        assert_eq!(wm2.last_event_id, Some("event-2".to_string()));
+    }
+
+    #[test]
+    fn test_load_watermarks_missing_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = load_watermarks(dir.path());
+        assert!(store.marks.is_empty());
+    }
+
+    #[test]
+    fn test_load_watermarks_corrupted_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("watermark.json"), "not valid json{{{{").unwrap();
+        let store = load_watermarks(dir.path());
+        assert!(store.marks.is_empty());
+    }
+
+    #[test]
+    fn test_watermark_store_persist_empty_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WatermarkStore::default();
+        // Empty store should not write a file
+        let result = store.persist(dir.path());
+        assert!(result.is_ok());
+        assert!(!dir.path().join("watermark.json").exists());
+    }
+
+    #[test]
+    fn test_watermark_persist_overwrites_previous() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // First write
+        let mut store = WatermarkStore::default();
+        store.marks.insert(
+            "owner/repo".to_string(),
+            Watermark {
+                last_delivery_id: Some("first".to_string()),
+                last_event_id: None,
+                last_processed_at: Utc::now(),
+            },
+        );
+        store.persist(dir.path()).unwrap();
+
+        // Second write with different data
+        store.marks.insert(
+            "owner/repo".to_string(),
+            Watermark {
+                last_delivery_id: Some("second".to_string()),
+                last_event_id: None,
+                last_processed_at: Utc::now(),
+            },
+        );
+        store.persist(dir.path()).unwrap();
+
+        // Load and verify second write replaced first
+        let loaded = load_watermarks(dir.path());
+        assert_eq!(
+            loaded.marks.get("owner/repo").unwrap().last_delivery_id,
+            Some("second".to_string())
+        );
+    }
+
+    #[test]
+    fn test_new_watermark_store_creates_empty() {
+        let store = new_watermark_store();
+        let locked = store.blocking_read();
+        assert!(locked.marks.is_empty());
     }
 }

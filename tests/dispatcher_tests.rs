@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use yoke::dispatcher::{
     DispatchMessage, Dispatcher, build_dedup_key, load_persistence, new_dedup_sets,
+    new_watermark_store,
 };
 use yoke::reload::WorkflowState;
 use yoke::webhook::TriggerEvent;
@@ -26,7 +27,15 @@ fn test_dispatcher(
     workdir: PathBuf,
 ) -> Dispatcher {
     let workflow_state = Arc::new(WorkflowState::new(vec![]));
-    Dispatcher::new(dedup, max_concurrent, workdir, workflow_state, vec![])
+    let watermark_store = new_watermark_store();
+    Dispatcher::new(
+        dedup,
+        watermark_store,
+        max_concurrent,
+        workdir,
+        workflow_state,
+        vec![],
+    )
 }
 
 // --- Helper functions ---
@@ -39,6 +48,7 @@ fn make_event(trigger_type: TriggerType, event_id: &str) -> TriggerEvent {
         event_id: event_id.to_string(),
         actor: "test-user".to_string(),
         variables: std::collections::HashMap::new(),
+        delivery_id: None,
     }
 }
 

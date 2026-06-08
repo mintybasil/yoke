@@ -537,6 +537,7 @@ pub fn handle_github_webhook(
         event_id,
         actor,
         variables,
+        delivery_id: None,
     })
 }
 
