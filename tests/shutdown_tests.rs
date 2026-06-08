@@ -14,15 +14,52 @@ use std::time::Duration;
 use yoke::dispatcher::{DispatchMessage, Dispatcher, load_persistence, new_dedup_sets};
 use yoke::reload::WorkflowState;
 use yoke::webhook::TriggerEvent;
-use yoke::workflow::TriggerType;
+use yoke::workflow::{Trigger, TriggerType, Workflow, triggers};
 
 /// Create a Dispatcher for tests with an empty workflow state and no agents.
+#[allow(dead_code)]
 fn test_dispatcher(
     dedup: yoke::dispatcher::SharedDedupSets,
     max_concurrent: usize,
     workdir: PathBuf,
 ) -> Dispatcher {
     let workflow_state = Arc::new(WorkflowState::new(vec![]));
+    Dispatcher::new(dedup, max_concurrent, workdir, workflow_state, vec![])
+}
+
+/// Create a Dispatcher for tests with matching workflows for all common trigger types
+/// from `test-user`. This is needed for tests that go through the dispatch flow and
+/// assert on completed/in-flight dedup state.
+fn test_dispatcher_with_matching_workflows(
+    dedup: yoke::dispatcher::SharedDedupSets,
+    max_concurrent: usize,
+    workdir: PathBuf,
+) -> Dispatcher {
+    let trigger_labels = [
+        triggers::GITHUB_ISSUE_ASSIGNED,
+        triggers::GITHUB_ISSUE_COMMENT_MENTION,
+        triggers::GITHUB_PULL_REQUEST_REVIEW,
+        triggers::GITLAB_ISSUE_ASSIGNED,
+    ];
+    let workflows: Vec<(String, Workflow)> = trigger_labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let workflow = Workflow {
+                path: format!("test-workflow-{i}.toml"),
+                trigger: Trigger {
+                    r#type: label.to_string(),
+                    assigned_to: None,
+                    mentioned_user: None,
+                    allowed_users: Some(vec!["test-user".to_string()]),
+                },
+                git: Default::default(),
+                steps: vec![],
+            };
+            (format!("test-workflow-{i}.toml"), workflow)
+        })
+        .collect();
+    let workflow_state = Arc::new(WorkflowState::new(workflows));
     Dispatcher::new(dedup, max_concurrent, workdir, workflow_state, vec![])
 }
 
@@ -77,7 +114,11 @@ async fn test_signal_handler_sends_shutdown_on_first_signal() {
 async fn test_graceful_shutdown_with_custom_drain_timeout() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -124,7 +165,11 @@ async fn test_graceful_shutdown_with_custom_drain_timeout() {
 async fn test_state_persisted_on_graceful_shutdown() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -180,7 +225,11 @@ async fn test_state_persisted_on_graceful_shutdown() {
 async fn test_shutdown_with_no_active_workflows() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (_tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -216,7 +265,11 @@ async fn test_drain_timeout_expires_gracefully() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Use concurrency of 1 so we can control ordering
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 1, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        1,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -261,7 +314,11 @@ async fn test_drain_timeout_expires_gracefully() {
 async fn test_shutdown_signal_propagates_via_watch_channel() {
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
