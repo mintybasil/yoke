@@ -6,7 +6,6 @@ pub mod gitlab_api;
 use crate::config::Platform;
 use crate::dispatcher::DispatchMessage;
 use crate::workflow::TriggerType;
-use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
@@ -30,6 +29,11 @@ pub struct TriggerEvent {
     /// These are merged with global variables in the dispatcher before
     /// being passed to the workflow runner for template rendering.
     pub variables: std::collections::HashMap<String, String>,
+    /// Platform-specific delivery ID for watermark tracking.
+    /// GitHub: the `X-GitHub-Delivery` header UUID.
+    /// GitLab: not currently extracted (reserved for future use).
+    /// This is metadata for the dispatcher, not a template variable.
+    pub delivery_id: Option<String>,
 }
 
 /// Errors that can occur during webhook processing.
@@ -97,7 +101,7 @@ impl WebhookHandler {
         token_or_signature: &str,
         event_header: &str,
         body: &[u8],
-        extra_variables: HashMap<String, String>,
+        delivery_id: Option<String>,
     ) -> Result<(), WebhookError> {
         let mut trigger_event = dispatch_webhook(
             &self.platform,
@@ -106,8 +110,9 @@ impl WebhookHandler {
             body,
             &self.secret,
         )?;
-        // Merge extra variables (e.g. delivery IDs from webhook headers)
-        trigger_event.variables.extend(extra_variables);
+        // Set the platform-specific delivery ID for watermark tracking.
+        // This is dispatcher metadata, not a template variable.
+        trigger_event.delivery_id = delivery_id;
         // Wrap TriggerEvent in DispatchMessage and send to dispatcher
         self.sender
             .send(DispatchMessage {

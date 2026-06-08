@@ -659,11 +659,8 @@ impl Dispatcher {
                         wm_store.marks.insert(
                             repo_key,
                             Watermark {
-                                last_delivery_id: event
-                                    .variables
-                                    .get("github_delivery_id")
-                                    .cloned(),
-                                last_event_id: event.variables.get("gitlab_event_id").cloned(),
+                                last_delivery_id: event.delivery_id.clone(),
+                                last_event_id: Some(event.event_id.clone()),
                                 last_processed_at: Utc::now(),
                             },
                         );
@@ -1213,6 +1210,7 @@ mod tests {
             event_id: event_id.to_string(),
             actor: "test-user".to_string(),
             variables: std::collections::HashMap::new(),
+            delivery_id: None,
         }
     }
 

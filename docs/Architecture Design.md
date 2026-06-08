@@ -414,14 +414,14 @@ Watermarks track the last-processed webhook delivery per repository, enabling re
 
 **When watermarks are updated:**
 
-On every successful workflow completion, `spawn_workflow` updates the watermark for the event's repository. The platform-specific delivery or event ID is extracted from `TriggerEvent.variables`:
+On every successful workflow completion, `spawn_workflow` updates the watermark for the event's repository. The platform-specific delivery or event ID is sourced from dedicated `TriggerEvent` fields:
 
-| Platform    | Source variable          | Header / payload field     |
-|-------------|--------------------------|----------------------------|
-| GitHub      | `github_delivery_id`     | `X-GitHub-Delivery` header |
-| GitLab      | `gitlab_event_id`        | Payload event identifier    |
+| Platform    | Source field              | Header / payload field      |
+|-------------|--------------------------|-----------------------------|
+| GitHub      | `delivery_id`            | `X-GitHub-Delivery` header  |
+| GitLab      | `event_id`               | Payload event identifier    |
 
-The `last_processed_at` field is set to `Utc::now()` at the time of the update. Only one field (`last_delivery_id` for GitHub, `last_event_id` for GitLab) is populated per platform — the other remains `None`.
+The `delivery_id` field on `TriggerEvent` carries the GitHub delivery UUID (extracted from the `X-GitHub-Delivery` header in the server's webhook handler); GitLab currently sets it to `None`. The `event_id` field holds the canonical event identifier used for deduplication and is the same value written to `last_event_id`. The `last_processed_at` field is set to `Utc::now()` at the time of the update. Only one field (`last_delivery_id` for GitHub, `last_event_id` for GitLab) is populated per platform — the other remains `None`.
 
 **Persistence:**
 

@@ -46,6 +46,7 @@ fn make_event(trigger_type: TriggerType, event_id: &str) -> TriggerEvent {
         event_id: event_id.to_string(),
         actor: "test-user".to_string(),
         variables: std::collections::HashMap::new(),
+        delivery_id: None,
     }
 }
 

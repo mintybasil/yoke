@@ -5,7 +5,6 @@ use axum::{
     routing::{get, post},
 };
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -75,8 +74,8 @@ async fn webhook_handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> StatusCode {
-    // Extract authentication header based on platform
-    let (token_header, event_header, extra_variables) = match state.webhook_handler.platform {
+    // Extract authentication header and delivery ID based on platform
+    let (token_header, event_header, delivery_id) = match state.webhook_handler.platform {
         Platform::Github => {
             // GitHub uses X-Hub-Signature-256 for HMAC and X-GitHub-Event for type
             let sig = match headers.get(headers::GITHUB_SIGNATURE) {
@@ -106,14 +105,11 @@ async fn webhook_handler(
                 }
             };
             // Extract the X-GitHub-Delivery header for watermark tracking
-            let mut vars = HashMap::new();
-            if let Some(v) = headers
+            let delivery_id = headers
                 .get(headers::GITHUB_DELIVERY)
                 .and_then(|v| v.to_str().ok())
-            {
-                vars.insert("github_delivery_id".to_string(), v.to_string());
-            }
-            (sig, evt, vars)
+                .map(|s| s.to_string());
+            (sig, evt, delivery_id)
         }
         Platform::Gitlab => {
             // GitLab uses X-Gitlab-Token for auth and X-Gitlab-Event for type
@@ -127,13 +123,14 @@ async fn webhook_handler(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
-            (token, evt, HashMap::new())
+            // GitLab does not currently provide a delivery ID header
+            (token, evt, None)
         }
     };
 
     match state
         .webhook_handler
-        .handle_webhook(&token_header, &event_header, &body, extra_variables)
+        .handle_webhook(&token_header, &event_header, &body, delivery_id)
         .await
     {
         Ok(_) => StatusCode::OK,
