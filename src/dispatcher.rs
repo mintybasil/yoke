@@ -550,10 +550,11 @@ impl Dispatcher {
                     "Processing workflow event"
                 );
 
-                // Read the Hermes API key lazily — only when a workflow actually
-                // has steps to execute. Workflows with zero steps (e.g., routing-only
-                // workflows) don't need an API key at all.
-                let mut api_key: Option<String> = None;
+                // Read the Hermes API key before running workflows.
+                // Validation ensures every workflow has at least one step,
+                // so the API key is always needed.
+                let api_key = std::env::var(crate::config::env::HERMES_API_KEY)
+                    .map_err(|_| "HERMES_API_KEY environment variable not set".to_string())?;
 
                 // Run each matching workflow sequentially within this task.
                 // If multiple workflows match the same trigger, they run one after
@@ -583,39 +584,23 @@ impl Dispatcher {
                     variables.insert("event_id".to_string(), event_id.clone());
                     variables.insert("repo_path".to_string(), event.repo_path.clone());
 
-                    // Read the HERMES_API_KEY lazily on the first workflow that
-                    // actually has steps. Workflows with zero steps (e.g.,
-                    // routing-only workflows) don't need an API key at all.
-                    if !workflow.steps.is_empty() {
-                        let key = match &api_key {
-                            Some(k) => k.clone(),
-                            None => {
-                                let k = std::env::var(crate::config::env::HERMES_API_KEY).map_err(
-                                    |_| "HERMES_API_KEY environment variable not set".to_string(),
-                                )?;
-                                api_key = Some(k.clone());
-                                k
-                            }
-                        };
+                    let mut runner = WorkflowRunner::new(
+                        workflow.clone(),
+                        variables,
+                        event_ws_dir.clone(),
+                        agents.clone(),
+                        api_key.clone(),
+                    );
 
-                        let mut runner = WorkflowRunner::new(
-                            workflow.clone(),
-                            variables,
-                            event_ws_dir.clone(),
-                            agents.clone(),
-                            key,
+                    if let Err(e) = runner.run().await {
+                        tracing::error!(
+                            workflow = %workflow_name,
+                            repo = %event.repo_path,
+                            event_id = %event_id,
+                            error = %e,
+                            "Workflow execution failed"
                         );
-
-                        if let Err(e) = runner.run().await {
-                            tracing::error!(
-                                workflow = %workflow_name,
-                                repo = %event.repo_path,
-                                event_id = %event_id,
-                                error = %e,
-                                "Workflow execution failed"
-                            );
-                            return Err(format!("Workflow '{}' failed: {}", path, e));
-                        }
+                        return Err(format!("Workflow '{}' failed: {}", path, e));
                     }
 
                     tracing::info!(

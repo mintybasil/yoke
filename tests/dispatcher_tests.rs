@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use yoke::dispatcher::{
@@ -18,6 +19,46 @@ use yoke::dispatcher::{
 };
 use yoke::reload::WorkflowState;
 use yoke::webhook::TriggerEvent;
+
+/// Mutex to serialize tests that read/write the `HERMES_API_KEY` env var.
+static HERMES_KEY_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static HERMES_KEY_SET_MUTEX: StdMutex<()> = StdMutex::new(());
+
+/// RAII guard that sets `HERMES_API_KEY` for the duration of a test.
+///
+/// The dispatcher reads `HERMES_API_KEY` before running any matching workflow.
+/// Tests that dispatch events with matching workflows must set this env var,
+/// even though the test workflows have empty `steps` (bypassing validation)
+/// so the runner never actually uses the key.
+struct HermesApiKeyGuard {
+    _mutex_guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+fn set_hermes_key_sync() {
+    let _g = HERMES_KEY_SET_MUTEX.lock().unwrap();
+    unsafe { std::env::set_var(yoke::config::env::HERMES_API_KEY, "test-key") };
+}
+
+fn clear_hermes_key_sync() {
+    let _g = HERMES_KEY_SET_MUTEX.lock().unwrap();
+    unsafe { std::env::remove_var(yoke::config::env::HERMES_API_KEY) };
+}
+
+impl Drop for HermesApiKeyGuard {
+    fn drop(&mut self) {
+        clear_hermes_key_sync();
+    }
+}
+
+/// Set `HERMES_API_KEY` for the duration of the returned guard.
+///
+/// Acquires `HERMES_KEY_MUTEX` to prevent concurrent tests from interfering.
+/// On drop, the env var is cleared and the mutex is released.
+async fn set_hermes_api_key() -> HermesApiKeyGuard {
+    let guard = HERMES_KEY_MUTEX.lock().await;
+    set_hermes_key_sync();
+    HermesApiKeyGuard { _mutex_guard: guard }
+}
 use yoke::workflow::{Trigger, TriggerType, Workflow, triggers};
 
 /// Create a Dispatcher for tests with an empty workflow state and no agents.
@@ -112,6 +153,7 @@ fn make_workdir() -> tempfile::TempDir {
 
 #[tokio::test]
 async fn test_full_dispatch_flow_completes_and_persists() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -165,6 +207,7 @@ async fn test_full_dispatch_flow_completes_and_persists() {
 
 #[tokio::test]
 async fn test_duplicate_event_rejected() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -210,6 +253,7 @@ async fn test_duplicate_event_rejected() {
 
 #[tokio::test]
 async fn test_concurrency_limit() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Limit to 1 concurrent workflow
@@ -261,6 +305,7 @@ async fn test_concurrency_limit() {
 
 #[tokio::test]
 async fn test_completed_events_persisted_to_disk() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -312,6 +357,7 @@ async fn test_completed_events_persisted_to_disk() {
 
 #[tokio::test]
 async fn test_graceful_shutdown_drains_in_flight() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -357,6 +403,7 @@ async fn test_graceful_shutdown_drains_in_flight() {
 
 #[tokio::test]
 async fn test_dispatcher_stops_when_channel_closed() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -399,6 +446,7 @@ async fn test_dispatcher_stops_when_channel_closed() {
 
 #[tokio::test]
 async fn test_multiple_different_events_processed() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -450,6 +498,7 @@ async fn test_multiple_different_events_processed() {
 
 #[tokio::test]
 async fn test_on_workflow_complete_success() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -489,6 +538,7 @@ async fn test_on_workflow_complete_success() {
 
 #[tokio::test]
 async fn test_on_workflow_complete_failure() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -530,6 +580,7 @@ async fn test_on_workflow_complete_failure() {
 
 #[tokio::test]
 async fn test_dispatcher_active_count_with_concurrent_events() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Use concurrency limit of 2 so the semaphore is in play
@@ -560,6 +611,7 @@ async fn test_dispatcher_active_count_with_concurrent_events() {
 
 #[tokio::test]
 async fn test_gitlab_event_dispatched() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -604,6 +656,7 @@ async fn test_gitlab_event_dispatched() {
 
 #[tokio::test]
 async fn test_unlimited_throughput() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -663,6 +716,7 @@ async fn test_unlimited_throughput() {
 
 #[tokio::test]
 async fn test_concurrency_stress_with_semaphore() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Limit to 4 concurrent workflows
@@ -712,6 +766,7 @@ async fn test_concurrency_stress_with_semaphore() {
 
 #[tokio::test]
 async fn test_failure_state_transition_via_on_workflow_complete() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -765,6 +820,7 @@ async fn test_failure_state_transition_via_on_workflow_complete() {
 
 #[tokio::test]
 async fn test_permits_released_after_completion() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Use concurrency limit of 2 so the semaphore is in play
@@ -814,6 +870,7 @@ async fn test_permits_released_after_completion() {
 
 #[tokio::test]
 async fn test_active_count_decrements_after_handle_dispatch() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -866,6 +923,7 @@ async fn test_active_count_decrements_after_handle_dispatch() {
 
 #[tokio::test]
 async fn test_active_count_stays_zero_with_unlimited_concurrency() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // max_concurrent = 0 means no semaphore, so acquire_permit returns None

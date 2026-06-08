@@ -16,6 +16,47 @@ use yoke::reload::WorkflowState;
 use yoke::webhook::TriggerEvent;
 use yoke::workflow::{Trigger, TriggerType, Workflow, triggers};
 
+/// Mutex to serialize tests that read/write the `HERMES_API_KEY` env var.
+static HERMES_KEY_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static HERMES_KEY_SET_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// RAII guard that sets `HERMES_API_KEY` for the duration of a test.
+///
+/// The dispatcher reads `HERMES_API_KEY` before running any matching workflow.
+/// Tests that dispatch events with matching workflows must set this env var,
+/// even though the test workflows have empty `steps` (bypassing validation)
+/// so the runner never actually uses the key.
+struct HermesApiKeyGuard {
+    _mutex_guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+fn set_hermes_key_sync() {
+    let _g = HERMES_KEY_SET_MUTEX.lock().unwrap();
+    unsafe { std::env::set_var(yoke::config::env::HERMES_API_KEY, "test-key") };
+}
+
+fn clear_hermes_key_sync() {
+    let _g = HERMES_KEY_SET_MUTEX.lock().unwrap();
+    unsafe { std::env::remove_var(yoke::config::env::HERMES_API_KEY) };
+}
+
+impl Drop for HermesApiKeyGuard {
+    fn drop(&mut self) {
+        clear_hermes_key_sync();
+    }
+}
+
+/// Set `HERMES_API_KEY` for the duration of the returned guard.
+///
+/// Acquires `HERMES_KEY_MUTEX` to prevent concurrent tests from interfering.
+/// On drop, the env var is cleared and the mutex is released.
+async fn set_hermes_api_key() -> HermesApiKeyGuard {
+    let guard = HERMES_KEY_MUTEX.lock().await;
+    set_hermes_key_sync();
+    HermesApiKeyGuard { _mutex_guard: guard }
+}
+
+
 /// Create a Dispatcher for tests with an empty workflow state and no agents.
 #[allow(dead_code)]
 fn test_dispatcher(
@@ -112,6 +153,7 @@ async fn test_signal_handler_sends_shutdown_on_first_signal() {
 
 #[tokio::test]
 async fn test_graceful_shutdown_with_custom_drain_timeout() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -163,6 +205,7 @@ async fn test_graceful_shutdown_with_custom_drain_timeout() {
 
 #[tokio::test]
 async fn test_state_persisted_on_graceful_shutdown() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -223,6 +266,7 @@ async fn test_state_persisted_on_graceful_shutdown() {
 
 #[tokio::test]
 async fn test_shutdown_with_no_active_workflows() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
@@ -262,6 +306,7 @@ async fn test_shutdown_with_no_active_workflows() {
 
 #[tokio::test]
 async fn test_drain_timeout_expires_gracefully() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Use concurrency of 1 so we can control ordering
@@ -312,6 +357,7 @@ async fn test_drain_timeout_expires_gracefully() {
 
 #[tokio::test]
 async fn test_shutdown_signal_propagates_via_watch_channel() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     let dispatcher = test_dispatcher_with_matching_workflows(
