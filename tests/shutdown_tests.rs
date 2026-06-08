@@ -55,9 +55,10 @@ impl Drop for HermesApiKeyGuard {
 async fn set_hermes_api_key() -> HermesApiKeyGuard {
     let guard = HERMES_KEY_MUTEX.lock().await;
     set_hermes_key_sync();
-    HermesApiKeyGuard { _mutex_guard: guard }
+    HermesApiKeyGuard {
+        _mutex_guard: guard,
+    }
 }
-
 
 /// Create a Dispatcher for tests with an empty workflow state and no agents.
 #[allow(dead_code)]
@@ -111,7 +112,14 @@ fn test_dispatcher_with_matching_workflows(
         })
         .collect();
     let workflow_state = Arc::new(WorkflowState::new(workflows));
-    Dispatcher::new(dedup, yoke::dispatcher::new_watermark_store(), max_concurrent, workdir, workflow_state, vec![])
+    Dispatcher::new(
+        dedup,
+        yoke::dispatcher::new_watermark_store(),
+        max_concurrent,
+        workdir,
+        workflow_state,
+        vec![],
+    )
 }
 
 // --- Helper functions ---

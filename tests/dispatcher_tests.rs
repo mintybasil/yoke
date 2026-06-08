@@ -58,7 +58,9 @@ impl Drop for HermesApiKeyGuard {
 async fn set_hermes_api_key() -> HermesApiKeyGuard {
     let guard = HERMES_KEY_MUTEX.lock().await;
     set_hermes_key_sync();
-    HermesApiKeyGuard { _mutex_guard: guard }
+    HermesApiKeyGuard {
+        _mutex_guard: guard,
+    }
 }
 use yoke::workflow::{Trigger, TriggerType, Workflow, triggers};
 
@@ -130,7 +132,14 @@ fn test_dispatcher_with_trigger_labels(
         })
         .collect();
     let workflow_state = Arc::new(WorkflowState::new(workflows));
-    Dispatcher::new(dedup, yoke::dispatcher::new_watermark_store(), max_concurrent, workdir, workflow_state, vec![])
+    Dispatcher::new(
+        dedup,
+        yoke::dispatcher::new_watermark_store(),
+        max_concurrent,
+        workdir,
+        workflow_state,
+        vec![],
+    )
 }
 
 // --- Helper functions ---
