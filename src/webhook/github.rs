@@ -95,7 +95,9 @@ pub struct IssuesPayload {
 /// Payload for GitHub `issue_comment` events.
 ///
 /// GitHub uses `issue_comment` for both issue and PR comments. When the
-/// comment is on a PR, the payload includes a `pull_request` field.
+/// comment is on a PR, the `issue` object includes a `pull_request` field
+/// (see [`IssuePullRequestDetails`]). This is nested inside `issue`, not at
+/// the top level of the payload.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct IssueCommentPayload {
     pub action: String,
@@ -103,8 +105,6 @@ pub struct IssueCommentPayload {
     pub issue: IssueDetails,
     pub sender: SenderDetails,
     pub repository: RepositoryDetails,
-    #[serde(default)]
-    pub pull_request: Option<PullRequestDetails>,
 }
 
 /// Payload for GitHub `pull_request_review` events.
@@ -148,6 +148,24 @@ pub struct IssueDetails {
     pub assignee: Option<UserDetails>,
     #[serde(default)]
     pub assignees: Vec<UserDetails>,
+    /// In GitHub's `issue_comment` webhook, PRs have this field inside the
+    /// `issue` object. Its presence indicates the issue is actually a PR.
+    #[serde(default)]
+    pub pull_request: Option<IssuePullRequestDetails>,
+}
+
+/// The `pull_request` object nested inside `issue` in GitHub's `issue_comment`
+/// webhook payload. This is NOT the same as the top-level `pull_request` field
+/// in `pull_request_review` / `pull_request_review_comment` events — this
+/// struct only contains URL-based fields, no `number`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct IssuePullRequestDetails {
+    pub url: String,
+    pub html_url: String,
+    pub diff_url: String,
+    pub patch_url: String,
+    #[serde(default)]
+    pub merged_at: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -322,9 +340,9 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 _ => return None,
             };
             // GitHub uses issue_comment for both issue and PR comments.
-            // When a pull_request field is present, this is a comment on a PR,
-            // not a genuine issue comment — map it to the PR comment trigger.
-            if payload.pull_request.is_some() {
+            // When a pull_request field is present inside the issue object,
+            // this is a comment on a PR — map it to the PR comment trigger.
+            if payload.issue.pull_request.is_some() {
                 Some(TriggerType::GithubPullRequestCommentMention {
                     mentioned_user: None,
                 })
@@ -416,9 +434,10 @@ pub fn handle_github_webhook(
     let event_id = match &event.payload {
         GitHubPayload::Issues(p) => format!("issue-{}", p.issue.number),
         GitHubPayload::IssueComment(p) => {
-            // When the comment is on a PR, use PR-style event_id format
-            if let Some(pr) = &p.pull_request {
-                format!("pr-{}-comment-{}", pr.number, p.comment.id)
+            // When the comment is on a PR, use PR-style event_id format.
+            // The issue number IS the PR number when pull_request is present.
+            if p.issue.pull_request.is_some() {
+                format!("pr-{}-comment-{}", p.issue.number, p.comment.id)
             } else {
                 format!("issue-{}-comment-{}", p.issue.number, p.comment.id)
             }
@@ -451,9 +470,10 @@ pub fn handle_github_webhook(
             );
         }
         GitHubPayload::IssueComment(p) => {
-            if let Some(pr) = &p.pull_request {
-                // Comment on a PR via issue_comment event — use PR variables
-                variables.insert("pr_number".to_string(), pr.number.to_string());
+            if p.issue.pull_request.is_some() {
+                // Comment on a PR via issue_comment event — use PR variables.
+                // The issue number is the PR number when pull_request is present.
+                variables.insert("pr_number".to_string(), p.issue.number.to_string());
                 variables.insert("comment_id".to_string(), p.comment.id.to_string());
                 variables.insert(
                     "comment_body".to_string(),
@@ -517,6 +537,7 @@ pub fn handle_github_webhook(
         event_id,
         actor,
         variables,
+        delivery_id: None,
     })
 }
 
@@ -1089,6 +1110,7 @@ mod tests {
     fn test_pr_review_comment_should_not_trigger_issue_mention() {
         // An issue_comment event on a PR should map to
         // GithubPullRequestCommentMention, not GithubIssueCommentMention.
+        // In GitHub's schema, pull_request is nested inside the issue object.
         let body = r#"{
             "action": "created",
             "comment": {
@@ -1098,10 +1120,13 @@ mod tests {
             "issue": {
                 "number": 42,
                 "title": "Some PR",
-                "assignees": []
-            },
-            "pull_request": {
-                "number": 7
+                "assignees": [],
+                "pull_request": {
+                    "url": "https://api.github.com/repos/owner/repo/pulls/42",
+                    "html_url": "https://github.com/owner/repo/pull/42",
+                    "diff_url": "https://github.com/owner/repo/pull/42.diff",
+                    "patch_url": "https://github.com/owner/repo/pull/42.patch"
+                }
             },
             "sender": {"login": "reviewer"},
             "repository": {"full_name": "owner/repo"}
@@ -1148,7 +1173,8 @@ mod tests {
 
     #[test]
     fn test_parse_issue_comment_with_pull_request() {
-        // Verify that payload parsing correctly captures the pull_request field.
+        // Verify that payload parsing correctly captures the pull_request field
+        // nested inside the issue object (matching GitHub's actual schema).
         let body = r#"{
             "action": "created",
             "comment": {
@@ -1158,10 +1184,13 @@ mod tests {
             "issue": {
                 "number": 42,
                 "title": "Some PR",
-                "assignees": []
-            },
-            "pull_request": {
-                "number": 7
+                "assignees": [],
+                "pull_request": {
+                    "url": "https://api.github.com/repos/owner/repo/pulls/42",
+                    "html_url": "https://github.com/owner/repo/pull/42",
+                    "diff_url": "https://github.com/owner/repo/pull/42.diff",
+                    "patch_url": "https://github.com/owner/repo/pull/42.patch"
+                }
             },
             "sender": {"login": "reviewer"},
             "repository": {"full_name": "owner/repo"}
@@ -1172,8 +1201,9 @@ mod tests {
         assert_eq!(event.action, "created");
 
         if let GitHubPayload::IssueComment(payload) = &event.payload {
-            assert!(payload.pull_request.is_some());
-            assert_eq!(payload.pull_request.as_ref().unwrap().number, 7);
+            assert!(payload.issue.pull_request.is_some());
+            let pr = payload.issue.pull_request.as_ref().unwrap();
+            assert_eq!(pr.html_url, "https://github.com/owner/repo/pull/42");
         } else {
             panic!("Expected IssueCommentPayload");
         }
@@ -1208,6 +1238,8 @@ mod tests {
     fn test_handle_github_webhook_pr_comment_via_issue_comment() {
         // Full pipeline test: issue_comment on a PR should produce
         // PR-style event_id and variables.
+        // In GitHub's schema, pull_request is nested inside the issue object,
+        // and issue.number IS the PR number.
         let secret = "test-secret";
         let body = r#"{
             "action": "created",
@@ -1218,10 +1250,13 @@ mod tests {
             "issue": {
                 "number": 42,
                 "title": "Some PR",
-                "assignees": []
-            },
-            "pull_request": {
-                "number": 7
+                "assignees": [],
+                "pull_request": {
+                    "url": "https://api.github.com/repos/owner/repo/pulls/42",
+                    "html_url": "https://github.com/owner/repo/pull/42",
+                    "diff_url": "https://github.com/owner/repo/pull/42.diff",
+                    "patch_url": "https://github.com/owner/repo/pull/42.patch"
+                }
             },
             "sender": {"login": "reviewer"},
             "repository": {"full_name": "owner/repo"}
@@ -1236,9 +1271,9 @@ mod tests {
             event.trigger_type,
             TriggerType::GithubPullRequestCommentMention { .. }
         ));
-        // Should use PR-style event_id format, not issue-style
-        assert_eq!(event.event_id, "pr-7-comment-99999");
-        assert_eq!(event.variables.get("pr_number").unwrap(), "7");
+        // PR number comes from issue.number (which IS the PR number)
+        assert_eq!(event.event_id, "pr-42-comment-99999");
+        assert_eq!(event.variables.get("pr_number").unwrap(), "42");
         assert_eq!(event.variables.get("comment_id").unwrap(), "99999");
         // Should NOT have issue_number
         assert!(!event.variables.contains_key("issue_number"));

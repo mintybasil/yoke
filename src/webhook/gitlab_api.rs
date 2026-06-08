@@ -427,6 +427,7 @@ impl ProjectEvent {
             event_id,
             actor: self.author.username,
             variables,
+            delivery_id: None,
         })
     }
 }

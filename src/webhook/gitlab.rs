@@ -374,6 +374,7 @@ pub fn handle_gitlab_webhook(
         event_id,
         actor,
         variables,
+        delivery_id: None,
     })
 }
 
