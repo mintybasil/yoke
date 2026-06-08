@@ -1,6 +1,0 @@
-REQUEST:
-{
-  "instructions": "All work is in: /home/debian/.yoke/mintybasil/yoke/pr-163-review-4452220495. Always run `cd /home/debian/.yoke/mintybasil/yoke/pr-163-review-4452220495` as your first action before any file or terminal operations. Reference all file paths relative to this directory.",
-  "input": "We need to address review 4452220495 on PR 163 in mintybasil/yoke. Please complete the following steps:\n\n1. First you must react with \"eyes\" to the review comment using the GitHub reactions API endpoint.\n2. Examine the PR description, and any other comments/reviews that have been left to get complete context.\n3. Analyze the review, DO NOT assume it to be correct, validate any claims it makes.\n4. If you have sufficient context to address the review: implement and push changes, and respond with a comment. If you need feedback or additional context: add a comment to the PR requesting it.\n5. If you have pushed any changes, please ensure the PR description is updated accordingly, that the CI checks pass, and that there are no merge conflicts.\n",
-  "store": true
-}

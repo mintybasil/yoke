@@ -32,7 +32,6 @@ pub struct TriggerEvent {
     /// Platform-specific delivery ID for watermark tracking.
     /// GitHub: the `X-GitHub-Delivery` header UUID.
     /// GitLab: not currently extracted (reserved for future use).
-    /// This is metadata for the dispatcher, not a template variable.
     pub delivery_id: Option<String>,
 }
 
@@ -110,8 +109,6 @@ impl WebhookHandler {
             body,
             &self.secret,
         )?;
-        // Set the platform-specific delivery ID for watermark tracking.
-        // This is dispatcher metadata, not a template variable.
         trigger_event.delivery_id = delivery_id;
         // Wrap TriggerEvent in DispatchMessage and send to dispatcher
         self.sender
