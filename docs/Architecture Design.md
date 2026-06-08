@@ -226,6 +226,7 @@ Yoke runs a single webhook handler, determined by the `platform` setting in `con
 When `platform = "github"`, the handler at `POST /webhook` receives GitHub webhook deliveries. Each delivery includes:
 
 - `X-GitHub-Event` header — the event type (`issues`, `issue_comment`, `pull_request_review`, `pull_request_review_comment`)
+- `X-GitHub-Delivery` header — unique delivery UUID for this webhook delivery (used for watermark tracking)
 - `X-Hub-Signature-256` header — HMAC-SHA256 signature for verification
 - `WEBHOOK_SECRET` env var provides the HMAC-SHA256 key
 - JSON payload — the event data
@@ -286,12 +287,12 @@ For longer outages, the platform marks the delivery as failed and stops retrying
 5. Handler parses the JSON payload into a structured event
 6. Handler checks if the event type + action matches any configured trigger
 7. If no trigger matches, returns `200` (no-op — platform doesn't need to retry)
-8. If a trigger matches, handler builds a `TriggerEvent` and sends it through the mpsc channel
+8. If a trigger matches, handler builds a `TriggerEvent` (including platform-specific delivery IDs as extra variables) and sends it through the mpsc channel
 9. Returns `200` immediately — the handler never blocks on workflow execution
 
 ## 6. Dispatcher
 
-The dispatcher consumes `DispatchMessage`s from the mpsc channel, manages dedup sets (in_flight, completed, permanently_failed), and throttles concurrency via a tokio semaphore. It is a pure consumer — it processes events queued by the webhook handler.
+The dispatcher consumes `DispatchMessage`s from the mpsc channel, manages dedup sets (in_flight, completed, permanently_failed), tracks per-repository watermarks for resume-after-restart, and throttles concurrency via a tokio semaphore. It is a pure consumer — it processes events queued by the webhook handler.
 
 ### Dedup Logic
 
@@ -341,7 +342,7 @@ When the dispatcher consumes a `DispatchMessage`, it follows these steps in orde
 2. **Authorized-actor check**: The dispatcher extracts the actor from the webhook payload (the user who performed the action, e.g. the person who assigned the issue) and checks it against the workflow's `allowed_users`. If the actor is not in the list, the workflow is skipped. This is a security boundary, not a content filter. (See the **Trigger Authorization** section for details on how the actor is determined per trigger type.)
 3. **Semaphore acquire**: If the event is new and authorized, acquire a permit from the concurrency semaphore (or proceed immediately if `max_concurrent = 0`).
 4. **Track in_flight**: Insert the event key into the in_flight set.
-5. **Spawn workflow task**: Spawn a tokio task to run the workflow.
+5. **Spawn workflow task**: Spawn a tokio task to run the workflow. On successful completion, the watermark for the event's repository is updated with the delivery/event ID and timestamp, then persisted to `watermark.json`.
 
 ## 7. Workflow Engine
 
@@ -395,9 +396,58 @@ post_hooks = [{ type = "file_contains", path = "plan.md", text = "implementation
 
 - **completed.json** — set of `{owner}/{repo}/{event_id}` strings (using canonical `event_id`) for events that completed successfully
 - **failed.json** — array of `{key, timestamp, error}` entries for events that failed
-- **watermark.json** — map of `{owner}/{repo}` to `{last_delivery_id, last_event_id, last_processed_at}`, tracking the last-processed webhook delivery per repository for resume-after-restart semantics
 - Atomic file writes (write to `.tmp`, rename)
 - Loaded on startup, appended to on completion/failure
+
+### Watermark Persistence
+
+Watermarks track the last-processed webhook delivery per repository, enabling resume-after-restart semantics. On restart or after downtime, Yoke (or an external orchestration tool) can use watermark data to query the platform's API for events newer than the recorded watermark, processing anything that was missed.
+
+**Data structures:**
+
+- **`Watermark`** — a per-repository record with three fields:
+  - `last_delivery_id: Option<String>` — the GitHub delivery UUID from the `X-GitHub-Delivery` header (GitHub only)
+  - `last_event_id: Option<String>` — the GitLab event identifier from the webhook payload (GitLab only)
+  - `last_processed_at: DateTime<Utc>` — the UTC timestamp when Yoke last processed an event for this repository
+
+- **`WatermarkStore`** — a `HashMap<String, Watermark>` keyed by `{owner}/{repo}` (e.g. `mintybasil/yoke`). Wrapped in `Arc<RwLock<...>>` for thread-safe access.
+
+**When watermarks are updated:**
+
+On every successful workflow completion, `spawn_workflow` updates the watermark for the event's repository. The platform-specific delivery or event ID is extracted from `TriggerEvent.variables`:
+
+| Platform    | Source variable          | Header / payload field     |
+|-------------|--------------------------|----------------------------|
+| GitHub      | `github_delivery_id`     | `X-GitHub-Delivery` header |
+| GitLab      | `gitlab_event_id`        | Payload event identifier    |
+
+The `last_processed_at` field is set to `Utc::now()` at the time of the update. Only one field (`last_delivery_id` for GitHub, `last_event_id` for GitLab) is populated per platform — the other remains `None`.
+
+**Persistence:**
+
+- `WatermarkStore::persist()` writes the entire watermark map to `watermark.json` in the work directory, using the same atomic write pattern as dedup files (`.tmp` + `rename`)
+- Empty stores skip file creation entirely (no unnecessary I/O)
+- On startup, `load_watermarks()` reads `watermark.json`, falling back to an empty default for missing or corrupted files (matching the resilience pattern of dedup persistence)
+- Watermarks are persisted alongside completed/failed dedup sets during graceful shutdown via `persist_state()`
+
+**Example `watermark.json`:**
+
+```json
+{
+  "mintybasil/yoke": {
+    "last_delivery_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "last_event_id": null,
+    "last_processed_at": "2026-06-08T17:30:00.123456Z"
+  },
+  "example-corp/backend-service": {
+    "last_delivery_id": null,
+    "last_event_id": "gitlab-event-42",
+    "last_processed_at": "2026-06-08T17:25:00.654321Z"
+  }
+}
+```
+
+**Future use:** Watermarks provide the foundation for a catch-up mode that queries the platform API for events delivered after the watermark's timestamp or delivery ID. This is not yet implemented — see the note in **Section 4 (Webhook Reliability)** about a future enhancement for querying missed events. Currently, watermarks are persisted but not read back for catch-up; they serve as a reliable checkpoint for future tooling to build on.
 
 ## 8. Agents (Hermes API Harness)
 
@@ -487,7 +537,7 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
 2. HTTP server stops accepting new connections (but finishes in-flight requests)
 3. Dispatcher stops consuming from the channel
 4. Active workflow runners drain to completion (bounded by a configurable timeout)
-5. State is persisted (completed.json, failed.json updated)
+5. State is persisted (completed.json, failed.json, and watermark.json updated)
 6. Process exits
 7. Second signal: immediate `process::exit(1)`
 
@@ -497,7 +547,7 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
 {workdir}/
   completed.json              # Set of completed event keys
   failed.json                 # Array of failure entries
-  watermark.json              # Per-repo watermark tracking (delivery IDs, timestamps)
+  watermark.json              # Per-repo watermark: last delivery ID, last event ID, last processed timestamp
   {owner}/{repo}/
     repo/                     # git clone
     {event_id}/           # per-event workspace
