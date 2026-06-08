@@ -130,7 +130,7 @@ fn test_dispatcher_with_trigger_labels(
         })
         .collect();
     let workflow_state = Arc::new(WorkflowState::new(workflows));
-    Dispatcher::new(dedup, max_concurrent, workdir, workflow_state, vec![])
+    Dispatcher::new(dedup, yoke::dispatcher::new_watermark_store(), max_concurrent, workdir, workflow_state, vec![])
 }
 
 // --- Helper functions ---
