@@ -504,7 +504,7 @@ impl Dispatcher {
             &event_id,
         );
 
-        tracing::info!(%key, trigger = %event.trigger_type, "Handling dispatch message");
+        tracing::debug!(%key, trigger = %event.trigger_type, "Handling dispatch message");
 
         // Dedup check (sequential — single consumer, no races)
         {
