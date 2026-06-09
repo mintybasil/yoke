@@ -143,7 +143,7 @@ async fn webhook_handler(
             StatusCode::BAD_REQUEST
         }
         Err(webhook::WebhookError::NoMatchingTrigger { event, action }) => {
-            tracing::warn!(event = %event, action = %action, "No matching trigger for webhook event");
+            tracing::debug!(event = %event, action = %action, "No matching trigger for webhook event");
             StatusCode::OK
         }
         Err(webhook::WebhookError::InternalError(msg)) => {

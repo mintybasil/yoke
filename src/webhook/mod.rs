@@ -125,7 +125,7 @@ impl WebhookHandler {
             })
             .await
             .map_err(|_| WebhookError::InternalError("Dispatcher channel closed".to_string()))?;
-        tracing::info!(event_id = %event_id, trigger_type = %trigger_type, "Webhook event dispatched to dispatcher");
+        tracing::debug!(event_id = %event_id, trigger_type = %trigger_type, "Webhook event dispatched to dispatcher");
 
         Ok(())
     }
