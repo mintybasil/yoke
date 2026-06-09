@@ -643,45 +643,23 @@ impl Dispatcher {
             .await;
 
             // Update dedup state and persist
-            let mut sets = dedup_sets.write().await;
-            match result {
-                Ok(()) => {
-                    sets.mark_completed(&key);
-                    let completed_path = workdir.join("completed.json");
-                    if let Err(e) = sets.persist_completed(&workdir) {
-                        tracing::error!(%key, error = %e, path = %completed_path.display(), "Failed to persist completed set");
-                    }
+            let succeeded = result.is_ok();
+            complete_workflow(&dedup_sets, &workdir, &key, result).await;
 
-                    // Update watermark for this repo
-                    let repo_key = format!("{}/{}", owner, repo);
-                    {
-                        let mut wm_store = watermark_store.write().await;
-                        wm_store.marks.insert(
-                            repo_key,
-                            Watermark {
-                                last_delivery_id: event.delivery_id.clone(),
-                                last_event_id: Some(event.event_id.clone()),
-                                last_processed_at: Utc::now(),
-                            },
-                        );
-                        if let Err(e) = wm_store.persist(&workdir) {
-                            tracing::error!(%key, error = %e, "Failed to persist watermarks");
-                        }
-                    }
-                }
-                Err(e) => {
-                    sets.mark_failed(&key);
-                    let failed_path = workdir.join("failed.json");
-                    if let Err(persist_err) = sets.persist_failed(
-                        &workdir,
-                        &FailedEntry {
-                            key: key.clone(),
-                            timestamp: SystemTime::now(),
-                            error: e,
-                        },
-                    ) {
-                        tracing::error!(%key, error = %persist_err, path = %failed_path.display(), "Failed to persist failed set");
-                    }
+            // Update watermark for this repo on success
+            if succeeded {
+                let repo_key = format!("{}/{}", owner, repo);
+                let mut wm_store = watermark_store.write().await;
+                wm_store.marks.insert(
+                    repo_key,
+                    Watermark {
+                        last_delivery_id: event.delivery_id.clone(),
+                        last_event_id: Some(event.event_id.clone()),
+                        last_processed_at: Utc::now(),
+                    },
+                );
+                if let Err(e) = wm_store.persist(&workdir) {
+                    tracing::error!(%key, error = %e, "Failed to persist watermarks");
                 }
             }
             // Decrement active_count (incremented by acquire_permit) now that
@@ -703,28 +681,42 @@ impl Dispatcher {
     /// `permanently_failed`.
     #[instrument(skip(self))]
     pub async fn on_workflow_complete(&self, key: &str, result: Result<(), String>) {
-        let mut sets = self.dedup_sets.write().await;
-        match result {
-            Ok(()) => {
-                sets.mark_completed(key);
-                let completed_path = self.workdir.join("completed.json");
-                if let Err(e) = sets.persist_completed(&self.workdir) {
-                    tracing::error!(%key, error = %e, path = %completed_path.display(), "Failed to persist completed set");
-                }
+        complete_workflow(&self.dedup_sets, &self.workdir, key, result).await;
+    }
+}
+
+/// Update dedup state and persist after a workflow completes.
+///
+/// On success, the key moves from `in_flight` to `completed` and the
+/// completed set is persisted. On failure, it moves to `permanently_failed`
+/// and the failure entry is persisted.
+async fn complete_workflow(
+    dedup_sets: &Arc<RwLock<DedupSets>>,
+    workdir: &Path,
+    key: &str,
+    result: Result<(), String>,
+) {
+    let mut sets = dedup_sets.write().await;
+    match result {
+        Ok(()) => {
+            sets.mark_completed(key);
+            let completed_path = workdir.join("completed.json");
+            if let Err(e) = sets.persist_completed(workdir) {
+                tracing::error!(%key, error = %e, path = %completed_path.display(), "Failed to persist completed set");
             }
-            Err(e) => {
-                sets.mark_failed(key);
-                let failed_path = self.workdir.join("failed.json");
-                if let Err(persist_err) = sets.persist_failed(
-                    &self.workdir,
-                    &FailedEntry {
-                        key: key.to_string(),
-                        timestamp: SystemTime::now(),
-                        error: e,
-                    },
-                ) {
-                    tracing::error!(%key, error = %persist_err, path = %failed_path.display(), "Failed to persist failed set");
-                }
+        }
+        Err(e) => {
+            sets.mark_failed(key);
+            let failed_path = workdir.join("failed.json");
+            if let Err(persist_err) = sets.persist_failed(
+                workdir,
+                &FailedEntry {
+                    key: key.to_string(),
+                    timestamp: SystemTime::now(),
+                    error: e,
+                },
+            ) {
+                tracing::error!(%key, error = %persist_err, path = %failed_path.display(), "Failed to persist failed set");
             }
         }
     }
