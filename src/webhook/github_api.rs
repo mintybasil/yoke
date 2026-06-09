@@ -112,20 +112,51 @@ pub struct WebhookDelivery {
 }
 
 /// Detail of a single webhook delivery, including the original request.
+///
+/// Matches the GitHub "hook-delivery" response schema from
+/// <https://docs.github.com/en/rest/repos/webhooks?apiVersion=2026-03-10#get-a-delivery-for-a-repository-webhook>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WebhookDeliveryDetail {
-    #[serde(flatten)]
-    pub summary: WebhookDelivery,
+    pub id: u64,
+    pub guid: String,
+    pub delivered_at: chrono::DateTime<chrono::Utc>,
+    pub redelivery: bool,
+    pub duration: f64,
+    pub status: String,
+    pub status_code: i64,
+    pub event: String,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub installation_id: Option<i64>,
+    #[serde(default)]
+    pub repository_id: Option<i64>,
+    #[serde(default)]
+    pub throttled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub request: DeliveryRequest,
+    #[serde(default)]
+    pub response: Option<DeliveryResponse>,
 }
 
-/// The original HTTP request sent by GitHub for a webhook delivery.
+/// The request object in a webhook delivery detail.
+///
+/// GitHub sends the webhook payload as a JSON object in the `payload` field,
+/// not as a string `body`. Headers are also a JSON object mapping header
+/// names to values.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeliveryRequest {
-    pub method: String,
-    pub url: String,
-    pub headers: std::collections::HashMap<String, String>,
-    pub body: String,
+    pub headers: serde_json::Value,
+    pub payload: serde_json::Value,
+}
+
+/// The response object in a webhook delivery detail.
+///
+/// Contains the response headers and payload that the webhook endpoint
+/// returned after receiving the delivery.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeliveryResponse {
+    pub headers: serde_json::Value,
+    pub payload: serde_json::Value,
 }
 
 // ---------------------------------------------------------------------------
@@ -1186,15 +1217,23 @@ mod tests {
         let mock_response = r#"{
             "id": 200,
             "guid": "def-456",
+            "delivered_at": "2024-01-15T10:30:00Z",
+            "redelivery": false,
+            "duration": 0.27,
+            "status": "completed",
+            "status_code": 200,
             "event": "push",
             "action": null,
-            "delivered_at": "2024-01-15T10:30:00Z",
-            "status": "completed",
+            "installation_id": null,
+            "repository_id": 12345,
+            "throttled_at": null,
             "request": {
-                "method": "POST",
-                "url": "https://example.com/webhook",
                 "headers": { "X-GitHub-Event": "push", "Content-Type": "application/json" },
-                "body": "{\"ref\":\"refs/heads/main\"}"
+                "payload": { "ref": "refs/heads/main" }
+            },
+            "response": {
+                "headers": { "Content-Type": "application/json" },
+                "payload": ""
             }
         }"#;
 
@@ -1207,16 +1246,12 @@ mod tests {
 
         let client = GitHubClient::new("test-token".to_string(), Some(url));
         let result = client.get_delivery("owner", "repo", 42, 200).await.unwrap();
-
-        assert_eq!(result.summary.id, 200);
-        assert_eq!(result.summary.event, "push");
-        assert_eq!(result.request.method, "POST");
-        assert_eq!(result.request.url, "https://example.com/webhook");
-        assert_eq!(
-            result.request.headers.get("X-GitHub-Event").unwrap(),
-            &"push"
-        );
-        assert!(result.request.body.contains("refs/heads/main"));
+        assert_eq!(result.id, 200);
+        assert_eq!(result.event, "push");
+        assert!(!result.redelivery);
+        assert_eq!(result.status_code, 200);
+        assert_eq!(result.request.headers["X-GitHub-Event"], "push");
+        assert_eq!(result.request.payload["ref"], "refs/heads/main");
     }
 
     #[tokio::test]

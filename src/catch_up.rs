@@ -272,9 +272,27 @@ async fn catch_up_github(
             .await
         {
             Ok(detail) => {
+                // The payload from GitHub's delivery API is a JSON object.
+                // Serialize it to a string for parsing through the webhook
+                // dispatch path (which expects a raw JSON string, same as a
+                // live webhook body).
+                let body = match serde_json::to_string(&detail.request.payload) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(
+                            owner = %repo.owner,
+                            repo = %repo.repo,
+                            delivery_id = delivery.id,
+                            error = %e,
+                            "Failed to serialize delivery payload, skipping"
+                        );
+                        events_skipped += 1;
+                        continue;
+                    }
+                };
                 // Parse the delivery body through the webhook dispatch path,
                 // skipping signature verification (we trust the API response).
-                match replay_github_delivery(&delivery.event, &detail.request.body, &delivery.guid)
+                match replay_github_delivery(&detail.event, &body, &detail.guid)
                 {
                     Some(trigger_event) => {
                         let msg = DispatchMessage {
