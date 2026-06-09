@@ -428,6 +428,7 @@ impl ProjectEvent {
             actor: self.author.username,
             variables,
             delivery_id: None,
+            branch: self.push_data.as_ref().map(|p| p.branch.clone()),
         })
     }
 }

@@ -192,6 +192,7 @@ pub async fn run_server(
     shutdown_rx: watch::Receiver<bool>,
     workflow_state: Arc<WorkflowState>,
     agents: Vec<AgentConfig>,
+    gitlab_host: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{}:{}", config.host, config.port)
         .parse()
@@ -214,6 +215,7 @@ pub async fn run_server(
         workdir,
         workflow_state,
         agents,
+        gitlab_host,
     );
 
     // Spawn dispatcher run loop as a background task, passing drain_timeout
@@ -310,6 +312,7 @@ mod tests {
             PathBuf::from("/tmp/yoke-test"),
             test_workflow_state(),
             test_agents(),
+            None,
         );
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Gitlab, "test-secret".to_string(), tx),
@@ -329,6 +332,7 @@ mod tests {
             PathBuf::from("/tmp/yoke-test"),
             test_workflow_state(),
             test_agents(),
+            None,
         );
         let state = AppState {
             webhook_handler: WebhookHandler::new(Platform::Github, "test-secret".to_string(), tx),
@@ -864,6 +868,7 @@ mod tests {
                 PathBuf::from("/tmp/yoke-test"),
                 test_workflow_state(),
                 test_agents(),
+                None,
             ),
         };
         let app = build_router(state, &config);

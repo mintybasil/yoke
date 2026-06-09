@@ -206,8 +206,8 @@ See **Appendix A** for the actor source mapping per trigger type.
 |-----------------------------|--------------------------------------------------------------------------|----------|
 | `[trigger].type`            | Event type (e.g. `github_issue_assigned`, `gitlab_merge_request_review`) | required |
 | `[trigger].allowed_users`   | **SECURITY BOUNDARY**: which usernames are permitted to trigger this workflow | required |
-| `[git].clone`               | Whether to git clone the repo                                            | `true`   |
-| `[git].worktree`            | Whether to create a per-event worktree                                   | `true`   |
+| `[git].clone`               | Whether to git clone the repo                                            | `false`  |
+| `[git].worktree`            | Whether to create a per-event worktree                                   | `false`  |
 | `[git].default_branch`      | Branch for clone/worktree base                                           | `"main"` |
 | `[[steps]].name`            | Human-readable step label                                                | required |
 | `[[steps]].agent`           | Name of agent from `config.toml`                                         | required |
@@ -501,10 +501,18 @@ At startup, every step's `agent` field is resolved against the `[[agents]]` arra
 
 Yoke manages the git lifecycle for each configured repo:
 
-1. **Clone** — `git clone` (via git2 crate) on first event, `git pull` on subsequent events
-2. **Worktree** — optional per-event worktree using `git worktree add`
+1. **Base clone** — Shared bare-ish clone at `{workdir}/{owner}/{repo}/repo/`, created on first event via `git clone`, updated via `git pull` on subsequent events
+2. **Worktree** — Per-event worktree using `git worktree add` from the base clone, for events whose workflow has `[git] worktree = true`
 3. **Branch naming** — `ao/<sanitized-label>-<unix-timestamp>`
 4. **Cleanup** — check for uncommitted changes, remove worktree, delete branch
+
+The git orchestration is performed by the `Dispatcher` in `spawn_workflow()` before the `WorkflowRunner` is spawned. Git orchestration is **config-driven**: when any matching workflow has `[git] clone = true` or `[git] worktree = true`, the dispatcher performs the corresponding git operations. This is not limited to review triggers — any workflow type can opt into git features via its `[git]` config section. The dispatcher:
+
+1. Calls `ensure_base_repo()` to clone (first time) or pull (subsequent) the repository to the base clone path
+2. Resolves the branch: prefers `TriggerEvent.branch` (populated by the webhook handler), falls back to the workflow's `git.default_branch`
+3. Calls `git::create_worktree()` to create a worktree at the event workspace directory on the resolved branch
+
+If any git operation fails, the event is marked as permanently failed and the workflow is not spawned.
 
 Authentication via git2 `RemoteCallbacks` with token-based credentials. The token env var is determined by the `platform` setting:
 
@@ -549,7 +557,7 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
   failed.json                 # Array of failure entries
   watermark.json              # Per-repo watermark: last delivery ID, last event ID, last processed timestamp
   {owner}/{repo}/
-    repo/                     # git clone
+    repo/                     # shared base clone (when git.clone = true)
     {event_id}/           # per-event workspace
       worktree/                # per-event worktree (if git.worktree = true)
       00_Plan.log             # Full Hermes API request + response, with final message rendered
