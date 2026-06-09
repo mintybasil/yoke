@@ -1318,6 +1318,50 @@ fn test_fixtures_are_valid_json() {
 }
 ```
 
+## 20. Catch-Up (Event Replay)
+
+When Yoke starts up (or restarts after downtime), it needs to process webhook events that were delivered by the platform while Yoke was offline. This is the **catch-up** feature, implemented in `src/catch_up.rs`.
+
+### How It Works
+
+1. **Watermark loading**: On startup, `run_catch_up()` reads the last-processed timestamp per repository from `WatermarkStore` (persisted in `watermark.json`).
+
+2. **Event retrieval**: For each configured repository, it queries the platform's delivery/events API for events newer than the watermark, up to `catch_up_max_age_hours` old:
+   - **GitHub**: Finds the webhook matching `webhook_host` URL, then calls `list_deliveries` + `get_delivery` to fetch full delivery bodies. Decodes `payload_base64` and replays through `parse_github_event` + `map_to_trigger_event`.
+   - **GitLab**: Calls `list_project_events(project_id, after=watermark_timestamp)` and replays through `ProjectEvent::try_into_trigger_event`.
+
+3. **Dispatch**: Replayed events are sent over the same mpsc channel used by live webhooks. They arrive at the dispatcher as regular `DispatchMessage`s with the same structure.
+
+### Interaction with Dedup
+
+Because catch-up replays use the same canonical `event_id` format as live webhooks (e.g., `owner/repo/issue-42`), the dispatcher's existing three-set dedup mechanism naturally prevents duplicate processing when a live webhook and a replayed event overlap:
+
+| Dedup Set | Effect on Replayed Event |
+|-----------|--------------------------|
+| `in_flight` | If a live webhook for the same event is currently being processed, the replayed event is skipped (no duplicate workflow run). |
+| `completed` | If the event was already processed in a previous run, the replayed event is skipped (no re-processing). |
+| `permanently_failed` | If the event permanently failed in a previous run, the replayed event is skipped (not retried). |
+
+This means:
+- **Concurrent live + replayed events** for the same logical event produce only one workflow run.
+- **Already-completed events** from a previous run are silently skipped.
+- **Permanently-failed events** are not retried on catch-up (they require manual intervention).
+
+The `delivery_id` field (GitHub's `X-GitHub-Delivery` GUID for live webhooks, or the delivery GUID for replayed events) is stored on `TriggerEvent` for **watermark tracking only** — it is NOT used as a dedup key. Dedup always uses the canonical `event_id`.
+
+### Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `catch_up_enabled` | `true` | Enable/disable catch-up on startup |
+| `catch_up_max_age_hours` | `24` | Maximum age of events to replay |
+
+Both are in the `[server]` section of `config.toml`.
+
+### CatchUpSummary
+
+`CatchUpSummary` tracks replayed/skipped/errored counts per repository and displays a human-readable summary via `Display`. This is logged at startup so operators can see what catch-up did.
+
 ## Appendix A: Trigger Reference
 
 This appendix consolidates all trigger types, event mappings, and template variables for both platforms.

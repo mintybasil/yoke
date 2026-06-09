@@ -812,3 +812,236 @@ async fn test_active_count_stays_zero_with_unlimited_concurrency() {
         "active_count should remain 0 with unlimited concurrency"
     );
 }
+
+// --- Catch-up dedup verification tests ---
+
+/// Test: A replayed event and a live webhook for the same event_id are deduplicated.
+///
+/// This simulates the scenario where catch-up replays an event while a live
+/// webhook for the same event arrives concurrently. The dispatcher should
+/// process only one of them — the second is rejected as a duplicate.
+#[tokio::test]
+async fn test_catchup_live_dedup() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
+    });
+
+    // Send the same event twice — simulating catch-up replay + live webhook
+    let event_type = TriggerType::GithubIssueAssigned { assigned_to: None };
+    let msg1 = make_message(event_type.clone(), "issue-42");
+    let msg2 = make_message(event_type, "issue-42");
+
+    tx.send(msg1).await.unwrap();
+    tx.send(msg2).await.unwrap();
+
+    // Give the dispatcher time to process both messages
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Close the channel
+    drop(tx);
+    handle.await.unwrap();
+
+    // Only one event should be in completed — the second was rejected as duplicate
+    let sets = dedup_sets.read().await;
+    assert_eq!(
+        sets.completed.len(),
+        1,
+        "only one event should be in completed set (duplicate rejected)"
+    );
+
+    let key = build_dedup_key("owner", "repo", "issue-42");
+    assert!(
+        sets.completed.contains(&key),
+        "event should be in completed set"
+    );
+    assert!(
+        sets.in_flight.is_empty(),
+        "in_flight should be empty after completion"
+    );
+}
+
+/// Test: A replayed event whose event_id is already in the completed set is skipped.
+///
+/// This verifies that the catch-up mechanism does not re-process events that
+/// were already completed in a previous run, even when they arrive through
+/// the dispatch channel.
+#[tokio::test]
+async fn test_catchup_already_completed_dedup() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+
+    // Pre-populate the completed set — simulating state from a previous run
+    {
+        let mut sets = dedup_sets.write().await;
+        sets.mark_completed("owner/repo/issue-42");
+    }
+
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
+    });
+
+    // Send the already-completed event (simulating catch-up replay)
+    let msg = make_message(
+        TriggerType::GithubIssueAssigned { assigned_to: None },
+        "issue-42",
+    );
+    tx.send(msg).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    drop(tx);
+    handle.await.unwrap();
+
+    // The event should be skipped — completed set should still have exactly 1 entry
+    let sets = dedup_sets.read().await;
+    assert_eq!(
+        sets.completed.len(),
+        1,
+        "completed set should still have exactly 1 entry (skipped duplicate)"
+    );
+    assert!(
+        sets.in_flight.is_empty(),
+        "in_flight should be empty (event was not processed)"
+    );
+}
+
+/// Test: A replayed event whose event_id is already in the permanently_failed
+/// set is skipped.
+///
+/// Events that permanently failed in a previous run should not be retried by
+/// catch-up replay. The dedup sets treat permanently_failed as a terminal state.
+#[tokio::test]
+async fn test_catchup_permanently_failed_dedup() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+
+    // Pre-populate the permanently_failed set — simulating a past failure
+    {
+        let mut sets = dedup_sets.write().await;
+        sets.mark_failed("owner/repo/issue-99");
+    }
+
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
+    });
+
+    // Send the already-failed event (simulating catch-up replay)
+    let msg = make_message(
+        TriggerType::GithubIssueAssigned { assigned_to: None },
+        "issue-99",
+    );
+    tx.send(msg).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    drop(tx);
+    handle.await.unwrap();
+
+    // The event should be skipped — permanently_failed should still have exactly 1 entry
+    let sets = dedup_sets.read().await;
+    assert!(
+        sets.permanently_failed.contains("owner/repo/issue-99"),
+        "permanently_failed set should still contain the original key"
+    );
+    assert_eq!(
+        sets.permanently_failed.len(),
+        1,
+        "permanently_failed should have exactly 1 entry (skipped duplicate)"
+    );
+    assert!(
+        sets.in_flight.is_empty(),
+        "in_flight should be empty (event was not processed)"
+    );
+    assert!(
+        sets.completed.is_empty(),
+        "completed should be empty (event was not re-processed)"
+    );
+}
+
+/// Test: Two dispatch messages with different delivery_id values but the same
+/// canonical event_id are deduplicated correctly.
+///
+/// This verifies that the dedup mechanism uses the canonical `event_id`
+/// (e.g. `issue-42`), not the platform-specific delivery GUID. GitHub
+/// assigns a unique `X-GitHub-Delivery` GUID per delivery attempt, but a
+/// redelivered or catch-up-replayed event has the same canonical `event_id`
+/// as the original. The dispatcher's two-set dedup (in_flight + completed)
+/// naturally handles this: the second event is rejected because its
+/// canonical event_id is already in a dedup set.
+#[tokio::test]
+async fn test_github_delivery_guid_dedup() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
+    });
+
+    // First event: a live webhook with delivery_id = "guid-aaa"
+    let mut msg1 = make_message(
+        TriggerType::GithubIssueAssigned { assigned_to: None },
+        "issue-42",
+    );
+    msg1.event.delivery_id = Some("guid-aaa".to_string());
+
+    // Second event: a catch-up replay with the same event_id but a different
+    // delivery_id (the GUID from the redelivery API). This simulates the
+    // scenario where the same event arrives via both live webhook and
+    // catch-up replay.
+    let mut msg2 = make_message(
+        TriggerType::GithubIssueAssigned { assigned_to: None },
+        "issue-42",
+    );
+    msg2.event.delivery_id = Some("guid-bbb".to_string());
+
+    tx.send(msg1).await.unwrap();
+    tx.send(msg2).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    drop(tx);
+    handle.await.unwrap();
+
+    // Only one event should be in completed — dedup is by canonical event_id,
+    // not by delivery_id/GUID. The second event with a different GUID but
+    // the same event_id is correctly rejected.
+    let sets = dedup_sets.read().await;
+    assert_eq!(
+        sets.completed.len(),
+        1,
+        "only one event should be in completed set (dedup by event_id, not GUID)"
+    );
+
+    let key = build_dedup_key("owner", "repo", "issue-42");
+    assert!(
+        sets.completed.contains(&key),
+        "event should be in completed set"
+    );
+}
