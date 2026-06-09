@@ -169,13 +169,18 @@ pub fn clone_repo(
 
 /// Pull (fetch + fast-forward merge) the latest changes from the remote.
 ///
-/// Fetches from `origin` and fast-forwards the current branch to the
-/// remote's default branch. If a fast-forward is not possible (diverged
-/// history), returns an error.
+/// Fetches from `origin` and fast-forwards the default branch to the
+/// remote's tip.  If a fast-forward is not possible (e.g. the remote
+/// was force-pushed or the local branch diverged due to a prior failed
+/// operation), the local branch is **force-reset** to the remote tip.
+///
+/// The base repo is only used as an upstream mirror for worktrees, so
+/// preserving local history is never required — it must always reflect
+/// the remote state.
 ///
 /// # Errors
 ///
-/// Returns `GitError::Git` for fetch or merge failures.
+/// Returns `GitError::Git` for fetch failures.
 pub fn pull_repo(repo: &Repository, token: &str, platform: &str) -> Result<(), GitError> {
     let mut remote = repo.find_remote("origin")?;
 
@@ -197,30 +202,36 @@ pub fn pull_repo(repo: &Repository, token: &str, platform: &str) -> Result<(), G
     let fetch_head = repo.find_reference("FETCH_HEAD")?;
     let fetch_commit = fetch_head.peel_to_commit()?;
 
-    // Get the local branch reference
+    // Get the local branch reference (may not exist yet on first pull)
     let local_branch_ref = repo.find_reference(&format!("refs/heads/{branch_name}"));
-    let local_commit = match &local_branch_ref {
-        Ok(r) => r.peel_to_commit()?.id(),
-        Err(_) => fetch_commit.id(), // Branch doesn't exist locally yet
-    };
 
-    // Check if fast-forward is possible
-    let merge_base = repo.merge_base(local_commit, fetch_commit.id())?;
-    if merge_base != local_commit {
-        return Err(GitError::Git(git2::Error::from_str(
-            "cannot fast-forward: local branch has diverged from remote",
-        )));
-    }
-
-    // Fast-forward: update the local branch to point to the fetched commit.
-    // When HEAD is a symbolic reference pointing to this branch (the common
-    // case), git automatically follows the branch update — no separate HEAD
-    // update needed.  Calling `set_target` on a symbolic HEAD ref raises
-    // "cannot set OID on symbolic reference", so we rely on the branch
-    // update alone.
-    if local_branch_ref.is_ok() {
-        let mut ref_mut = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
-        ref_mut.set_target(fetch_commit.id(), "fast-forward merge")?;
+    match &local_branch_ref {
+        Ok(r) => {
+            let local_commit = r.peel_to_commit()?.id();
+            if local_commit == fetch_commit.id() {
+                // Already up to date — just advance HEAD if needed
+            } else if repo.merge_base(local_commit, fetch_commit.id())? == local_commit {
+                // Fast-forward: local is an ancestor of remote
+                let mut ref_mut = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
+                ref_mut.set_target(fetch_commit.id(), "fast-forward merge")?;
+            } else {
+                // Diverged (force-push or corrupted state) — force-reset
+                // the local branch to the remote tip.  The base repo is a
+                // mirror and must always match remote.
+                let mut ref_mut = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
+                ref_mut.set_target(fetch_commit.id(), "force-reset to remote tip")?;
+            }
+        }
+        Err(_) => {
+            // Branch doesn't exist locally yet — create it pointing at
+            // the fetched commit.
+            repo.reference(
+                &format!("refs/heads/{branch_name}"),
+                fetch_commit.id(),
+                false,
+                "create branch from remote",
+            )?;
+        }
     }
 
     // Keep HEAD pointing at the fetched commit.  The base repo is kept in
