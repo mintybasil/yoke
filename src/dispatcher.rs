@@ -91,18 +91,6 @@ pub struct DispatchMessage {
     pub event: TriggerEvent,
 }
 
-/// Result of a completed workflow run, sent back to the dispatcher
-/// for state tracking and persistence.
-#[derive(Debug)]
-pub struct WorkflowResult {
-    /// The dedup key of the completed event.
-    pub key: String,
-    /// Whether the workflow completed successfully.
-    pub success: bool,
-    /// Error message if the workflow failed.
-    pub error: Option<String>,
-}
-
 /// Errors that can occur during persistence operations.
 #[derive(Debug, Error)]
 pub enum PersistenceError {
