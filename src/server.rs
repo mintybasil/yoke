@@ -14,7 +14,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::config::{AgentConfig, Platform, ServerConfig};
+use crate::config::{Config, Platform};
 use crate::dispatcher::{Dispatcher, load_watermarks, new_dedup_sets};
 use crate::reload::WorkflowState;
 use crate::webhook;
@@ -154,7 +154,7 @@ async fn webhook_handler(
 }
 
 /// Build the axum Router with all routes and middleware.
-fn build_router(state: AppState, config: &ServerConfig) -> Router {
+fn build_router(state: AppState, config: &Config) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -162,7 +162,9 @@ fn build_router(state: AppState, config: &ServerConfig) -> Router {
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .layer(RequestBodyLimitLayer::new(config.max_body_size as usize))
+        .layer(RequestBodyLimitLayer::new(
+            config.server.max_body_size as usize,
+        ))
 }
 
 /// Run the HTTP server bound to the configured host:port.
@@ -184,22 +186,22 @@ fn build_router(state: AppState, config: &ServerConfig) -> Router {
 /// * `shutdown_rx` — Watch channel receiver that signals graceful shutdown
 #[allow(clippy::too_many_arguments)]
 pub async fn run_server(
-    config: &ServerConfig,
-    platform: &Platform,
-    max_concurrent: usize,
-    workdir: PathBuf,
+    config: &Config,
     drain_timeout: Duration,
     shutdown_rx: watch::Receiver<bool>,
     workflow_state: Arc<WorkflowState>,
-    agents: Vec<AgentConfig>,
-    gitlab_host: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr: SocketAddr = format!("{}:{}", config.host, config.port)
+    let server_config = &config.server;
+    let platform = &config.platform;
+    let max_concurrent = config.runtime.max_concurrent;
+    let workdir = PathBuf::from(&config.runtime.workdir);
+
+    let addr: SocketAddr = format!("{}:{}", server_config.host, server_config.port)
         .parse()
         .map_err(|e| {
             format!(
                 "Invalid host:port configuration ({}:{}): {e}",
-                config.host, config.port
+                server_config.host, server_config.port
             )
         })?;
 
@@ -210,12 +212,12 @@ pub async fn run_server(
     let watermark_store = Arc::new(RwLock::new(watermark_store));
     let dispatcher = Dispatcher::new(
         dedup_sets,
-        watermark_store,
+        watermark_store.clone(),
         max_concurrent,
         workdir,
         workflow_state,
-        agents,
-        gitlab_host,
+        config.agents.clone(),
+        config.gitlab_host(),
     );
 
     // Spawn dispatcher run loop as a background task, passing drain_timeout
@@ -228,6 +230,9 @@ pub async fn run_server(
                 .await;
         }
     });
+
+    // Run catch-up: replay missed webhook events from before server startup
+    crate::catch_up::run_catch_up(config, &config.server, &watermark_store, &tx).await;
 
     let state = AppState {
         webhook_handler: webhook::WebhookHandler::new(
@@ -272,7 +277,7 @@ pub async fn run_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Platform;
+    use crate::config::{AgentConfig, Config, Platform, RuntimeConfig, ServerConfig};
     use crate::dispatcher::DispatchMessage;
     use crate::webhook::WebhookHandler;
     use axum::body::Body;
@@ -292,12 +297,23 @@ mod tests {
         vec![]
     }
 
-    fn test_config() -> ServerConfig {
-        ServerConfig {
-            host: "0.0.0.0".to_string(),
-            webhook_host: "yoke.example.com".to_string(),
-            port: 0, // not used for in-memory tests
-            max_body_size: 1_048_576,
+    fn test_config() -> Config {
+        Config {
+            platform: Platform::Gitlab,
+            repos: vec![],
+            agents: vec![],
+            runtime: RuntimeConfig::default(),
+            server: ServerConfig {
+                host: "0.0.0.0".to_string(),
+                webhook_host: "yoke.example.com".to_string(),
+                port: 0, // not used for in-memory tests
+                max_body_size: 1_048_576,
+                catch_up_enabled: true,
+                catch_up_max_age_hours: 24,
+            },
+            github: None,
+            gitlab: None,
+            gitlab_url: None,
         }
     }
 
@@ -809,11 +825,23 @@ mod tests {
     #[tokio::test]
     async fn test_body_limit_rejection() {
         // Use a very small body limit (10 bytes) to test rejection
-        let config = ServerConfig {
+        let server_config = ServerConfig {
             host: "0.0.0.0".to_string(),
             webhook_host: "yoke.example.com".to_string(),
             port: 0,
             max_body_size: 10,
+            catch_up_enabled: true,
+            catch_up_max_age_hours: 24,
+        };
+        let config = Config {
+            platform: Platform::Gitlab,
+            repos: vec![],
+            agents: vec![],
+            runtime: RuntimeConfig::default(),
+            server: server_config,
+            github: None,
+            gitlab: None,
+            gitlab_url: None,
         };
         let (state, _rx) = test_state();
 
@@ -830,7 +858,9 @@ mod tests {
             )
             .with_state(state)
             .layer(TraceLayer::new_for_http())
-            .layer(RequestBodyLimitLayer::new(config.max_body_size as usize));
+            .layer(RequestBodyLimitLayer::new(
+                config.server.max_body_size as usize,
+            ));
 
         // Send a body larger than the limit
         let large_body = vec![0u8; 100];

@@ -91,6 +91,16 @@ pub struct ServerConfig {
     pub webhook_host: String,
     #[serde(default = "default_max_body_size")]
     pub max_body_size: u64,
+    /// Enable catch-up orchestration on server startup.
+    /// When `true`, Yoke replays missed webhook events from the platform APIs
+    /// that were delivered while the server was down. Default: `true`.
+    #[serde(default = "default_catch_up_enabled")]
+    pub catch_up_enabled: bool,
+    /// Maximum age (in hours) of events to replay during catch-up.
+    /// Events older than this are skipped even if they were never processed.
+    /// Default: 24 hours.
+    #[serde(default = "default_catch_up_max_age_hours")]
+    pub catch_up_max_age_hours: u64,
 }
 
 fn default_host() -> String {
@@ -103,6 +113,14 @@ fn default_port() -> u16 {
 
 fn default_max_body_size() -> u64 {
     1_048_576
+}
+
+fn default_catch_up_enabled() -> bool {
+    true
+}
+
+fn default_catch_up_max_age_hours() -> u64 {
+    24
 }
 
 /// GitHub-specific configuration. Currently a placeholder for future
@@ -390,6 +408,8 @@ webhook_host = "yoke.example.com"
         assert_eq!(config.server.webhook_host, "yoke.example.com");
         assert_eq!(config.server.port, 8644);
         assert_eq!(config.server.max_body_size, 1_048_576);
+        assert!(config.server.catch_up_enabled);
+        assert_eq!(config.server.catch_up_max_age_hours, 24);
     }
 
     #[test]
@@ -712,6 +732,8 @@ webhook_host = "yoke.example.com"
                 webhook_host: "yoke.example.com".to_string(),
                 port: 8644,
                 max_body_size: 1_048_576,
+                catch_up_enabled: true,
+                catch_up_max_age_hours: 24,
             },
             github: None,
             gitlab: None,

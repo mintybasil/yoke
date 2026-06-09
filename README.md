@@ -139,6 +139,8 @@ host = "0.0.0.0"
 port = 8644
 webhook_host = "yoke.example.com"
 max_body_size = 1048576   # 1MB default
+catch_up_enabled = true   # replay missed webhook events on startup (default: true)
+catch_up_max_age_hours = 24  # look back up to 24 hours for missed events
 
 # GitLab-specific (only when platform = "gitlab")
 # gitlab_url = "https://gitlab.mycompany.com"
@@ -355,6 +357,57 @@ Tailscale Funnel routes public internet traffic to a port on your machine over y
    ```
 
 For detailed configuration and advanced options, refer to the [official Tailscale Funnel documentation](https://tailscale.com/docs/features/tailscale-funnel).
+
+## Catch-Up (Event Replay)
+
+When Yoke restarts after downtime, it may have missed webhook events that were delivered while it was offline. The **catch-up** feature queries the GitHub/GitLab delivery APIs to replay those missed events automatically on startup.
+
+### How it works
+
+1. On startup, Yoke reads the last-processed **watermark** timestamp for each repository (persisted in the `watermark.json` file in the workdir).
+2. It queries the platform's event delivery API for events newer than the watermark, up to `catch_up_max_age_hours` ago.
+3. Each missed event is deduplicated against the existing dedup sets (same mechanism used for live events) and dispatched to the dispatcher channel.
+4. After catch-up completes, Yoke starts the HTTP listener and processes incoming webhooks normally.
+
+### GitHub catch-up
+
+Uses the [Repository Webhook Deliveries API](https://docs.github.com/en/rest/webhooks/webhooks#list-deliveries-for-a-repository-webhook). For each configured repo, Yoke:
+
+1. Finds the webhook matching the configured `webhook_host` URL.
+2. Lists recent deliveries, filtering by watermark timestamp.
+3. Fetches the full delivery body for each missed delivery.
+4. Parses the event and dispatches it.
+
+### GitLab catch-up
+
+Uses the [Project Events API](https://docs.gitlab.com/api/events/#list-project-events). For each configured repo, Yoke:
+
+1. Lists recent project events, using the `after` parameter for time-based filtering.
+2. Converts each event to a trigger event (same mapping used for live webhooks).
+3. Dispatches the event.
+
+### Configuration
+
+Both catch-up settings are in the `[server]` section and have sensible defaults:
+
+| Setting | Default | Description |
+|---|---|---|
+| `catch_up_enabled` | `true` | Enable/disable catch-up on startup |
+| `catch_up_max_age_hours` | `24` | Maximum age (in hours) of events to replay |
+
+To disable catch-up:
+
+```toml
+[server]
+catch_up_enabled = false
+```
+
+### Limitations
+
+- **GitHub**: The Deliveries API only returns the last 100 deliveries per webhook. If more than 100 events were missed, some may not be replayed.
+- **GitHub Enterprise**: Catch-up currently uses `api.github.com`. Support for GitHub Enterprise Server base URLs is deferred.
+- **GitLab**: The Project Events API returns a maximum of 100 events per page. Catch-up fetches one page; if more events were missed, some may not be replayed.
+- Catch-up runs **before** the HTTP listener starts. Very large catch-up sets may delay server readiness.
 
 ## Further Reading
 

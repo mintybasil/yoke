@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -261,19 +260,7 @@ async fn main() {
         drain_timeout = %config.runtime.drain_timeout_secs,
         "Starting server...",
     );
-    if let Err(e) = server::run_server(
-        &config.server,
-        &config.platform,
-        config.runtime.max_concurrent,
-        PathBuf::from(&config.runtime.workdir),
-        drain_timeout,
-        shutdown_rx,
-        state,
-        config.agents.clone(),
-        config.gitlab_host(),
-    )
-    .await
-    {
+    if let Err(e) = server::run_server(&config, drain_timeout, shutdown_rx, state).await {
         tracing::error!(error = %e, "Server error");
         std::process::exit(1);
     }
