@@ -441,6 +441,7 @@ fn replay_github_delivery(
         actor,
         variables,
         delivery_id: Some(delivery_guid.to_string()),
+        branch: None,
     })
 }
 
