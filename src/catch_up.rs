@@ -294,6 +294,24 @@ async fn catch_up_github(
                 // skipping signature verification (we trust the API response).
                 match replay_github_delivery(&detail.event, &body, &detail.guid) {
                     Some(trigger_event) => {
+                        // Before dispatching, check whether the source entity
+                        // (issue or PR) is still in an actionable state.
+                        // Closed issues and merged/closed PRs are skipped.
+                        if let Some(reason) =
+                            check_entity_stale(&client, &repo.owner, &repo.repo, &trigger_event)
+                                .await
+                        {
+                            tracing::info!(
+                                owner = %repo.owner,
+                                repo = %repo.repo,
+                                event_id = %trigger_event.event_id,
+                                reason = %reason,
+                                "Skipping catch-up event: entity no longer actionable"
+                            );
+                            events_skipped += 1;
+                            continue;
+                        }
+
                         let msg = DispatchMessage {
                             event: trigger_event,
                         };
@@ -343,6 +361,212 @@ async fn catch_up_github(
         events_skipped,
         had_error: false,
     })
+}
+
+/// Check whether the source entity for a catch-up event is still actionable.
+///
+/// Queries the GitHub API for the current state of the issue or PR referenced
+/// by the trigger event.  Returns `Some(reason)` if the entity should be
+/// skipped (closed issue, merged/closed PR), or `None` if the entity is
+/// still open and the event should be replayed.
+///
+/// On API errors, returns `None` (don't block catch-up on transient failures).
+async fn check_entity_stale(
+    client: &GitHubClient,
+    owner: &str,
+    repo: &str,
+    event: &TriggerEvent,
+) -> Option<String> {
+    use crate::workflow::TriggerType::*;
+
+    match &event.trigger_type {
+        GithubIssueAssigned { .. } => {
+            // Issue assignment: check if the issue is closed.
+            let issue_number = event.variables.get("issue_number")?;
+            let number: u64 = issue_number.parse().ok()?;
+
+            match client.get_issue(owner, repo, number).await {
+                Ok(issue) => {
+                    if issue.state == "closed" {
+                        Some(format!(
+                            "issue #{} is closed{}",
+                            number,
+                            issue
+                                .state_reason
+                                .as_ref()
+                                .map(|r| format!(" ({r})"))
+                                .unwrap_or_default()
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    // Don't block catch-up on API errors — log and proceed.
+                    tracing::warn!(
+                        owner,
+                        repo,
+                        issue_number = number,
+                        error = %e,
+                        "Failed to check issue state, proceeding with replay"
+                    );
+                    None
+                }
+            }
+        }
+        GithubIssueCommentMention { .. } => {
+            // Issue comment events may reference either an issue or a PR
+            // (GitHub sends issue_comment for PR comments too).  Check which
+            // key is present to determine the entity type.
+            if let Some(pr_number) = event.variables.get("pr_number") {
+                let number: u64 = pr_number.parse().ok()?;
+                check_pr_stale(client, owner, repo, number).await
+            } else if let Some(issue_number) = event.variables.get("issue_number") {
+                let number: u64 = issue_number.parse().ok()?;
+                check_issue_stale(client, owner, repo, number).await
+            } else {
+                None
+            }
+        }
+        GithubPullRequestReview | GithubPullRequestCommentMention { .. } => {
+            // PR-related triggers: check if the PR is closed or merged.
+            let pr_number = event.variables.get("pr_number")?;
+            let number: u64 = pr_number.parse().ok()?;
+            check_pr_stale(client, owner, repo, number).await
+        }
+        // GitLab triggers are handled in the GitLab catch-up path.
+        _ => None,
+    }
+}
+
+/// Check whether a GitHub issue is closed (no longer actionable).
+async fn check_issue_stale(
+    client: &GitHubClient,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Option<String> {
+    match client.get_issue(owner, repo, number).await {
+        Ok(issue) => {
+            if issue.state == "closed" {
+                Some(format!(
+                    "issue #{} is closed{}",
+                    number,
+                    issue
+                        .state_reason
+                        .as_ref()
+                        .map(|r| format!(" ({r})"))
+                        .unwrap_or_default()
+                ))
+            } else {
+                None
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                owner,
+                repo,
+                issue_number = number,
+                error = %e,
+                "Failed to check issue state, proceeding with replay"
+            );
+            None
+        }
+    }
+}
+
+/// Check whether a GitHub PR is merged or closed (no longer actionable).
+async fn check_pr_stale(
+    client: &GitHubClient,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Option<String> {
+    match client.get_pull_request(owner, repo, number).await {
+        Ok(pr) => {
+            if pr.merged_at.is_some() {
+                Some(format!("PR #{} is merged", number))
+            } else if pr.state == "closed" {
+                Some(format!("PR #{} is closed (not merged)", number))
+            } else {
+                None
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                owner,
+                repo,
+                pr_number = number,
+                error = %e,
+                "Failed to check PR state, proceeding with replay"
+            );
+            None
+        }
+    }
+}
+
+/// Check whether the source entity for a GitLab catch-up event is still
+/// actionable.
+///
+/// Returns `Some(reason)` if the entity should be skipped (closed issue,
+/// merged/closed MR), or `None` if the entity is still open.
+/// On API errors, returns `None` (don't block catch-up on transient failures).
+async fn check_gitlab_entity_stale(
+    client: &crate::webhook::gitlab_api::GitLabClient,
+    project_id: &str,
+    event: &crate::webhook::gitlab_api::ProjectEvent,
+    trigger_event: &TriggerEvent,
+) -> Option<String> {
+    use crate::workflow::TriggerType::*;
+
+    match &trigger_event.trigger_type {
+        GitlabIssueAssigned { .. } | GitlabIssueMention { .. } => {
+            let iid = event.target_id?;
+            match client.get_issue(project_id, iid).await {
+                Ok(issue) => {
+                    if issue.state == "closed" {
+                        Some(format!("GitLab issue !{} is closed", iid))
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        project_id,
+                        iid,
+                        error = %e,
+                        "Failed to check GitLab issue state, proceeding with replay"
+                    );
+                    None
+                }
+            }
+        }
+        GitlabMergeRequestReview | GitlabMergeRequestCommentMention { .. } => {
+            let iid = event.target_id?;
+            match client.get_merge_request(project_id, iid).await {
+                Ok(mr) => {
+                    if mr.state == "merged" {
+                        Some(format!("GitLab MR !{} is merged", iid))
+                    } else if mr.state == "closed" {
+                        Some(format!("GitLab MR !{} is closed", iid))
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        project_id,
+                        iid,
+                        error = %e,
+                        "Failed to check GitLab MR state, proceeding with replay"
+                    );
+                    None
+                }
+            }
+        }
+        // Unknown or push-based triggers — no entity to check.
+        _ => None,
+    }
 }
 
 /// Parse a GitHub delivery body into a TriggerEvent for replay.
@@ -537,6 +761,22 @@ async fn catch_up_gitlab(
     for event in missed {
         match event.clone().try_into_trigger_event(repo_path.clone()) {
             Some(trigger_event) => {
+                // Before dispatching, check whether the source entity
+                // (issue or MR) is still in an actionable state.
+                if let Some(reason) =
+                    check_gitlab_entity_stale(&client, &project_id, &event, &trigger_event).await
+                {
+                    tracing::info!(
+                        owner = %repo.owner,
+                        repo = %repo.repo,
+                        event_id = %trigger_event.event_id,
+                        reason = %reason,
+                        "Skipping catch-up event: entity no longer actionable"
+                    );
+                    events_skipped += 1;
+                    continue;
+                }
+
                 let msg = DispatchMessage {
                     event: trigger_event,
                 };
