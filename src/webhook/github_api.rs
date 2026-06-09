@@ -160,6 +160,40 @@ pub struct DeliveryResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Entity state types (for catch-up filtering)
+// ---------------------------------------------------------------------------
+
+/// Current state of a GitHub issue, fetched from the REST API.
+///
+/// Used during catch-up to skip events for closed issues.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IssueState {
+    /// The issue number (for logging).
+    pub number: u64,
+    /// The state of the issue: `"open"` or `"closed"`.
+    pub state: String,
+    /// The reason for the state change, if available.
+    /// GitHub returns this for closed issues as e.g. `"completed"` or
+    /// `"not_planned"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_reason: Option<String>,
+}
+
+/// Current state of a GitHub pull request, fetched from the REST API.
+///
+/// Used during catch-up to skip events for merged/closed PRs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PullRequestState {
+    /// The PR number (for logging).
+    pub number: u64,
+    /// The state of the PR: `"open"` or `"closed"`.
+    pub state: String,
+    /// Whether the PR has been merged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_at: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
@@ -492,6 +526,76 @@ impl GitHubClient {
         }
 
         Ok(())
+    }
+
+    // -- Entity state queries (for catch-up filtering) -----------------------
+
+    /// Get the current state of a GitHub issue.
+    ///
+    /// Fetches `GET /repos/{owner}/{repo}/issues/{number}` and returns the
+    /// issue's `state` and `state_reason`.  Used during catch-up to determine
+    /// whether an issue is still open before replaying an event.
+    pub async fn get_issue(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<IssueState, GitHubError> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}",
+            self.base_url, owner, repo, number
+        );
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.auth_headers())
+            .send()
+            .await?;
+
+        if response.status() != reqwest::StatusCode::OK {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "could not read body".to_string());
+            return Err(Self::map_status_with_body(status, &body));
+        }
+
+        response.json().await.map_err(GitHubError::RequestError)
+    }
+
+    /// Get the current state of a GitHub pull request.
+    ///
+    /// Fetches `GET /repos/{owner}/{repo}/pulls/{number}` and returns the
+    /// PR's `state` and `merged_at`.  Used during catch-up to determine
+    /// whether a PR is still open before replaying an event.
+    pub async fn get_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<PullRequestState, GitHubError> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            self.base_url, owner, repo, number
+        );
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.auth_headers())
+            .send()
+            .await?;
+
+        if response.status() != reqwest::StatusCode::OK {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "could not read body".to_string());
+            return Err(Self::map_status_with_body(status, &body));
+        }
+
+        response.json().await.map_err(GitHubError::RequestError)
     }
 
     /// Ensures a webhook exists with the given configuration.

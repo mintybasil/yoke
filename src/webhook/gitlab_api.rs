@@ -118,8 +118,34 @@ pub struct WebhookConfig {
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
+// Entity state types (for catch-up filtering)
+// ---------------------------------------------------------------------------
 
-/// REST API client for GitLab.
+/// Current state of a GitLab issue, fetched from the REST API.
+///
+/// Used during catch-up to skip events for closed issues.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GitLabIssueState {
+    /// The issue IID (internal ID, for logging).
+    pub iid: u64,
+    /// The state of the issue: `"opened"` or `"closed"`.
+    pub state: String,
+}
+
+/// Current state of a GitLab merge request, fetched from the REST API.
+///
+/// Used during catch-up to skip events for merged/closed MRs.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GitLabMergeRequestState {
+    /// The MR IID (internal ID, for logging).
+    pub iid: u64,
+    /// The state of the MR: `"opened"`, `"closed"`, or `"merged"`.
+    pub state: String,
+}
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
 ///
 /// Wraps a [`reqwest::Client`] and handles Private-Token authentication
 /// headers, error mapping, and pagination transparently.
@@ -180,6 +206,85 @@ impl GitLabClient {
                 let end = part.find('>')?;
                 Some(part[start..end].to_string())
             })
+    }
+
+    // -- Entity state queries (for catch-up filtering) -----------------------
+
+    /// Get the current state of a GitLab issue.
+    ///
+    /// Fetches `GET /projects/{project_id}/issues/{iid}` and returns the
+    /// issue's `state`.  Used during catch-up to determine whether an issue
+    /// is still open before replaying an event.
+    pub async fn get_issue(
+        &self,
+        project_id: &str,
+        iid: u64,
+    ) -> Result<GitLabIssueState, GitLabError> {
+        let url = format!("{}/projects/{}/issues/{}", self.base_url, project_id, iid);
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.auth_headers())
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(GitLabError::Unauthorized);
+        }
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(GitLabError::NotFound);
+        }
+        if !response.status().is_success() {
+            return Err(GitLabError::ApiError(format!(
+                "Unexpected status: {}",
+                response.status()
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GitLabError::ApiError(format!("Failed to parse issue: {e}")))
+    }
+
+    /// Get the current state of a GitLab merge request.
+    ///
+    /// Fetches `GET /projects/{project_id}/merge_requests/{iid}` and returns
+    /// the MR's `state`.  Used during catch-up to determine whether an MR
+    /// is still open before replaying an event.
+    pub async fn get_merge_request(
+        &self,
+        project_id: &str,
+        iid: u64,
+    ) -> Result<GitLabMergeRequestState, GitLabError> {
+        let url = format!(
+            "{}/projects/{}/merge_requests/{}",
+            self.base_url, project_id, iid
+        );
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.auth_headers())
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(GitLabError::Unauthorized);
+        }
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(GitLabError::NotFound);
+        }
+        if !response.status().is_success() {
+            return Err(GitLabError::ApiError(format!(
+                "Unexpected status: {}",
+                response.status()
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GitLabError::ApiError(format!("Failed to parse MR: {e}")))
     }
 
     // -- Public API ----------------------------------------------------------
