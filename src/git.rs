@@ -212,21 +212,15 @@ pub fn pull_repo(repo: &Repository, token: &str, platform: &str) -> Result<(), G
         )));
     }
 
-    // Fast-forward: update the local branch to point to the fetched commit
+    // Fast-forward: update the local branch to point to the fetched commit.
+    // When HEAD is a symbolic reference pointing to this branch (the common
+    // case), git automatically follows the branch update — no separate HEAD
+    // update needed.  Calling `set_target` on a symbolic HEAD ref raises
+    // "cannot set OID on symbolic reference", so we rely on the branch
+    // update alone.
     if local_branch_ref.is_ok() {
         let mut ref_mut = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
         ref_mut.set_target(fetch_commit.id(), "fast-forward merge")?;
-    }
-
-    // Update HEAD if it points to the branch we just updated
-    let head = repo.head()?;
-    if let Some(head_branch) = head.shorthand()
-        && head_branch == branch_name
-    {
-        let branch_ref = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
-        let commit_id = branch_ref.target().unwrap_or(fetch_commit.id());
-        let mut head_ref = repo.find_reference("HEAD")?;
-        head_ref.set_target(commit_id, "fast-forward merge")?;
     }
 
     Ok(())
@@ -248,6 +242,18 @@ pub fn create_worktree(
     branch_name: &str,
     worktree_path: &Path,
 ) -> Result<(), GitError> {
+    // Detach HEAD before creating the worktree.  Git refuses to create a
+    // worktree from a branch that is currently checked out in the parent
+    // repository ("reference refs/heads/<branch> is already checked out").
+    // Detaching HEAD (pointing it at the commit instead of the branch) means
+    // no branch ref is "checked out", allowing any branch to be used as a
+    // worktree source.
+    {
+        let head = repo.head()?;
+        let head_commit = head.peel_to_commit()?;
+        repo.set_head_detached(head_commit.id())?;
+    }
+
     // Check if the branch already exists
     let branch_exists = repo.find_branch(branch_name, BranchType::Local).is_ok();
 
