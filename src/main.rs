@@ -270,6 +270,7 @@ async fn main() {
         shutdown_rx,
         state,
         config.agents.clone(),
+        config.gitlab_host(),
     )
     .await
     {

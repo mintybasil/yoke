@@ -55,18 +55,27 @@ pub struct Trigger {
 }
 
 /// Git configuration for cloning and worktree management.
+///
+/// Both `clone` and `worktree` default to `false` (opt-in). A workflow that
+/// needs repository access must explicitly enable `[git] clone = true` and/or
+/// `[git] worktree = true` in its TOML file.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GitConfig {
-    #[serde(default = "default_true")]
+    /// Whether to clone the repository before running the workflow.
+    /// When true, the dispatcher ensures a base clone exists at
+    /// `{workdir}/repos/{owner}/{repo}/` before spawning the workflow task.
+    #[serde(default)]
     pub clone: bool,
-    #[serde(default = "default_true")]
+    /// Whether to create a per-event git worktree from the base clone.
+    /// When true, the dispatcher creates a worktree at
+    /// `{workdir}/{owner}/{repo}/{event_id}/worktree/` checked out to the
+    /// source branch (or `default_branch` if no branch is available).
+    #[serde(default)]
     pub worktree: bool,
+    /// The default branch used for worktree checkout when no source branch
+    /// is available from the webhook payload (e.g. for issue-assigned triggers).
     #[serde(default = "default_branch")]
     pub default_branch: String,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_branch() -> String {
@@ -76,8 +85,8 @@ fn default_branch() -> String {
 impl Default for GitConfig {
     fn default() -> Self {
         Self {
-            clone: default_true(),
-            worktree: default_true(),
+            clone: false,
+            worktree: false,
             default_branch: default_branch(),
         }
     }
@@ -700,10 +709,57 @@ mod tests {
         "#;
         let wf: Workflow = toml::from_str(toml).unwrap();
         assert!(wf.validate().is_ok());
-        // When [git] section is omitted, defaults should apply
-        assert!(wf.git.clone);
-        assert!(wf.git.worktree);
+        // When [git] section is omitted, defaults should apply (opt-in)
+        assert!(!wf.git.clone);
+        assert!(!wf.git.worktree);
         assert_eq!(wf.git.default_branch, "main");
+    }
+
+    #[test]
+    fn test_git_clone_only() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+            allowed_users = ["testuser"]
+
+            [git]
+            clone = true
+
+            [[steps]]
+            name = "Step"
+            agent = "swe"
+            prompt_template = "Do something"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        assert!(wf.validate().is_ok());
+        assert!(wf.git.clone);
+        assert!(!wf.git.worktree);
+        assert_eq!(wf.git.default_branch, "main");
+    }
+
+    #[test]
+    fn test_git_worktree_requires_clone() {
+        // worktree should work independently of clone — the dispatcher
+        // handles ensuring the base repo when worktree is requested.
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+            allowed_users = ["testuser"]
+
+            [git]
+            worktree = true
+            default_branch = "develop"
+
+            [[steps]]
+            name = "Step"
+            agent = "swe"
+            prompt_template = "Do something"
+        "#;
+        let wf: Workflow = toml::from_str(toml).unwrap();
+        assert!(wf.validate().is_ok());
+        assert!(!wf.git.clone);
+        assert!(wf.git.worktree);
+        assert_eq!(wf.git.default_branch, "develop");
     }
 
     #[test]

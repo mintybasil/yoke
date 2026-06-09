@@ -165,6 +165,22 @@ impl Config {
         Ok(config)
     }
 
+    /// Return the GitLab host (domain only) for clone URL construction.
+    ///
+    /// Priority: top-level `gitlab_url` > `gitlab.gitlab_url` > `None` (GitHub).
+    pub fn gitlab_host(&self) -> Option<String> {
+        match &self.platform {
+            Platform::Gitlab => {
+                let url = self
+                    .gitlab_url
+                    .as_ref()
+                    .or(self.gitlab.as_ref().map(|g| &g.gitlab_url))?;
+                url.host_str().map(|h| h.to_string())
+            }
+            Platform::Github => None,
+        }
+    }
+
     /// Validate the configuration beyond what serde enforces.
     fn validate(&self) -> Result<(), ConfigError> {
         // Agents must have unique names

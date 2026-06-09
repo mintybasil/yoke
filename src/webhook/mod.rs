@@ -33,6 +33,12 @@ pub struct TriggerEvent {
     /// GitHub: the `X-GitHub-Delivery` header UUID.
     /// GitLab: not currently extracted (reserved for future use).
     pub delivery_id: Option<String>,
+    /// The source branch name for PR/MR review events.
+    /// Populated for `github_pull_request_review`, `github_pull_request_comment_mention`,
+    /// and `gitlab_merge_request_review` / `gitlab_merge_request_comment_mention` events.
+    /// Used by the dispatcher to create an isolated worktree at the correct branch.
+    /// `None` for non-review events (issue assignments, issue comments).
+    pub branch: Option<String>,
 }
 
 /// Errors that can occur during webhook processing.

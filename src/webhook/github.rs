@@ -205,6 +205,10 @@ pub struct ReviewCommentDetails {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PullRequestDetails {
     pub number: u64,
+    /// The head (source) branch name for the pull request (e.g. "feature-branch").
+    /// Used by the dispatcher to create a worktree at the correct branch.
+    #[serde(default)]
+    pub head_ref: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +535,22 @@ pub fn handle_github_webhook(
         GitHubPayload::PullRequestReviewComment(p) => p.sender.login.clone(),
     };
 
+    // Extract source branch for PR-related events (used by dispatcher for worktree creation)
+    let branch = match &event.payload {
+        GitHubPayload::PullRequestReview(p) => p.pull_request.head_ref.clone(),
+        GitHubPayload::PullRequestReviewComment(p) => p.pull_request.head_ref.clone(),
+        // Issue comments on PRs: GitHub's issue_comment webhook nests
+        // a `pull_request` object inside `issue`, but it only contains
+        // URL fields (no head_ref). The branch cannot be extracted here.
+        GitHubPayload::IssueComment(_) => None,
+        _ => None,
+    };
+
+    // Add branch as a template variable when available
+    if let Some(ref b) = branch {
+        variables.insert("branch".to_string(), b.clone());
+    }
+
     Ok(TriggerEvent {
         trigger_type,
         repo_path,
@@ -538,6 +558,7 @@ pub fn handle_github_webhook(
         actor,
         variables,
         delivery_id: None,
+        branch,
     })
 }
 

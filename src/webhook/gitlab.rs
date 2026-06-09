@@ -53,6 +53,10 @@ pub struct GitLabPayload {
     /// Used to authorize the event against the workflow's `allowed_users` list.
     #[serde(default)]
     pub user: Option<GitLabUser>,
+    /// Merge request details. Present for Note hooks targeting a MergeRequest
+    /// and for MR event types. Carries the source branch for worktree creation.
+    #[serde(default)]
+    pub merge_request: Option<GitLabMergeRequest>,
 }
 
 /// Attributes of the GitLab object (issue or note).
@@ -101,6 +105,21 @@ pub struct GitLabSystem {
 pub struct GitLabUser {
     /// The username of the GitLab user who triggered the event.
     pub username: String,
+}
+
+/// Merge request details carried in GitLab Note Hook payloads for MR comments.
+///
+/// The `source_branch` field is used by the dispatcher to create a worktree
+/// at the correct branch for MR review events.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GitLabMergeRequest {
+    /// Internal ID of the merge request within the project.
+    #[serde(default)]
+    pub iid: Option<u64>,
+    /// The source (head) branch of the merge request.
+    /// Used by the dispatcher to create a worktree at the correct branch.
+    #[serde(default)]
+    pub source_branch: Option<String>,
 }
 
 // ── Event enum ───────────────────────────────────────────────────────────────
@@ -164,6 +183,21 @@ impl GitLabEvent {
         match self {
             GitLabEvent::IssueHook(p) => p.user.as_ref().map(|u| u.username.clone()),
             GitLabEvent::NoteHook(p) => p.user.as_ref().map(|u| u.username.clone()),
+        }
+    }
+
+    /// Return the source branch name for MR/Note-on-MR events.
+    ///
+    /// Extracts `merge_request.source_branch` from the payload when present.
+    /// Used by the dispatcher to create a worktree at the correct branch.
+    /// Returns `None` for issue events or when the merge_request field is absent.
+    pub fn branch(&self) -> Option<String> {
+        match self {
+            GitLabEvent::IssueHook(_) => None,
+            GitLabEvent::NoteHook(p) => p
+                .merge_request
+                .as_ref()
+                .and_then(|mr| mr.source_branch.clone()),
         }
     }
 
@@ -354,7 +388,7 @@ pub fn handle_gitlab_webhook(
     // Step 4: Extract repo path, event ID, actor, and variables
     let repo_path = event.repo_path();
     let event_id = event.event_id();
-    let variables = event.variables();
+    let mut variables = event.variables();
 
     // Extract the actor (user) from the GitLab payload.
     // Per the architecture design, the actor is the user who performed the
@@ -368,6 +402,12 @@ pub fn handle_gitlab_webhook(
         ));
     }
 
+    // Extract source branch for MR-related events (used by dispatcher for worktree creation)
+    let branch = event.branch();
+    if let Some(ref b) = branch {
+        variables.insert("branch".to_string(), b.clone());
+    }
+
     Ok(TriggerEvent {
         trigger_type,
         repo_path,
@@ -375,6 +415,7 @@ pub fn handle_gitlab_webhook(
         actor,
         variables,
         delivery_id: None,
+        branch,
     })
 }
 
@@ -445,6 +486,7 @@ mod tests {
             user: Some(GitLabUser {
                 username: "testuser".to_string(),
             }),
+            merge_request: None,
         }
     }
 
@@ -468,6 +510,7 @@ mod tests {
             user: Some(GitLabUser {
                 username: "testuser".to_string(),
             }),
+            merge_request: None,
         }
     }
 
@@ -490,6 +533,10 @@ mod tests {
             system: None,
             user: Some(GitLabUser {
                 username: "testuser".to_string(),
+            }),
+            merge_request: Some(GitLabMergeRequest {
+                iid: Some(12),
+                source_branch: Some("feature-branch".to_string()),
             }),
         }
     }
@@ -515,6 +562,10 @@ mod tests {
             }),
             user: Some(GitLabUser {
                 username: "testuser".to_string(),
+            }),
+            merge_request: Some(GitLabMergeRequest {
+                iid: Some(12),
+                source_branch: Some("feature-branch".to_string()),
             }),
         }
     }

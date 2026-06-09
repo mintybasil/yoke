@@ -37,6 +37,7 @@ use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::config::AgentConfig;
+use crate::git;
 use crate::reload::WorkflowState;
 use crate::runner::WorkflowRunner;
 use crate::webhook::TriggerEvent;
@@ -89,6 +90,18 @@ pub struct WatermarkStore {
 pub struct DispatchMessage {
     /// The verified trigger event to process.
     pub event: TriggerEvent,
+}
+
+/// Result of a completed workflow run, sent back to the dispatcher
+/// for state tracking and persistence.
+#[derive(Debug)]
+pub struct WorkflowResult {
+    /// The dedup key of the completed event.
+    pub key: String,
+    /// Whether the workflow completed successfully.
+    pub success: bool,
+    /// Error message if the workflow failed.
+    pub error: Option<String>,
 }
 
 /// Errors that can occur during persistence operations.
@@ -210,6 +223,9 @@ pub struct Dispatcher {
     agents: Vec<AgentConfig>,
     /// Whether the dispatcher is shutting down (set by shutdown signal).
     shutting_down: Arc<AtomicBool>,
+    /// GitLab host URL for building clone URLs (e.g. "gitlab.com").
+    /// Required for GitLab platform repos; unused for GitHub.
+    gitlab_host: Option<String>,
 }
 
 impl Dispatcher {
@@ -230,6 +246,7 @@ impl Dispatcher {
         workdir: PathBuf,
         workflow_state: Arc<WorkflowState>,
         agents: Vec<AgentConfig>,
+        gitlab_host: Option<String>,
     ) -> Self {
         let semaphore = if max_concurrent > 0 {
             Some(Arc::new(Semaphore::new(max_concurrent)))
@@ -257,6 +274,7 @@ impl Dispatcher {
             workflow_state,
             agents,
             shutting_down: Arc::new(AtomicBool::new(false)),
+            gitlab_host,
         }
     }
 
@@ -274,6 +292,50 @@ impl Dispatcher {
     /// returns `true` and the `/ready` endpoint will return 503.
     pub fn mark_shutting_down(&self) {
         self.shutting_down.store(true, Ordering::Relaxed);
+    }
+
+    /// Ensure a base clone of the repository exists and is up to date.
+    ///
+    /// The base repository is cloned to `{workdir}/repos/{owner}/{repo}` — a
+    /// shared, long-lived clone that serves as the parent for worktrees.
+    /// If the base repo already exists, it is fetched and fast-forwarded to
+    /// the remote's default branch. If it doesn't exist, it is cloned.
+    ///
+    /// Returns the path to the base repository on success.
+    fn ensure_base_repo(
+        &self,
+        owner: &str,
+        repo: &str,
+        platform: &str,
+        token: &str,
+    ) -> Result<PathBuf, git::GitError> {
+        let base_path = base_repo_path(&self.workdir, owner, repo);
+
+        if base_path.exists() {
+            tracing::debug!(
+                owner,
+                repo,
+                path = %base_path.display(),
+                "Base repo exists, pulling latest"
+            );
+            let git_repo = git2::Repository::open(&base_path).map_err(git::GitError::Git)?;
+            git::pull_repo(&git_repo, token, platform)?;
+        } else {
+            tracing::debug!(
+                owner,
+                repo,
+                path = %base_path.display(),
+                "Base repo not found, cloning"
+            );
+            // Create parent directories before cloning
+            if let Some(parent) = base_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let url = git::build_clone_url(platform, owner, repo, self.gitlab_host.as_deref());
+            git::clone_repo(&url, &base_path, token, platform)?;
+        }
+
+        Ok(base_path)
     }
 
     /// Acquire a concurrency permit from the semaphore.
@@ -346,8 +408,8 @@ impl Dispatcher {
     /// Run the dispatcher loop with a configurable drain timeout.
     ///
     /// Consumes `DispatchMessage`s from the provided `mpsc::Receiver`, performs
-    /// dedup checks, finds matching workflows, acquires concurrency permits,
-    /// and spawns workflow runners as independent tokio tasks.
+    /// dedup checks, acquires concurrency permits, and spawns workflow runners
+    /// as independent tokio tasks.
     ///
     /// When a `shutdown` signal is received (the watch value becomes `true`),
     /// the loop stops consuming new messages and waits for in-flight
@@ -374,7 +436,7 @@ impl Dispatcher {
                 msg = rx.recv() => {
                     match msg {
                         Some(dispatch_msg) => {
-                            self.handle_dispatch(dispatch_msg).await;
+                            self.spawn_workflow(dispatch_msg).await;
                         }
                         None => {
                             tracing::info!("Dispatcher channel closed, stopping");
@@ -468,22 +530,16 @@ impl Dispatcher {
         }
     }
 
-    /// Process a single dispatch message: dedup check, workflow match,
-    /// permit acquisition, and workflow task spawn.
+    /// Process a single dispatch message: dedup check, permit acquisition,
+    /// and workflow task spawn.
     ///
     /// If the event is a duplicate (already in flight, completed, or failed),
-    /// it is skipped with a warning. If no matching workflow is found for the
-    /// event's trigger type and actor, the event is skipped (DEBUG log) without
-    /// consuming any concurrency permit or dedup state. Otherwise, it is marked
-    /// in-flight, a concurrency permit is acquired (if limiting is enabled), and
-    /// a tokio task is spawned to run the matching workflows. On completion,
-    /// the dedup state is updated and persisted to disk.
-    ///
-    /// Because the dispatcher loop is a single-consumer (mpsc), there is no
-    /// TOCTOU race between the workflow match check and the in-flight mark —
-    /// no other task can modify the same dedup key between these steps.
+    /// it is skipped with a warning. Otherwise, it is marked in-flight, a
+    /// concurrency permit is acquired (if limiting is enabled), and a tokio
+    /// task is spawned to run the workflow. On completion, the dedup state is
+    /// updated and persisted to disk.
     #[instrument(skip_all, fields(event_id = %msg.event.event_id, repo = %msg.event.repo_path))]
-    async fn handle_dispatch(&self, msg: DispatchMessage) {
+    async fn spawn_workflow(&self, msg: DispatchMessage) {
         let event = msg.event;
         let event_id = event.event_id.clone();
         let key = build_dedup_key(
@@ -491,8 +547,6 @@ impl Dispatcher {
             &parse_repo(&event.repo_path),
             &event_id,
         );
-
-        tracing::debug!(%key, trigger = %event.trigger_type, "Handling dispatch message");
 
         // Dedup check (sequential — single consumer, no races)
         {
@@ -503,32 +557,51 @@ impl Dispatcher {
             }
         }
 
-        // Check for matching workflows before acquiring any resources.
-        // SAFETY: Because the dispatcher loop consumes from a single-consumer
-        // mpsc channel, there is no TOCTOU race between this match check and
-        // the mark_in_flight below — no other task can modify the same dedup
-        // key between these steps.
+        // Mark in-flight
+        {
+            let mut sets = self.dedup_sets.write().await;
+            sets.mark_in_flight(&key);
+        }
+
+        // Find matching workflows before git orchestration so we can
+        // determine git requirements from workflow config.
         let workflows = self.workflow_state.load();
         let matching = find_matching_workflows(&workflows, &event.trigger_type, &event.actor);
 
         if matching.is_empty() {
-            tracing::debug!(
+            tracing::warn!(
                 trigger = %event.trigger_type,
                 repo = %event.repo_path,
                 event_id = %event.event_id,
                 actor = %event.actor,
                 "No matching workflow found for trigger type and actor, skipping"
             );
+            // Move the event from in-flight to completed. The event was
+            // received and processed by the dispatcher, but no workflow
+            // was configured for this trigger/actor combination. Marking
+            // as completed (not removing from in-flight) ensures the
+            // dedup set correctly records that this event was handled.
+            let mut sets = self.dedup_sets.write().await;
+            sets.mark_completed(&key);
+            if let Err(e) = sets.persist_completed(&self.workdir) {
+                tracing::error!(%key, error = %e, "Failed to persist completed set");
+            }
             return;
         }
 
-        // Mark in-flight (only after confirming a match exists)
-        {
-            let mut sets = self.dedup_sets.write().await;
-            sets.mark_in_flight(&key);
-        }
+        // Determine git requirements from matching workflows.
+        // If any matching workflow requests git.clone, the base repo is
+        // ensured. If any requests git.worktree, a worktree is created.
+        let needs_clone = matching.iter().any(|(_, wf)| wf.git.clone);
+        let needs_worktree = matching.iter().any(|(_, wf)| wf.git.worktree);
+        // Collect the default branch from the first workflow that has
+        // worktree enabled (used as fallback when event.branch is None).
+        let default_branch = matching
+            .iter()
+            .find(|(_, wf)| wf.git.worktree)
+            .map(|(_, wf)| wf.git.default_branch.clone());
 
-        // Acquire concurrency permit (only after confirming a match exists)
+        // Acquire concurrency permit
         let permit = match self.acquire_permit().await {
             Ok(p) => p,
             Err(e) => {
@@ -539,6 +612,8 @@ impl Dispatcher {
                 return;
             }
         };
+
+        tracing::info!(%key, "Spawning workflow");
 
         // Clone what we need for the spawned task
         let dedup_sets = self.dedup_sets.clone();
@@ -565,7 +640,135 @@ impl Dispatcher {
             return;
         }
 
-        tracing::info!(%key, "Spawning workflow");
+        // Git orchestration: when any matching workflow requests git.clone
+        // or git.worktree, ensure the base repo is cloned and optionally
+        // create a worktree at the event workspace directory.
+        // This pre-initializes the workspace so the agent has access to
+        // the repository source code.
+        if needs_clone || needs_worktree {
+            let platform_str = match event.trigger_type.platform() {
+                Some(crate::config::Platform::Github) => "github",
+                Some(crate::config::Platform::Gitlab) => "gitlab",
+                None => {
+                    tracing::error!(
+                        %key,
+                        "Cannot determine platform for git orchestration — no platform set"
+                    );
+                    let mut sets = self.dedup_sets.write().await;
+                    sets.mark_failed(&key);
+                    if permit.is_some() {
+                        self.active_count.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    return;
+                }
+            };
+
+            let token_env = match platform_str {
+                "gitlab" => crate::config::env::GITLAB_TOKEN,
+                _ => crate::config::env::GITHUB_TOKEN,
+            };
+            let token = match std::env::var(token_env) {
+                Ok(t) => t,
+                Err(_) => {
+                    tracing::error!(
+                        %key,
+                        env = token_env,
+                        "Missing git token for git orchestration"
+                    );
+                    let mut sets = self.dedup_sets.write().await;
+                    sets.mark_failed(&key);
+                    if permit.is_some() {
+                        self.active_count.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    return;
+                }
+            };
+
+            match self.ensure_base_repo(&owner, &repo, platform_str, &token) {
+                Ok(base_path) => {
+                    if needs_worktree {
+                        // Resolve the branch: prefer the webhook-provided branch,
+                        // fall back to the workflow's configured default_branch.
+                        let branch = event.branch.clone().or(default_branch);
+                        let branch = match branch {
+                            Some(b) => b,
+                            None => {
+                                tracing::error!(
+                                    %key,
+                                    "No branch available for worktree — event has no branch \
+                                     and no workflow default_branch is set"
+                                );
+                                let mut sets = self.dedup_sets.write().await;
+                                sets.mark_failed(&key);
+                                if permit.is_some() {
+                                    self.active_count.fetch_sub(1, Ordering::Relaxed);
+                                }
+                                return;
+                            }
+                        };
+
+                        let worktree_dir = event_ws_dir.join("worktree");
+                        tracing::info!(
+                            %key,
+                            branch = %branch,
+                            base = %base_path.display(),
+                            worktree = %worktree_dir.display(),
+                            "Creating worktree for git orchestration"
+                        );
+
+                        match git2::Repository::open(&base_path) {
+                            Ok(base_repo) => {
+                                if let Err(e) =
+                                    git::create_worktree(&base_repo, &branch, &worktree_dir)
+                                {
+                                    tracing::error!(
+                                        %key,
+                                        branch = %branch,
+                                        error = %e,
+                                        "Failed to create worktree"
+                                    );
+                                    let mut sets = self.dedup_sets.write().await;
+                                    sets.mark_failed(&key);
+                                    if permit.is_some() {
+                                        self.active_count.fetch_sub(1, Ordering::Relaxed);
+                                    }
+                                    return;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    %key,
+                                    path = %base_path.display(),
+                                    error = %e,
+                                    "Failed to open base repo for worktree creation"
+                                );
+                                let mut sets = self.dedup_sets.write().await;
+                                sets.mark_failed(&key);
+                                if permit.is_some() {
+                                    self.active_count.fetch_sub(1, Ordering::Relaxed);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        %key,
+                        owner = %owner,
+                        repo = %repo,
+                        error = %e,
+                        "Failed to ensure base repo for git orchestration"
+                    );
+                    let mut sets = self.dedup_sets.write().await;
+                    sets.mark_failed(&key);
+                    if permit.is_some() {
+                        self.active_count.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    return;
+                }
+            }
+        }
 
         tokio::spawn(async move {
             let result = async {
@@ -577,9 +780,7 @@ impl Dispatcher {
                     "Processing workflow event"
                 );
 
-                // Read the Hermes API key before running workflows.
-                // Validation ensures every workflow has at least one step,
-                // so the API key is always needed.
+                // Read the Hermes API key from the environment
                 let api_key = std::env::var(crate::config::env::HERMES_API_KEY)
                     .map_err(|_| "HERMES_API_KEY environment variable not set".to_string())?;
 
@@ -610,6 +811,9 @@ impl Dispatcher {
                     variables.insert("output_dir".to_string(), event_ws_dir.display().to_string());
                     variables.insert("event_id".to_string(), event_id.clone());
                     variables.insert("repo_path".to_string(), event.repo_path.clone());
+                    if let Some(ref branch) = event.branch {
+                        variables.insert("branch".to_string(), branch.clone());
+                    }
 
                     let mut runner = WorkflowRunner::new(
                         workflow.clone(),
@@ -768,6 +972,14 @@ pub fn new_dedup_sets() -> SharedDedupSets {
 /// data directory layout from the architecture design doc (Section 11).
 pub fn workspace_dir(workdir: &Path, owner: &str, repo: &str, event_id: &str) -> PathBuf {
     workdir.join(owner).join(repo).join(event_id)
+}
+
+/// Build the base repository clone path.
+///
+/// The format is `{workdir}/repos/{owner}/{repo}/`. This is a shared,
+/// long-lived clone that serves as the parent for per-event worktrees.
+pub fn base_repo_path(workdir: &Path, owner: &str, repo: &str) -> PathBuf {
+    workdir.join("repos").join(owner).join(repo)
 }
 
 // ---------------------------------------------------------------------------
@@ -955,6 +1167,7 @@ mod tests {
             PathBuf::from("/tmp/yoke-test"),
             workflow_state,
             vec![],
+            None,
         )
     }
 
@@ -1211,6 +1424,7 @@ mod tests {
             actor: "test-user".to_string(),
             variables: std::collections::HashMap::new(),
             delivery_id: None,
+            branch: None,
         }
     }
 
