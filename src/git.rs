@@ -223,6 +223,12 @@ pub fn pull_repo(repo: &Repository, token: &str, platform: &str) -> Result<(), G
         ref_mut.set_target(fetch_commit.id(), "fast-forward merge")?;
     }
 
+    // Keep HEAD pointing at the fetched commit.  The base repo is kept in
+    // detached-HEAD state (see create_worktree), so we must move HEAD
+    // forward explicitly — otherwise HEAD stays at the old commit and new
+    // branches created from it would start from a stale point.
+    repo.set_head_detached(fetch_commit.id())?;
+
     Ok(())
 }
 

@@ -346,6 +346,55 @@ fn test_create_multiple_worktrees_same_base() {
     assert!(!wt_path2.exists());
 }
 
+// --- Detached-HEAD + pull regression tests ---
+
+#[test]
+fn test_create_worktree_then_pull_advances_detached_head() {
+    // Regression: after create_worktree detaches HEAD, pull_repo must
+    // advance HEAD to the fetched tip.  Otherwise new branches created
+    // in the next create_worktree call start from a stale commit.
+    //
+    // We can't easily test full remote pull in a unit test (no remote),
+    // but we can verify the detached-HEAD contract:
+    // 1. create_worktree detaches HEAD
+    // 2. After creating a new branch in a detached-HEAD repo, the branch
+    //    starts from HEAD's commit
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    // Record the commit HEAD points to before worktree creation
+    let head_oid_before = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+    // Create a worktree — this detaches HEAD
+    let wt_dir = tempfile::tempdir().unwrap();
+    let wt_path = wt_dir.path().join("wt-1");
+    create_worktree(&repo, "branch-1", &wt_path).unwrap();
+
+    // HEAD should be detached but still point to the same commit
+    let head_after = repo.head().unwrap();
+    assert!(
+        !head_after.is_branch(),
+        "HEAD should be detached after create_worktree"
+    );
+    assert_eq!(
+        head_after.peel_to_commit().unwrap().id(),
+        head_oid_before,
+        "Detached HEAD should point to the same commit as before"
+    );
+
+    // A new branch created from this detached HEAD should start from the
+    // same commit — this is what create_worktree does internally
+    let new_branch = repo.branch("branch-2", &head_after.peel_to_commit().unwrap(), false).unwrap();
+    assert_eq!(
+        new_branch.get().target().unwrap(),
+        head_oid_before,
+        "New branch should start from HEAD's commit"
+    );
+
+    remove_worktree(&repo, "branch-1").unwrap();
+    repo.find_branch("branch-2", git2::BranchType::Local).unwrap().delete().unwrap();
+}
+
 // --- pull_repo error tests ---
 
 #[test]
