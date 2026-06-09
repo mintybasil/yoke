@@ -117,12 +117,15 @@ impl WebhookHandler {
         )?;
         trigger_event.delivery_id = delivery_id;
         // Wrap TriggerEvent in DispatchMessage and send to dispatcher
+        let event_id = trigger_event.event_id.clone();
+        let trigger_type = format!("{:?}", trigger_event.trigger_type);
         self.sender
             .send(DispatchMessage {
                 event: trigger_event,
             })
             .await
-            .map_err(|_| WebhookError::InternalError("Dispatcher channel full".to_string()))?;
+            .map_err(|_| WebhookError::InternalError("Dispatcher channel closed".to_string()))?;
+        tracing::debug!(event_id = %event_id, trigger_type = %trigger_type, "Webhook event dispatched to dispatcher");
 
         Ok(())
     }

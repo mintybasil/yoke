@@ -15,7 +15,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::{Config, Platform};
-use crate::dispatcher::{Dispatcher, load_watermarks, new_dedup_sets};
+use crate::dispatcher::{Dispatcher, load_persistence, load_watermarks};
 use crate::reload::WorkflowState;
 use crate::webhook;
 use tracing::instrument;
@@ -207,7 +207,7 @@ pub async fn run_server(
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
 
-    let dedup_sets = new_dedup_sets();
+    let dedup_sets = Arc::new(RwLock::new(load_persistence(&workdir)));
     let watermark_store = load_watermarks(&workdir);
     let watermark_store = Arc::new(RwLock::new(watermark_store));
     let dispatcher = Dispatcher::new(
