@@ -384,7 +384,9 @@ fn test_create_worktree_then_pull_advances_detached_head() {
 
     // A new branch created from this detached HEAD should start from the
     // same commit — this is what create_worktree does internally
-    let new_branch = repo.branch("branch-2", &head_after.peel_to_commit().unwrap(), false).unwrap();
+    let new_branch = repo
+        .branch("branch-2", &head_after.peel_to_commit().unwrap(), false)
+        .unwrap();
     assert_eq!(
         new_branch.get().target().unwrap(),
         head_oid_before,
@@ -392,7 +394,10 @@ fn test_create_worktree_then_pull_advances_detached_head() {
     );
 
     remove_worktree(&repo, "branch-1").unwrap();
-    repo.find_branch("branch-2", git2::BranchType::Local).unwrap().delete().unwrap();
+    repo.find_branch("branch-2", git2::BranchType::Local)
+        .unwrap()
+        .delete()
+        .unwrap();
 }
 
 // --- pull_repo error tests ---
