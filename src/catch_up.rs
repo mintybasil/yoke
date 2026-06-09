@@ -292,8 +292,7 @@ async fn catch_up_github(
                 };
                 // Parse the delivery body through the webhook dispatch path,
                 // skipping signature verification (we trust the API response).
-                match replay_github_delivery(&detail.event, &body, &detail.guid)
-                {
+                match replay_github_delivery(&detail.event, &body, &detail.guid) {
                     Some(trigger_event) => {
                         let msg = DispatchMessage {
                             event: trigger_event,
