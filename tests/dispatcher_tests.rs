@@ -978,3 +978,70 @@ async fn test_catchup_permanently_failed_dedup() {
         "completed should be empty (event was not re-processed)"
     );
 }
+
+/// Test: Two dispatch messages with different delivery_id values but the same
+/// canonical event_id are deduplicated correctly.
+///
+/// This verifies that the dedup mechanism uses the canonical `event_id`
+/// (e.g. `issue-42`), not the platform-specific delivery GUID. GitHub
+/// assigns a unique `X-GitHub-Delivery` GUID per delivery attempt, but a
+/// redelivered or catch-up-replayed event has the same canonical `event_id`
+/// as the original. The dispatcher's two-set dedup (in_flight + completed)
+/// naturally handles this: the second event is rejected because its
+/// canonical event_id is already in a dedup set.
+#[tokio::test]
+async fn test_github_delivery_guid_dedup() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = tokio::spawn(async move {
+        dispatcher
+            .run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
+    });
+
+    // First event: a live webhook with delivery_id = "guid-aaa"
+    let mut msg1 = make_message(
+        TriggerType::GithubIssueAssigned { assigned_to: None },
+        "issue-42",
+    );
+    msg1.event.delivery_id = Some("guid-aaa".to_string());
+
+    // Second event: a catch-up replay with the same event_id but a different
+    // delivery_id (the GUID from the redelivery API). This simulates the
+    // scenario where the same event arrives via both live webhook and
+    // catch-up replay.
+    let mut msg2 = make_message(
+        TriggerType::GithubIssueAssigned { assigned_to: None },
+        "issue-42",
+    );
+    msg2.event.delivery_id = Some("guid-bbb".to_string());
+
+    tx.send(msg1).await.unwrap();
+    tx.send(msg2).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    drop(tx);
+    handle.await.unwrap();
+
+    // Only one event should be in completed — dedup is by canonical event_id,
+    // not by delivery_id/GUID. The second event with a different GUID but
+    // the same event_id is correctly rejected.
+    let sets = dedup_sets.read().await;
+    assert_eq!(
+        sets.completed.len(),
+        1,
+        "only one event should be in completed set (dedup by event_id, not GUID)"
+    );
+
+    let key = build_dedup_key("owner", "repo", "issue-42");
+    assert!(
+        sets.completed.contains(&key),
+        "event should be in completed set"
+    );
+}
