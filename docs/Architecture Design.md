@@ -107,7 +107,10 @@ workdir = "~/.yoke"       # runtime data directory
 [server]
 host = "0.0.0.0"
 port = 8644
+webhook_host = "yoke.example.com"
 max_body_size = 1048576                # 1MB default
+catch_up_enabled = true                # replay missed events on startup
+catch_up_max_age_hours = 24            # max age of events to replay
 
 # GitLab-specific (only when platform = "gitlab")
 # gitlab_url = "https://gitlab.mycompany.com"  # for self-hosted GitLab
@@ -196,9 +199,12 @@ See **Appendix A** for the actor source mapping per trigger type.
 | `agents[].base_url`        | Hermes API host (no path)                            | required                |
 | `[runtime].max_concurrent` | Max concurrent workflow runs                         | `0` (unlimited)         |
 | `[runtime].workdir`        | Runtime data directory                               | `~/.yoke`               |
-| `[server].host`            | Bind address                                         | `0.0.0.0`               |
-| `[server].port`            | Listen port                                          | `8644`                  |
-| `[server].max_body_size`   | Request body limit (bytes)                           | `1048576`               |
+| `[server].host`                     | Bind address                                         | `0.0.0.0`               |
+| `[server].port`                     | Listen port                                          | `8644`                  |
+| `[server].webhook_host`             | Public URL for webhook endpoint (catch-up matching)  | required                |
+| `[server].max_body_size`            | Request body limit (bytes)                           | `1048576`               |
+| `[server].catch_up_enabled`         | Replay missed events on startup                      | `true`                  |
+| `[server].catch_up_max_age_hours`   | Max age (hours) of events to replay                  | `24`                    |
 
 **Workflow file fields:**
 
@@ -259,7 +265,7 @@ Both platforms retry webhook deliveries if the endpoint doesn't return 2xx:
 
 **GitLab**: Retries up to 4 times with exponential backoff (up to ~50s between attempts for self-hosted; GitLab.com uses similar logic). Provides equivalent resilience.
 
-For longer outages, the platform marks the delivery as failed and stops retrying. The user would need to check the platform's webhook delivery logs to identify missed events. A future enhancement could add a "catch-up" mode that queries the platform's API for recent events since the last known delivery, but this is out of scope for the initial release.
+For longer outages, the platform marks the delivery as failed and stops retrying. Yoke's **catch-up** feature addresses this: on startup, it queries the platform's delivery/events API to replay missed events that occurred while Yoke was offline. See the [Catch-Up (Event Replay)](#catch-up-event-replay) section in the README for configuration details.
 
 ## 5. HTTP Server
 
@@ -447,7 +453,7 @@ The `delivery_id` field on `TriggerEvent` carries the GitHub delivery UUID (extr
 }
 ```
 
-**Future use:** Watermarks provide the foundation for a catch-up mode that queries the platform API for events delivered after the watermark's timestamp or delivery ID. This is not yet implemented — see the note in **Section 4 (Webhook Reliability)** about a future enhancement for querying missed events. Currently, watermarks are persisted but not read back for catch-up; they serve as a reliable checkpoint for future tooling to build on.
+**Catch-up:** Watermarks provide the foundation for Yoke's catch-up mode. On startup, Yoke reads the persisted watermark for each repository and queries the platform's delivery/events API for events newer than the watermark timestamp, up to `catch_up_max_age_hours` old. This replays events that were delivered while Yoke was offline. See **Section 4 (Webhook Reliability)** for details.
 
 ## 8. Agents (Hermes API Harness)
 
