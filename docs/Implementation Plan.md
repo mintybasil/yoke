@@ -110,7 +110,7 @@ This document outlines the phased implementation approach for Yoke. It complemen
 
 ### Deliverables
 - [ ] `src/runner.rs` — workflow execution loop
-- [ ] `src/git.rs` — shallow clone, clone, auth via `RemoteCallbacks`
+- [ ] `src/git.rs` — shallow clone, auth, status checks
 - [ ] `src/hooks.rs` — hook enum + `run_hook()` dispatcher
 - [ ] `src/harness.rs` — Hermes API client (`POST /v1/responses`)
 - [ ] Response parsing: extract `output[].content[].type == "output_text"`

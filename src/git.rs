@@ -1,18 +1,19 @@
-//! Git repository management: shallow clone, clone, and token-based
+//! Git repository management: shallow clone and token-based
 //! authentication for GitHub and GitLab.
 //!
 //! This module provides the git operations layer for Yoke's webhook-driven
-//! workflow execution. Each event gets its own isolated shallow clone
-//! (`git clone --depth=1 -b <branch>`) in the workspace directory, providing
-//! full parallelism with no shared state conflicts.
+//! workflow execution. When `git.clone = true`, each event gets its own
+//! isolated shallow clone (`git clone --depth=1 -b <branch>`) in the
+//! workspace directory, providing full parallelism with no shared state
+//! conflicts.
 //!
-//! Authentication uses `git2::RemoteCallbacks` with platform-specific
-//! token prefixes: `x-access-token` for GitHub, `oauth2` for GitLab.
-//! Tokens are never embedded in URLs or stored in git config.
+//! Authentication embeds platform-specific tokens in the clone URL:
+//! `x-access-token` for GitHub, `oauth2` for GitLab. Tokens are stripped
+//! from error messages to avoid credential leaks.
 
 use std::path::Path;
 
-use git2::{Cred, CredentialType, FetchOptions, ProxyOptions, RemoteCallbacks, Repository};
+use git2::Repository;
 use thiserror::Error;
 
 /// Errors that can occur during git operations.
@@ -83,7 +84,7 @@ pub fn sanitize_branch_name(label: &str) -> String {
 /// - GitLab: `https://{host}/{owner}/{repo}.git` (host defaults to `gitlab.com`)
 ///
 /// The URL does **not** include the token — authentication is handled
-/// separately via `RemoteCallbacks` during clone operations.
+/// separately by embedding the token in the URL at clone time.
 pub fn build_clone_url(
     platform: &str,
     owner: &str,
@@ -100,75 +101,41 @@ pub fn build_clone_url(
     }
 }
 
-/// Create a `RemoteCallbacks` that authenticates using a platform-specific token.
+/// Build an authenticated clone URL by embedding the token.
 ///
-/// GitHub uses `x-access-token` as the username; GitLab uses `oauth2`.
-/// The token is provided via `Cred::userpass_plaintext`.
-fn make_credentials_cb<'a>(token: &'a str, platform: &'a str) -> RemoteCallbacks<'a> {
-    let token_owned = token.to_string();
-    let platform_owned = platform.to_string();
-    let mut cb = RemoteCallbacks::new();
-    cb.credentials(move |_url, _username_from_url, allowed_types| {
-        if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) {
-            let username = match platform_owned.as_str() {
-                "gitlab" => "oauth2",
-                _ => "x-access-token",
-            };
-            Cred::userpass_plaintext(username, &token_owned)
-        } else {
-            Cred::default()
-        }
-    });
-    cb
-}
-
-/// Create `FetchOptions` with authentication and system proxy settings.
-fn create_fetch_options<'a>(token: &'a str, platform: &'a str) -> FetchOptions<'a> {
-    let mut fo = FetchOptions::new();
-    fo.remote_callbacks(make_credentials_cb(token, platform));
-    let mut proxy = ProxyOptions::new();
-    proxy.auto();
-    fo.proxy_options(proxy);
-    fo
-}
-
-/// Clone a repository to the specified path using token authentication.
-///
-/// The `platform` parameter determines the authentication method:
-/// - `"github"` uses `x-access-token` as the username
-/// - `"gitlab"` uses `oauth2` as the username
-///
-/// # Errors
-///
-/// Returns `GitError::DirectoryExists` if the target path already exists
-/// and is not an empty directory. Returns `GitError::Git` for clone failures.
-pub fn clone_repo(
+/// - GitHub: `https://x-access-token:<token>@github.com/owner/repo.git`
+/// - GitLab: `https://oauth2:<token>@gitlab.example.com/owner/repo.git`
+fn build_authenticated_url(
     url: &str,
-    path: &Path,
     token: &str,
     platform: &str,
-) -> Result<Repository, GitError> {
-    // Check if the target directory already exists and is not empty
-    if path.exists() && path.is_dir() {
-        // Allow cloning into an empty directory
-        let is_empty = path.read_dir().is_ok_and(|mut d| d.next().is_none());
-        if !is_empty {
-            return Err(GitError::DirectoryExists(path.display().to_string()));
-        }
-    }
+    gitlab_host: Option<&str>,
+) -> String {
+    let _host = match platform {
+        "gitlab" => gitlab_host.unwrap_or("gitlab.com"),
+        _ => "github.com",
+    };
 
-    let fo = create_fetch_options(token, platform);
-    let mut builder = git2::build::RepoBuilder::new();
-    builder.fetch_options(fo);
-    let repo = builder.clone(url, path)?;
-    Ok(repo)
+    let username = match platform {
+        "gitlab" => "oauth2",
+        _ => "x-access-token",
+    };
+
+    // Insert token into URL: https://host/path.git -> https://user:token@host/path.git
+    if let Some(rest) = url.strip_prefix("https://") {
+        format!("https://{username}:{token}@{rest}")
+    } else {
+        // Fallback: construct URL from scratch
+        build_clone_url(platform, "", "", gitlab_host)
+    }
 }
 
-/// Perform a shallow clone (`git clone --depth=1 -b <branch>`) into the given path.
+/// Clone a repository to the specified path using a shallow clone.
 ///
-/// This creates a fully isolated clone with no shared state — the preferred
-/// approach for per-event workspace isolation. Each event gets its own clone,
-/// avoiding the concurrency bugs inherent in shared `.git` directories.
+/// Performs `git clone --depth=1 -b <branch>` via the git subprocess,
+/// embedding the token in the URL for authentication. This creates a
+/// fully isolated clone with no shared state — each event gets its own
+/// directory, avoiding concurrency bugs from shared `.git` state.
 ///
 /// If `branch` is `None`, the remote's default branch is used.
 /// If the target directory exists and is non-empty, returns `GitError::DirectoryExists`.
@@ -176,8 +143,9 @@ pub fn clone_repo(
 /// # Errors
 ///
 /// Returns `GitError::DirectoryExists` if the target path already exists
-/// and is not an empty directory. Returns `GitError::Git` for clone failures.
-pub fn shallow_clone(
+/// and is not an empty directory. Returns `GitError::Command` for clone
+/// failures. Returns `GitError::Io` for filesystem errors.
+pub fn clone_repo(
     url: &str,
     path: &Path,
     branch: Option<&str>,
@@ -226,35 +194,6 @@ pub fn shallow_clone(
     // Open the cloned repository with git2 for subsequent operations
     let repo = Repository::open(path)?;
     Ok(repo)
-}
-
-/// Build an authenticated clone URL by embedding the token.
-///
-/// - GitHub: `https://x-access-token:<token>@github.com/owner/repo.git`
-/// - GitLab: `https://oauth2:<token>@gitlab.example.com/owner/repo.git`
-fn build_authenticated_url(
-    url: &str,
-    token: &str,
-    platform: &str,
-    gitlab_host: Option<&str>,
-) -> String {
-    let _host = match platform {
-        "gitlab" => gitlab_host.unwrap_or("gitlab.com"),
-        _ => "github.com",
-    };
-
-    let username = match platform {
-        "gitlab" => "oauth2",
-        _ => "x-access-token",
-    };
-
-    // Insert token into URL: https://host/path.git -> https://user:token@host/path.git
-    if let Some(rest) = url.strip_prefix("https://") {
-        format!("https://{username}:{token}@{rest}")
-    } else {
-        // Fallback: construct URL from scratch
-        build_clone_url(platform, "", "", gitlab_host)
-    }
 }
 
 /// Check whether a repository contains uncommitted changes.
@@ -372,19 +311,6 @@ mod tests {
         assert_eq!(url, "https://github.com/owner/repo.git");
     }
 
-    // --- credential callback tests ---
-
-    #[test]
-    fn test_make_credentials_cb_github() {
-        // Verify construction without panic
-        let _cb = make_credentials_cb("test-token", "github");
-    }
-
-    #[test]
-    fn test_make_credentials_cb_gitlab() {
-        let _cb = make_credentials_cb("test-token", "gitlab");
-    }
-
     // --- clone_repo directory checks ---
 
     #[test]
@@ -399,8 +325,10 @@ mod tests {
         let result = clone_repo(
             "https://github.com/nonexistent/repo.git",
             &non_empty_dir,
+            None,
             "fake-token",
             "github",
+            None,
         );
 
         assert!(result.is_err());
@@ -420,20 +348,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let empty_dir = dir.path().join("target");
         fs::create_dir_all(&empty_dir).unwrap();
-
         // This will fail because the URL is invalid, but it should NOT
         // fail with DirectoryExists
         let result = clone_repo(
             "https://github.com/nonexistent/repo.git",
             &empty_dir,
+            None,
             "fake-token",
             "github",
+            None,
         );
 
-        // The error should be a GitError::Git, not DirectoryExists
+        // The error should be a GitError::Command (subprocess), not DirectoryExists
         let err = result.err().unwrap();
         match err {
-            GitError::Git(_) => {} // expected: clone fails because repo doesn't exist
+            GitError::Command(_) => {} // expected: clone fails because repo doesn't exist
             GitError::DirectoryExists(_) => panic!("empty dir should not trigger DirectoryExists"),
             other => panic!("unexpected error: {other}"),
         }
@@ -488,33 +417,5 @@ mod tests {
         let url = "https://gitlab.mycompany.com/owner/repo.git";
         let result = build_authenticated_url(url, "glpat_token789", "gitlab", Some("gitlab.mycompany.com"));
         assert_eq!(result, "https://oauth2:glpat_token789@gitlab.mycompany.com/owner/repo.git");
-    }
-
-    #[test]
-    fn test_shallow_clone_non_empty_dir_fails() {
-        use std::fs;
-
-        let dir = tempfile::tempdir().unwrap();
-        let non_empty_dir = dir.path().join("target");
-        fs::create_dir_all(&non_empty_dir).unwrap();
-        fs::write(non_empty_dir.join("file.txt"), "data").unwrap();
-
-        let result = shallow_clone(
-            "https://github.com/nonexistent/repo.git",
-            &non_empty_dir,
-            None,
-            "fake-token",
-            "github",
-            None,
-        );
-
-        assert!(result.is_err());
-        let err = result.err().unwrap();
-        match err {
-            GitError::DirectoryExists(path) => {
-                assert_eq!(path, non_empty_dir.display().to_string());
-            }
-            other => panic!("expected DirectoryExists, got: {other}"),
-        }
     }
 }

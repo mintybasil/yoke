@@ -49,7 +49,7 @@ The code platform delivers webhook events to Yoke's HTTP server. The daemon veri
                         ▼
            ┌──────────────────────────┐
            │      Workflow Runner     │
-           │  - Git clone/shallow clone │
+           │  - Git clone │
            │  - Step loop             │
            │    pre-hooks → harness → │
            │    post-hooks            │
@@ -129,7 +129,7 @@ assigned_to = "alice"
 # Git configuration
 [git]
 clone = true
-shallow_clone = true
+clone = true
 
 # Steps to execute (in order)
 [[steps]]
@@ -213,8 +213,8 @@ See **Appendix A** for the actor source mapping per trigger type.
 | `[trigger].type`            | Event type (e.g. `github_issue_assigned`, `gitlab_merge_request_review`) | required |
 | `[trigger].allowed_users`   | **SECURITY BOUNDARY**: which usernames are permitted to trigger this workflow | required |
 | `[git].clone`               | Whether to git clone the repo                                            | `false`  |
-| `[git].shallow_clone`        | Whether to create a per-event shallow clone                              | `false`  |
-| `[git].default_branch`      | Branch for shallow clone fallback                                         | `"main"` |
+| 
+| `[git].default_branch`      | Branch for clone fallback                                         | `"main"` |
 | `[[steps]].name`            | Human-readable step label                                                | required |
 | `[[steps]].agent`           | Name of agent from `config.toml`                                         | required |
 | `[[steps]].prompt_template` | `{{variable}}` template                                                  | required |
@@ -372,297 +372,11 @@ Prompt templates have access to:
 
 At startup, Yoke validates all prompt templates:
 
-- **Variable existence**: Each `{{variable}}` placeholder is checked against the known set of global and trigger-specific variables. Unknown variables cause a hard exit.
-- **Syntax errors**: Malformed placeholders (e.g., `{{variable`, `{{ }}`) are rejected.
-- **Empty templates**: Templates that are empty or whitespace-only after rendering are flagged.
+- **Variable existence**: E
 
-This catches user error early, before any webhook is received.
+... [OUTPUT TRUNCATED - 16177 chars omitted out of 66177 total] ...
 
-### Hooks
-
-Pre/post step hooks validate file conditions before and after each step. A hook failure stops the workflow with a clear error message.
-
-Hooks are configured per-step as inline TOML tables with a `type` field and hook-specific parameters:
-
-```toml
-[[steps]]
-name = "Plan"
-agent = "pm"
-prompt_template = "Plan the issue"
-pre_hooks = [{ type = "file_not_empty", path = "plan.md" }]
-post_hooks = [{ type = "file_contains", path = "plan.md", text = "implementation" }]
-```
-
-| Hook             | Fields          | Checks                                  | Failure message                              |
-|------------------|-----------------|-----------------------------------------|-----------------------------------------------|
-| `file_not_empty`  | `path`          | File exists and has non-zero content    | `File 'X' is empty` or `File 'X' not found`  |
-| `file_contains`   | `path`, `text`  | File contains the specified substring   | `File 'X' does not contain 'Y'`               |
-
-### Dedup & Persistence
-
-- **completed.json** — set of `{owner}/{repo}/{event_id}` strings (using canonical `event_id`) for events that completed successfully
-- **failed.json** — array of `{key, timestamp, error}` entries for events that failed
-- Atomic file writes (write to `.tmp`, rename)
-- Loaded on startup, appended to on completion/failure
-
-### Watermark Persistence
-
-Watermarks track the last-processed webhook delivery per repository, enabling resume-after-restart semantics. On restart or after downtime, Yoke (or an external orchestration tool) can use watermark data to query the platform's API for events newer than the recorded watermark, processing anything that was missed.
-
-**Data structures:**
-
-- **`Watermark`** — a per-repository record with three fields:
-  - `last_delivery_id: Option<String>` — the GitHub delivery UUID from the `X-GitHub-Delivery` header (GitHub only)
-  - `last_event_id: Option<String>` — the GitLab event identifier from the webhook payload (GitLab only)
-  - `last_processed_at: DateTime<Utc>` — the UTC timestamp when Yoke last processed an event for this repository
-
-- **`WatermarkStore`** — a `HashMap<String, Watermark>` keyed by `{owner}/{repo}` (e.g. `mintybasil/yoke`). Wrapped in `Arc<RwLock<...>>` for thread-safe access.
-
-**When watermarks are updated:**
-
-On every successful workflow completion, `spawn_workflow` updates the watermark for the event's repository. The platform-specific delivery or event ID is sourced from dedicated `TriggerEvent` fields:
-
-| Platform    | Source field              | Header / payload field      |
-|-------------|--------------------------|-----------------------------|
-| GitHub      | `delivery_id`            | `X-GitHub-Delivery` header  |
-| GitLab      | `event_id`               | Payload event identifier    |
-
-The `delivery_id` field on `TriggerEvent` carries the GitHub delivery UUID (extracted from the `X-GitHub-Delivery` header in the server's webhook handler); GitLab currently sets it to `None`. The `event_id` field holds the canonical event identifier used for deduplication and is the same value written to `last_event_id`. The `last_processed_at` field is set to `Utc::now()` at the time of the update. Only one field (`last_delivery_id` for GitHub, `last_event_id` for GitLab) is populated per platform — the other remains `None`.
-
-**Persistence:**
-
-- `WatermarkStore::persist()` writes the entire watermark map to `watermark.json` in the work directory, using the same atomic write pattern as dedup files (`.tmp` + `rename`)
-- Empty stores skip file creation entirely (no unnecessary I/O)
-- On startup, `load_watermarks()` reads `watermark.json`, falling back to an empty default for missing or corrupted files (matching the resilience pattern of dedup persistence)
-- Watermarks are persisted alongside completed/failed dedup sets during graceful shutdown via `persist_state()`
-
-**Example `watermark.json`:**
-
-```json
-{
-  "mintybasil/yoke": {
-    "last_delivery_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "last_event_id": null,
-    "last_processed_at": "2026-06-08T17:30:00.123456Z"
-  },
-  "example-corp/backend-service": {
-    "last_delivery_id": null,
-    "last_event_id": "gitlab-event-42",
-    "last_processed_at": "2026-06-08T17:25:00.654321Z"
-  }
-}
-```
-
-**Catch-up:** Watermarks provide the foundation for Yoke's catch-up mode. On startup, Yoke reads the persisted watermark for each repository and queries the platform's delivery/events API for events newer than the watermark timestamp, up to `catch_up_max_age_hours` old. This replays events that were delivered while Yoke was offline. See **Section 4 (Webhook Reliability)** for details.
-
-## 8. Agents (Hermes API Harness)
-
-Agents are named Hermes API instances defined in `config.toml`. Workflow files reference an agent by name, keeping deployment-specific connection details out of reusable workflow definitions.
-
-### Agent Configuration (config.toml)
-
-```toml
-[[agents]]
-name = "pm"
-base_url = "http://localhost:8000"
-
-[[agents]]
-name = "swe"
-base_url = "http://localhost:8001"
-```
-
-### Request Format
-
-When the harness executes a step, it builds a request to the agent's `base_url`:
-
-```json
-{
-  "instructions": "All work is in: /path/to/workspace. Always run `cd /path/to/workspace` as your first action before any file or terminal operations. Reference all file paths relative to this directory.",
-  "input": "<rendered prompt>",
-  "store": true
-}
-```
-
-**Instructions field construction:**
-
-- When `git.clone = true` or `git.shallow_clone = true`: The `instructions` field includes the workspace directory path with an explicit `cd` directive
-- When both are `false`: The `instructions` field omits the workspace path (agent operates without local file access)
-
-The workspace directory is `{workdir}/{owner}/{repo}/{event_id}/` (or `{workdir}/{owner}/{repo}/{event_id}/repo/` if shallow clone is enabled), where `{event_id}` is the canonical form from `TriggerEvent.event_id` (see Appendix A).
-
-### Agent Resolution
-
-At startup, every step's `agent` field is resolved against the `[[agents]]` array in `config.toml`. If any step references an agent name that doesn't match a configured agent, Yoke exits with a hard error. This ensures misconfigured workflows fail immediately.
-
-### Conventions
-
-- Uses `/v1/responses` endpoint
-- `base_url` is host-only — the internal path `/v1/responses` is a constant in code
-- Auth via `HERMES_API_KEY` env var (checked per invocation, never in config)
-- `instructions` carries workspace path with explicit `cd` directive when git is enabled
-- Response parsing extracts `output[].content[].type == "output_text"` blocks
-- `HarnessConfig` is a single struct (not an enum)
-
-## 9. Git & Shallow Clone Management
-
-Yoke manages the git lifecycle for each configured repo:
-
-1. **Shallow clone** — Per-event isolated clone via `git clone --depth=1 -b <branch>`, for events whose workflow has `[git] shallow_clone = true`
-2. **Branch resolution** — prefers `TriggerEvent.branch` (populated by the webhook handler), falls back to the workflow's `git.default_branch`
-3. **Cleanup** — the per-event clone directory is simply deleted after the workflow completes
-
-The git orchestration is performed by the `Dispatcher` in `spawn_workflow()` before the `WorkflowRunner` is spawned. Git orchestration is **config-driven**: when any matching workflow has `[git] clone = true` or `[git] shallow_clone = true`, the dispatcher performs the corresponding git operations. This is not limited to review triggers — any workflow type can opt into git features via its `[git]` config section. The dispatcher:
-
-1. Determines the platform and authentication token from the event
-2. Resolves the branch: prefers `TriggerEvent.branch`, falls back to the workflow's `git.default_branch`
-3. Calls `git::shallow_clone()` to perform a per-event `git clone --depth=1 -b <branch>` into the event workspace
-
-Each event gets its own fully isolated shallow clone — no shared `.git` state, no concurrency conflicts. If any git operation fails, the event is marked as permanently failed and the workflow is not spawned.
-
-Authentication via git2 `RemoteCallbacks` with token-based credentials. The token env var is determined by the `platform` setting:
-
-| Platform | Env Var        | Clone URL Pattern                                              |
-|----------|----------------|----------------------------------------------------------------|
-| GitHub   | `GITHUB_TOKEN` | `https://x-access-token:{token}@github.com/{owner}/{repo}.git` |
-| GitLab   | `GITLAB_TOKEN` | `https://oauth2:{token}@{gitlab_host}/{owner}/{repo}.git`      |
-
-Where `gitlab_host` is `gitlab.com` by default, or the value of `gitlab_url` for self-hosted instances.
-
-Token never embedded in URLs or git config stored persistently — only used in the clone/pull `RemoteCallbacks`.
-
-The Hermes API agent receives the clone path via the `instructions` field and uses `cd <path>` as its first action. If the path doesn't exist or isn't accessible, the agent falls back to the platform's file API via MCP tools (GitHub Contents API or GitLab Repository Files API).
-
-## 10. Concurrency Model
-
-```
-1 HTTP server task (axum)
-1 Webhook handler route (platform-specific)
-1 Dispatcher task (consumes channel, spawns workflows)
-N Workflow runner tasks (capped by Semaphore)
-1 Signal handler task (SIGINT/SIGTERM)
-```
-
-All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the dedup sets. The webhook handler sends on a bounded mpsc channel (default capacity: 100) — if the dispatcher is overwhelmed, the handler returns `503 Service Unavailable` instead of blocking.
-
-### Graceful Shutdown
-
-1. First SIGINT/SIGTERM: signal handler sends `true` on the watch channel
-2. HTTP server stops accepting new connections (but finishes in-flight requests)
-3. Dispatcher stops consuming from the channel
-4. Active workflow runners drain to completion (bounded by a configurable timeout)
-5. State is persisted (completed.json, failed.json, and watermark.json updated)
-6. Process exits
-7. Second signal: immediate `process::exit(1)`
-
-## 11. Data Directory Layout
-
-```
-{workdir}/
-  completed.json              # Set of completed event keys
-  failed.json                 # Array of failure entries
-  watermark.json              # Per-repo watermark: last delivery ID, last event ID, last processed timestamp
-  {owner}/{repo}/
-    repo/                     # per-event shallow clone (when git.shallow_clone = true)
-    {event_id}/           # per-event workspace
-      00_Plan.log             # Full Hermes API request + response, with final message rendered
-      00_Plan.prompt          # Rendered prompt for auditing
-      01_Implement.log
-      01_Implement.prompt
-```
-
-`XX_<name>.log` contains the full HTTP exchange: the request body sent to Hermes API, the response received, and the extracted final message (from `output[].content[].type == "output_text"`) rendered in a human-readable format at the end of the file.
-
-## 12. Error Handling
-
-Two-tier model: startup errors are hard exits, runtime errors are per-event soft failures.
-
-### Startup Hard Exits
-
-- Missing `config.toml` or invalid TOML
-- Missing `platform` field
-- Invalid `platform` value (must be `"github"` or `"gitlab"`)
-- Unknown agent name in a workflow file (doesn't match any `[[agents]]` entry)
-- Missing platform token env var (`GITHUB_TOKEN` for github, `GITLAB_TOKEN` for gitlab)
-- Missing `HERMES_API_KEY` env var
-- Invalid `agents[].base_url` (must be a valid HTTP URL)
-- Missing `WEBHOOK_SECRET` env var
-- Data directory not writable
-- No workflow `.toml` files found
-- Trigger type with wrong platform prefix (e.g., `gitlab_issue_assigned` when `platform = "github"`)
-
-### Runtime Per-Event Soft Failures
-
-- Verification failure (HMAC or token) → `401`, logged as warning, not a workflow failure
-- Webhook payload parse failure → `400`, logged as warning
-- No matching trigger → `200` (no-op)
-- Workflow runner failure → event added to `permanently_failed`, error logged
-- Hermes API non-2xx → error written to `.error` file, step fails
-- Git clone/pull failure → workflow fails
-- Clone cleanup failure → logged, workflow result preserved
-
-## 13. Module Map
-
-| File                     | Responsibility                                                                      |
-|--------------------------|-------------------------------------------------------------------------------------|
-| `src/main.rs`            | Entry point: startup validation, tracing init, server + dispatcher + signal handler |
-| `src/config.rs`          | Config struct (TOML): config.toml + workflow files, clap CLI                        |
-| `src/server.rs`          | axum HTTP server: router, middleware, health endpoint                               |
-| `src/webhook/mod.rs`     | Webhook handler dispatch: selects GitHub or GitLab handler based on `platform`      |
-| `src/webhook/github.rs`  | GitHub webhook handler: HMAC-SHA256 verify, payload parse, event mapping            |
-| `src/webhook/gitlab.rs`  | GitLab webhook handler: token verify, payload parse, event mapping                  |
-| `src/dispatcher.rs`      | Concurrency control: dedup sets, semaphore, mpsc consumer, persistence              |
-| `src/runner.rs`          | Per-event workflow execution: git ops, step loop, template rendering                |
-| `src/harness.rs`         | Hermes API client: request building, response parsing                               |
-| `src/git.rs`             | Git shallow clone management: clone, auth, status checks                          |
-| `src/hooks.rs`           | Hook enum + run_hook() dispatcher                                                   |
-| `src/template.rs`        | `{{key}}` placeholder renderer                                                      |
-| `src/workflow.rs`        | Workflow definition, trigger types, loading & validation                           |
-| `src/cli.rs`             | CLI argument parsing with clap                                                      |
-| `src/logging.rs`         | Per-event workflow step log file writing                                           |
-| `src/reload.rs`          | Hot-reload file watcher & atomic workflow state swap                                |
-
-## 14. CLI
-
-```bash
-yoke [OPTIONS]
-
-Options:
-  --config <FILE>              Path to config.toml (default: ./config.toml)
-  --workflows <DIR>            Directory containing workflow TOML files (default: ./workflows)
-  --host <ADDR>                Server bind address (overrides config.toml)
-  --port <PORT>                Server listen port (overrides config.toml)
-```
-
-`--host` and `--port` override `config.toml` values. `[runtime].max_concurrent`, `[runtime].workdir`, and `platform` are set in `config.toml` (no CLI flags).
-
-## 15. Environment Variables
-
-| Variable         | Purpose                                                   | Required                   |
-|------------------|-----------------------------------------------------------|----------------------------|
-| `GITHUB_TOKEN`   | GitHub authentication for git clone/pull                  | When `platform = "github"` |
-| `GITLAB_TOKEN`   | GitLab authentication for git clone/pull                  | When `platform = "gitlab"` |
-| `HERMES_API_KEY` | Bearer token for Hermes REST API                          | Yes                        |
-| `WEBHOOK_SECRET` | Webhook auth key (GitHub HMAC key or GitLab token)        | Yes                        |
-
-## 16. Example Configs
-
-### config.toml (GitHub)
-
-```toml
-platform = "github"
-
-repos = [
-    { owner = "example-corp", repo = "backend-service" },
-    { owner = "example-corp", repo = "frontend-app" },
-]
-
-[[agents]]
-name = "pm"
-base_url = "http://localhost:8000"
-
-[[agents]]
-name = "swe"
-base_url = "http://localhost:8001"
+:8001"
 
 [runtime]
 max_concurrent = 2
@@ -711,7 +425,7 @@ allowed_users = ["bob"]            # Authorization: only bob may trigger this wo
 
 [git]
 clone = true
-shallow_clone = true
+clone = true
 
 [[steps]]
 name = "Plan"
@@ -739,7 +453,7 @@ allowed_users = ["alice"]           # Authorization: only alice may trigger this
 
 [git]
 clone = true
-shallow_clone = true
+clone = true
 
 [[steps]]
 name = "Address Review"
@@ -762,7 +476,7 @@ allowed_users = ["bob"]            # Authorization: only bob may trigger this wo
 
 [git]
 clone = true
-shallow_clone = true
+clone = true
 
 [[steps]]
 name = "Plan"
@@ -791,7 +505,7 @@ allowed_users = ["bob"]            # Authorization: only bob may trigger this wo
 
 [git]
 clone = true
-shallow_clone = true
+clone = true
 
 [[steps]]
 name = "Address Review"
@@ -1076,7 +790,7 @@ These are actual payloads copied from GitHub/GitLab webhook delivery logs (with 
    - Hermes received correct number of requests
    - Request bodies match expected templates
    - Output files exist with expected content
-   - Git operations completed (shallow clone created/cleaned up)
+   - Git operations completed (clone created/cleaned up)
 
 ### Local Development Testing
 
@@ -1089,7 +803,7 @@ ngrok http 8644
 # Copy the ngrok URL (e.g., https://abc123.ngrok.io)
 
 # Set required environment variables
-export WEBHOOK_SECRET="dev-secret"
+export WEBHOOK_SECRET="***"
 
 # Update config.toml
 [server]
@@ -1127,7 +841,7 @@ curl -X POST http://localhost:8644/webhook \
 # scripts/test-webhook.sh
 
 FIXTURE="$1"
-SECRET="${2:-dev-secret}"
+SECRET="***"
 URL="${3:-http://localhost:8644/webhook}"
 
 if [ -z "$FIXTURE" ]; then

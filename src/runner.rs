@@ -47,13 +47,14 @@ pub enum RunnerError {
 
 /// Build context-aware `instructions` for the Hermes API.
 ///
-/// When local file access is enabled (`git.clone` or `git.shallow_clone` is true),
+/// When local file access is enabled (`git.clone` is true),
 /// returns `Some(instructions)` containing the workspace directory path and an
-/// explicit `cd` directive. When both are false (no local file access), returns
+/// explicit `cd` directive. When `git.clone` is false (no local file access),
+/// returns
 /// `None` — the `instructions` field is omitted from the API request entirely,
 /// since the step name is already passed as the prompt (`input`).
 fn build_instructions(workflow: &Workflow, workspace_dir: &Path) -> Option<String> {
-    if workflow.git.clone || workflow.git.shallow_clone {
+    if workflow.git.clone {
         let path = workspace_dir.to_string_lossy();
         Some(format!(
             "All work is in: {}. Always run `cd {}` as your first action before any file or terminal operations. Reference all file paths relative to this directory.",
@@ -277,7 +278,6 @@ mod tests {
             vec![],
             GitConfig {
                 clone: true,
-                shallow_clone: false,
                 default_branch: "main".to_string(),
             },
         );
@@ -293,50 +293,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_instructions_with_git_shallow_clone() {
-        let workflow = test_workflow_with_git(
-            vec![],
-            GitConfig {
-                clone: false,
-                shallow_clone: true,
-                default_branch: "main".to_string(),
-            },
-        );
-        let workspace_dir = PathBuf::from("/var/lib/yoke/mintybasil/yoke/42");
-        let instructions = build_instructions(&workflow, &workspace_dir);
-
-        assert!(instructions.is_some());
-        let instructions = instructions.unwrap();
-        assert!(instructions.contains("/var/lib/yoke/mintybasil/yoke/42"));
-        assert!(instructions.contains("cd /var/lib/yoke/mintybasil/yoke/42"));
-    }
-
-    #[test]
-    fn test_build_instructions_with_both_git_enabled() {
-        let workflow = test_workflow_with_git(
-            vec![],
-            GitConfig {
-                clone: true,
-                shallow_clone: true,
-                default_branch: "main".to_string(),
-            },
-        );
-        let workspace_dir = PathBuf::from("/var/lib/yoke/org/repo/100");
-        let instructions = build_instructions(&workflow, &workspace_dir);
-
-        assert!(instructions.is_some());
-        let instructions = instructions.unwrap();
-        assert!(instructions.contains("/var/lib/yoke/org/repo/100"));
-        assert!(instructions.contains("cd /var/lib/yoke/org/repo/100"));
-    }
-
-    #[test]
     fn test_build_instructions_without_git() {
         let workflow = test_workflow_with_git(
             vec![],
             GitConfig {
                 clone: false,
-                shallow_clone: false,
                 default_branch: "main".to_string(),
             },
         );

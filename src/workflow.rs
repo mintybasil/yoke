@@ -54,24 +54,21 @@ pub struct Trigger {
     pub allowed_users: Option<Vec<String>>,
 }
 
-/// Git configuration for cloning and shallow clone management.
+/// Git configuration for repository cloning.
 ///
-/// Both `clone` and `shallow_clone` default to `false` (opt-in). A workflow that
-/// needs repository access must explicitly enable `[git] clone = true` and/or
-/// `[git] shallow_clone = true` in its TOML file.
+/// `clone` defaults to `false` (opt-in). A workflow that needs repository
+/// access must explicitly enable `[git] clone = true` in its TOML file.
+/// When enabled, the dispatcher performs a shallow clone (`git clone --depth=1`)
+/// into the per-event workspace directory.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GitConfig {
     /// Whether to clone the repository before running the workflow.
-    /// When true, the dispatcher clones the repo into the event workspace.
-    #[serde(default)]
-    pub clone: bool,
-    /// Whether to create a per-event shallow clone of the repository.
-    /// When true, the dispatcher performs a `git clone --depth=1 -b <branch>`
+    /// When true, the dispatcher performs a shallow clone (`git clone --depth=1 -b <branch>`)
     /// into `{workdir}/{owner}/{repo}/{event_id}/repo/`, providing full
     /// isolation between concurrent events.
-    #[serde(default, rename = "shallow_clone")]
-    pub shallow_clone: bool,
-    /// The default branch used for shallow clone checkout when no source branch
+    #[serde(default)]
+    pub clone: bool,
+    /// The default branch used for clone checkout when no source branch
     /// is available from the webhook payload (e.g. for issue-assigned triggers).
     #[serde(default = "default_branch")]
     pub default_branch: String,
@@ -85,7 +82,6 @@ impl Default for GitConfig {
     fn default() -> Self {
         Self {
             clone: false,
-            shallow_clone: false,
             default_branch: default_branch(),
         }
     }
@@ -565,7 +561,6 @@ mod tests {
 
             [git]
             clone = true
-            shallow_clone = true
             default_branch = "main"
 
             [[steps]]
@@ -591,7 +586,6 @@ mod tests {
 
             [git]
             clone = true
-            shallow_clone = true
             default_branch = "main"
 
             [[steps]]
@@ -611,7 +605,6 @@ mod tests {
             assigned_to = "alice"
             [git]
             clone = true
-            shallow_clone = true
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -629,7 +622,6 @@ mod tests {
             type = "unknown_event"
             [git]
             clone = true
-            shallow_clone = true
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -648,7 +640,6 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            shallow_clone = true
             default_branch = "main"
             steps = []
         "#;
@@ -664,7 +655,6 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            shallow_clone = true
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -683,7 +673,6 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            shallow_clone = true
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -710,7 +699,6 @@ mod tests {
         assert!(wf.validate().is_ok());
         // When [git] section is omitted, defaults should apply (opt-in)
         assert!(!wf.git.clone);
-        assert!(!wf.git.shallow_clone);
         assert_eq!(wf.git.default_branch, "main");
     }
 
@@ -732,33 +720,7 @@ mod tests {
         let wf: Workflow = toml::from_str(toml).unwrap();
         assert!(wf.validate().is_ok());
         assert!(wf.git.clone);
-        assert!(!wf.git.shallow_clone);
         assert_eq!(wf.git.default_branch, "main");
-    }
-
-    #[test]
-    fn test_git_shallow_clone_independent() {
-        // shallow_clone works independently of clone — each event gets its own
-        // isolated shallow clone rather than sharing a base repo.
-        let toml = r#"
-            [trigger]
-            type = "github_issue_assigned"
-            allowed_users = ["testuser"]
-
-            [git]
-            shallow_clone = true
-            default_branch = "develop"
-
-            [[steps]]
-            name = "Step"
-            agent = "swe"
-            prompt_template = "Do something"
-        "#;
-        let wf: Workflow = toml::from_str(toml).unwrap();
-        assert!(wf.validate().is_ok());
-        assert!(!wf.git.clone);
-        assert!(wf.git.shallow_clone);
-        assert_eq!(wf.git.default_branch, "develop");
     }
 
     #[test]
@@ -769,7 +731,6 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            shallow_clone = true
             default_branch = "main"
 
             [[steps]]
@@ -806,7 +767,6 @@ mod tests {
 
             [git]
             clone = true
-            shallow_clone = true
             default_branch = "main"
 
             [[steps]]
@@ -835,7 +795,6 @@ mod tests {
 
             [git]
             clone = true
-            shallow_clone = true
             default_branch = "main"
 
             [[steps]]
@@ -1013,7 +972,6 @@ allowed_users = ["testuser"]
 
 [git]
 clone = true
-shallow_clone = true
 default_branch = "main"
 
 [[steps]]
@@ -1045,7 +1003,6 @@ type = "invalid_trigger"
 
 [git]
 clone = true
-shallow_clone = true
 default_branch = "main"
 
 [[steps]]

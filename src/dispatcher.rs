@@ -547,14 +547,14 @@ impl Dispatcher {
         }
 
         // Determine git requirements from matching workflows.
-        // If any matching workflow requests git.clone or git.shallow_clone,
-        // a per-event shallow clone is created in the workspace directory.
-        let needs_clone = matching.iter().any(|(_, wf)| wf.git.clone || wf.git.shallow_clone);
+        // If any matching workflow requests git.clone, a per-event
+        // shallow clone is created in the workspace directory.
+        let needs_clone = matching.iter().any(|(_, wf)| wf.git.clone);
         // Collect the default branch from the first workflow that has
-        // shallow_clone enabled (used as fallback when event.branch is None).
+        // clone enabled (used as fallback when event.branch is None).
         let default_branch = matching
             .iter()
-            .find(|(_, wf)| wf.git.shallow_clone)
+            .find(|(_, wf)| wf.git.clone)
             .map(|(_, wf)| wf.git.default_branch.clone());
 
         // Acquire concurrency permit
@@ -596,9 +596,9 @@ impl Dispatcher {
             return;
         }
 
-        // Git orchestration: when any matching workflow requests git.clone
-        // or git.shallow_clone, perform a per-event shallow clone into the
-        // workspace directory. Each event gets a fully isolated clone —
+        // Git orchestration: when any matching workflow requests git.clone,
+        // perform a per-event shallow clone into the workspace directory.
+        // Each event gets a fully isolated clone —
         // no shared .git state, no concurrency conflicts.
         if needs_clone {
             let platform_str = match event.trigger_type.platform() {
@@ -655,7 +655,7 @@ impl Dispatcher {
                 "Cloning repository for git orchestration"
             );
 
-            match git::shallow_clone(
+            match git::clone_repo(
                 &clone_url,
                 &clone_target,
                 branch.as_deref(),
