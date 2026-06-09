@@ -54,25 +54,24 @@ pub struct Trigger {
     pub allowed_users: Option<Vec<String>>,
 }
 
-/// Git configuration for cloning and worktree management.
+/// Git configuration for cloning and shallow clone management.
 ///
-/// Both `clone` and `worktree` default to `false` (opt-in). A workflow that
+/// Both `clone` and `shallow_clone` default to `false` (opt-in). A workflow that
 /// needs repository access must explicitly enable `[git] clone = true` and/or
-/// `[git] worktree = true` in its TOML file.
+/// `[git] shallow_clone = true` in its TOML file.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GitConfig {
     /// Whether to clone the repository before running the workflow.
-    /// When true, the dispatcher ensures a base clone exists at
-    /// `{workdir}/repos/{owner}/{repo}/` before spawning the workflow task.
+    /// When true, the dispatcher clones the repo into the event workspace.
     #[serde(default)]
     pub clone: bool,
-    /// Whether to create a per-event git worktree from the base clone.
-    /// When true, the dispatcher creates a worktree at
-    /// `{workdir}/{owner}/{repo}/{event_id}/worktree/` checked out to the
-    /// source branch (or `default_branch` if no branch is available).
-    #[serde(default)]
-    pub worktree: bool,
-    /// The default branch used for worktree checkout when no source branch
+    /// Whether to create a per-event shallow clone of the repository.
+    /// When true, the dispatcher performs a `git clone --depth=1 -b <branch>`
+    /// into `{workdir}/{owner}/{repo}/{event_id}/repo/`, providing full
+    /// isolation between concurrent events.
+    #[serde(default, rename = "shallow_clone")]
+    pub shallow_clone: bool,
+    /// The default branch used for shallow clone checkout when no source branch
     /// is available from the webhook payload (e.g. for issue-assigned triggers).
     #[serde(default = "default_branch")]
     pub default_branch: String,
@@ -86,7 +85,7 @@ impl Default for GitConfig {
     fn default() -> Self {
         Self {
             clone: false,
-            worktree: false,
+            shallow_clone: false,
             default_branch: default_branch(),
         }
     }
@@ -566,7 +565,7 @@ mod tests {
 
             [git]
             clone = true
-            worktree = true
+            shallow_clone = true
             default_branch = "main"
 
             [[steps]]
@@ -592,7 +591,7 @@ mod tests {
 
             [git]
             clone = true
-            worktree = true
+            shallow_clone = true
             default_branch = "main"
 
             [[steps]]
@@ -612,7 +611,7 @@ mod tests {
             assigned_to = "alice"
             [git]
             clone = true
-            worktree = true
+            shallow_clone = true
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -630,7 +629,7 @@ mod tests {
             type = "unknown_event"
             [git]
             clone = true
-            worktree = true
+            shallow_clone = true
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -649,7 +648,7 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            worktree = true
+            shallow_clone = true
             default_branch = "main"
             steps = []
         "#;
@@ -665,7 +664,7 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            worktree = true
+            shallow_clone = true
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -684,7 +683,7 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            worktree = true
+            shallow_clone = true
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -711,7 +710,7 @@ mod tests {
         assert!(wf.validate().is_ok());
         // When [git] section is omitted, defaults should apply (opt-in)
         assert!(!wf.git.clone);
-        assert!(!wf.git.worktree);
+        assert!(!wf.git.shallow_clone);
         assert_eq!(wf.git.default_branch, "main");
     }
 
@@ -733,21 +732,21 @@ mod tests {
         let wf: Workflow = toml::from_str(toml).unwrap();
         assert!(wf.validate().is_ok());
         assert!(wf.git.clone);
-        assert!(!wf.git.worktree);
+        assert!(!wf.git.shallow_clone);
         assert_eq!(wf.git.default_branch, "main");
     }
 
     #[test]
-    fn test_git_worktree_requires_clone() {
-        // worktree should work independently of clone — the dispatcher
-        // handles ensuring the base repo when worktree is requested.
+    fn test_git_shallow_clone_independent() {
+        // shallow_clone works independently of clone — each event gets its own
+        // isolated shallow clone rather than sharing a base repo.
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
             allowed_users = ["testuser"]
 
             [git]
-            worktree = true
+            shallow_clone = true
             default_branch = "develop"
 
             [[steps]]
@@ -758,7 +757,7 @@ mod tests {
         let wf: Workflow = toml::from_str(toml).unwrap();
         assert!(wf.validate().is_ok());
         assert!(!wf.git.clone);
-        assert!(wf.git.worktree);
+        assert!(wf.git.shallow_clone);
         assert_eq!(wf.git.default_branch, "develop");
     }
 
@@ -770,7 +769,7 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            worktree = true
+            shallow_clone = true
             default_branch = "main"
 
             [[steps]]
@@ -807,7 +806,7 @@ mod tests {
 
             [git]
             clone = true
-            worktree = true
+            shallow_clone = true
             default_branch = "main"
 
             [[steps]]
@@ -836,7 +835,7 @@ mod tests {
 
             [git]
             clone = true
-            worktree = true
+            shallow_clone = true
             default_branch = "main"
 
             [[steps]]
@@ -1014,7 +1013,7 @@ allowed_users = ["testuser"]
 
 [git]
 clone = true
-worktree = true
+shallow_clone = true
 default_branch = "main"
 
 [[steps]]
@@ -1046,7 +1045,7 @@ type = "invalid_trigger"
 
 [git]
 clone = true
-worktree = true
+shallow_clone = true
 default_branch = "main"
 
 [[steps]]

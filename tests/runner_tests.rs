@@ -381,7 +381,7 @@ async fn test_workflow_fail_fast_on_first_step_error() {
 
 #[tokio::test]
 async fn test_instructions_include_workspace_dir_when_git_enabled() {
-    // When git.clone or git.worktree is true, instructions should contain
+    // When git.clone or git.shallow_clone is true, instructions should contain
     // the workspace directory path and a cd directive.
     let (base_url, captured) = start_mock_server_with_capture("Done").await;
     let agents = make_agents(&[("pm", &base_url)]);
@@ -399,7 +399,7 @@ async fn test_instructions_include_workspace_dir_when_git_enabled() {
         }],
         GitConfig {
             clone: true,
-            worktree: false,
+            shallow_clone: false,
             default_branch: "main".to_string(),
         },
     );
@@ -425,7 +425,7 @@ async fn test_instructions_include_workspace_dir_when_git_enabled() {
 
 #[tokio::test]
 async fn test_instructions_omitted_when_git_disabled() {
-    // When both git.clone and git.worktree are false, the instructions
+    // When both git.clone and git.shallow_clone are false, the instructions
     // field should be omitted (None) from the API request entirely.
     let (base_url, captured) = start_mock_server_with_capture("Done").await;
     let agents = make_agents(&[("pm", &base_url)]);
@@ -442,7 +442,7 @@ async fn test_instructions_omitted_when_git_disabled() {
         }],
         GitConfig {
             clone: false,
-            worktree: false,
+            shallow_clone: false,
             default_branch: "main".to_string(),
         },
     );
@@ -464,8 +464,8 @@ async fn test_instructions_omitted_when_git_disabled() {
 }
 
 #[tokio::test]
-async fn test_instructions_include_workspace_dir_with_worktree() {
-    // When git.worktree is true (even without git.clone), instructions should
+async fn test_instructions_include_workspace_dir_with_shallow_clone() {
+    // When git.shallow_clone is true (even without git.clone), instructions should
     // still include the workspace directory path and cd directive.
     let (base_url, captured) = start_mock_server_with_capture("Done").await;
     let agents = make_agents(&[("pm", &base_url)]);
@@ -483,7 +483,7 @@ async fn test_instructions_include_workspace_dir_with_worktree() {
         }],
         GitConfig {
             clone: false,
-            worktree: true,
+            shallow_clone: true,
             default_branch: "main".to_string(),
         },
     );

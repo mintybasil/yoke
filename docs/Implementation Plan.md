@@ -101,7 +101,7 @@ This document outlines the phased implementation approach for Yoke. It complemen
 
 ### Scope
 - Git clone/pull via `git2` crate
-- Worktree creation/removal (`git worktree add/remove`)
+- Shallow clone per event (`git clone --depth=1 -b <branch>`)
 - Branch naming: `ao/<sanitized-label>-<unix-timestamp>`
 - Step loop: render template → call Hermes → extract response
 - Template rendering with event + global variables
@@ -110,7 +110,7 @@ This document outlines the phased implementation approach for Yoke. It complemen
 
 ### Deliverables
 - [ ] `src/runner.rs` — workflow execution loop
-- [ ] `src/git.rs` — clone, pull, worktree management, auth via `RemoteCallbacks`
+- [ ] `src/git.rs` — shallow clone, clone, auth via `RemoteCallbacks`
 - [ ] `src/hooks.rs` — hook enum + `run_hook()` dispatcher
 - [ ] `src/harness.rs` — Hermes API client (`POST /v1/responses`)
 - [ ] Response parsing: extract `output[].content[].type == "output_text"`
@@ -118,7 +118,7 @@ This document outlines the phased implementation approach for Yoke. It complemen
 
 ### Exit Criteria
 - Git clone works with token auth
-- Worktree created per event, cleaned up after
+- Shallow clone created per event, cleaned up after
 - Each step renders template and calls Hermes API
 - `.log` files contain full HTTP exchange + extracted message
 - `.prompt` files contain rendered prompt

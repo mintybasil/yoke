@@ -54,7 +54,7 @@ pub struct GitLabPayload {
     #[serde(default)]
     pub user: Option<GitLabUser>,
     /// Merge request details. Present for Note hooks targeting a MergeRequest
-    /// and for MR event types. Carries the source branch for worktree creation.
+    /// and for MR event types. Carries the source branch for shallow clone creation.
     #[serde(default)]
     pub merge_request: Option<GitLabMergeRequest>,
 }
@@ -109,7 +109,7 @@ pub struct GitLabUser {
 
 /// Merge request details carried in GitLab Note Hook payloads for MR comments.
 ///
-/// The `source_branch` field is used by the dispatcher to create a worktree
+/// The `source_branch` field is used by the dispatcher to perform a shallow clone
 /// at the correct branch for MR review events.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GitLabMergeRequest {
@@ -117,7 +117,7 @@ pub struct GitLabMergeRequest {
     #[serde(default)]
     pub iid: Option<u64>,
     /// The source (head) branch of the merge request.
-    /// Used by the dispatcher to create a worktree at the correct branch.
+    /// Used by the dispatcher to perform a shallow clone at the correct branch.
     #[serde(default)]
     pub source_branch: Option<String>,
 }
@@ -189,7 +189,7 @@ impl GitLabEvent {
     /// Return the source branch name for MR/Note-on-MR events.
     ///
     /// Extracts `merge_request.source_branch` from the payload when present.
-    /// Used by the dispatcher to create a worktree at the correct branch.
+    /// Used by the dispatcher to perform a shallow clone at the correct branch.
     /// Returns `None` for issue events or when the merge_request field is absent.
     pub fn branch(&self) -> Option<String> {
         match self {
@@ -402,7 +402,7 @@ pub fn handle_gitlab_webhook(
         ));
     }
 
-    // Extract source branch for MR-related events (used by dispatcher for worktree creation)
+    // Extract source branch for MR-related events (used by dispatcher for shallow clone)
     let branch = event.branch();
     if let Some(ref b) = branch {
         variables.insert("branch".to_string(), b.clone());

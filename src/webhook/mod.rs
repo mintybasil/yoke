@@ -36,7 +36,7 @@ pub struct TriggerEvent {
     /// The source branch name for PR/MR review events.
     /// Populated for `github_pull_request_review`, `github_pull_request_comment_mention`,
     /// and `gitlab_merge_request_review` / `gitlab_merge_request_comment_mention` events.
-    /// Used by the dispatcher to create an isolated worktree at the correct branch.
+    /// Used by the dispatcher to perform a shallow clone at the correct branch.
     /// `None` for non-review events (issue assignments, issue comments).
     pub branch: Option<String>,
 }

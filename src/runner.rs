@@ -47,13 +47,13 @@ pub enum RunnerError {
 
 /// Build context-aware `instructions` for the Hermes API.
 ///
-/// When local file access is enabled (`git.clone` or `git.worktree` is true),
+/// When local file access is enabled (`git.clone` or `git.shallow_clone` is true),
 /// returns `Some(instructions)` containing the workspace directory path and an
 /// explicit `cd` directive. When both are false (no local file access), returns
 /// `None` — the `instructions` field is omitted from the API request entirely,
 /// since the step name is already passed as the prompt (`input`).
 fn build_instructions(workflow: &Workflow, workspace_dir: &Path) -> Option<String> {
-    if workflow.git.clone || workflow.git.worktree {
+    if workflow.git.clone || workflow.git.shallow_clone {
         let path = workspace_dir.to_string_lossy();
         Some(format!(
             "All work is in: {}. Always run `cd {}` as your first action before any file or terminal operations. Reference all file paths relative to this directory.",
@@ -277,7 +277,7 @@ mod tests {
             vec![],
             GitConfig {
                 clone: true,
-                worktree: false,
+                shallow_clone: false,
                 default_branch: "main".to_string(),
             },
         );
@@ -293,22 +293,22 @@ mod tests {
     }
 
     #[test]
-    fn test_build_instructions_with_git_worktree() {
+    fn test_build_instructions_with_git_shallow_clone() {
         let workflow = test_workflow_with_git(
             vec![],
             GitConfig {
                 clone: false,
-                worktree: true,
+                shallow_clone: true,
                 default_branch: "main".to_string(),
             },
         );
-        let workspace_dir = PathBuf::from("/var/lib/yoke/mintybasil/yoke/42/worktree-1");
+        let workspace_dir = PathBuf::from("/var/lib/yoke/mintybasil/yoke/42");
         let instructions = build_instructions(&workflow, &workspace_dir);
 
         assert!(instructions.is_some());
         let instructions = instructions.unwrap();
-        assert!(instructions.contains("/var/lib/yoke/mintybasil/yoke/42/worktree-1"));
-        assert!(instructions.contains("cd /var/lib/yoke/mintybasil/yoke/42/worktree-1"));
+        assert!(instructions.contains("/var/lib/yoke/mintybasil/yoke/42"));
+        assert!(instructions.contains("cd /var/lib/yoke/mintybasil/yoke/42"));
     }
 
     #[test]
@@ -317,7 +317,7 @@ mod tests {
             vec![],
             GitConfig {
                 clone: true,
-                worktree: true,
+                shallow_clone: true,
                 default_branch: "main".to_string(),
             },
         );
@@ -336,7 +336,7 @@ mod tests {
             vec![],
             GitConfig {
                 clone: false,
-                worktree: false,
+                shallow_clone: false,
                 default_branch: "main".to_string(),
             },
         );

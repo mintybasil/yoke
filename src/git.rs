@@ -1,10 +1,10 @@
-//! Git repository management: clone, pull, worktree creation/removal,
-//! and token-based authentication for GitHub and GitLab.
+//! Git repository management: shallow clone, clone, and token-based
+//! authentication for GitHub and GitLab.
 //!
 //! This module provides the git operations layer for Yoke's webhook-driven
-//! workflow execution. On first event for a repo, it clones the repository.
-//! On subsequent events, it pulls the latest changes. For each event, it
-//! can create an isolated worktree and clean it up after workflow completion.
+//! workflow execution. Each event gets its own isolated shallow clone
+//! (`git clone --depth=1 -b <branch>`) in the workspace directory, providing
+//! full parallelism with no shared state conflicts.
 //!
 //! Authentication uses `git2::RemoteCallbacks` with platform-specific
 //! token prefixes: `x-access-token` for GitHub, `oauth2` for GitLab.
@@ -12,10 +12,7 @@
 
 use std::path::Path;
 
-use git2::{
-    BranchType, Cred, CredentialType, FetchOptions, ProxyOptions, RemoteCallbacks, Repository,
-    WorktreeAddOptions, WorktreePruneOptions,
-};
+use git2::{Cred, CredentialType, FetchOptions, ProxyOptions, RemoteCallbacks, Repository};
 use thiserror::Error;
 
 /// Errors that can occur during git operations.
@@ -27,12 +24,12 @@ pub enum GitError {
     /// The target directory already exists and is not an empty directory.
     #[error("target directory already exists: {0}")]
     DirectoryExists(String),
-    /// The repository has uncommitted changes that prevent worktree removal.
-    #[error("uncommitted changes in worktree: {0}")]
-    DirtyWorktree(String),
     /// An I/O error occurred.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// A git subprocess command failed.
+    #[error("git command failed: {0}")]
+    Command(String),
 }
 
 /// Sanitize a label for use as a git branch name component.
@@ -86,7 +83,7 @@ pub fn sanitize_branch_name(label: &str) -> String {
 /// - GitLab: `https://{host}/{owner}/{repo}.git` (host defaults to `gitlab.com`)
 ///
 /// The URL does **not** include the token — authentication is handled
-/// separately via `RemoteCallbacks` during clone/pull operations.
+/// separately via `RemoteCallbacks` during clone operations.
 pub fn build_clone_url(
     platform: &str,
     owner: &str,
@@ -167,159 +164,97 @@ pub fn clone_repo(
     Ok(repo)
 }
 
-/// Pull (fetch + fast-forward merge) the latest changes from the remote.
+/// Perform a shallow clone (`git clone --depth=1 -b <branch>`) into the given path.
 ///
-/// Fetches from `origin` and fast-forwards the default branch to the
-/// remote's tip.  If a fast-forward is not possible (e.g. the remote
-/// was force-pushed or the local branch diverged due to a prior failed
-/// operation), the local branch is **force-reset** to the remote tip.
+/// This creates a fully isolated clone with no shared state — the preferred
+/// approach for per-event workspace isolation. Each event gets its own clone,
+/// avoiding the concurrency bugs inherent in shared `.git` directories.
 ///
-/// The base repo is only used as an upstream mirror for worktrees, so
-/// preserving local history is never required — it must always reflect
-/// the remote state.
+/// If `branch` is `None`, the remote's default branch is used.
+/// If the target directory exists and is non-empty, returns `GitError::DirectoryExists`.
 ///
 /// # Errors
 ///
-/// Returns `GitError::Git` for fetch failures.
-pub fn pull_repo(repo: &Repository, token: &str, platform: &str) -> Result<(), GitError> {
-    let mut remote = repo.find_remote("origin")?;
-
-    let mut fo = create_fetch_options(token, platform);
-    remote.fetch(&[] as &[&str], Some(&mut fo), None)?;
-
-    // Find the remote's default branch
-    let remote_head = remote.default_branch()?;
-    let remote_branch_name = remote_head
-        .as_str()
-        .ok_or_else(|| git2::Error::from_str("remote HEAD is not a valid UTF-8 string"))?;
-
-    // Strip "refs/heads/" prefix to get the branch name
-    let branch_name = remote_branch_name
-        .strip_prefix("refs/heads/")
-        .unwrap_or(remote_branch_name);
-
-    // Find the fetched commit (FETCH_HEAD)
-    let fetch_head = repo.find_reference("FETCH_HEAD")?;
-    let fetch_commit = fetch_head.peel_to_commit()?;
-
-    // Get the local branch reference (may not exist yet on first pull)
-    let local_branch_ref = repo.find_reference(&format!("refs/heads/{branch_name}"));
-
-    match &local_branch_ref {
-        Ok(r) => {
-            let local_commit = r.peel_to_commit()?.id();
-            if local_commit == fetch_commit.id() {
-                // Already up to date — just advance HEAD if needed
-            } else if repo.merge_base(local_commit, fetch_commit.id())? == local_commit {
-                // Fast-forward: local is an ancestor of remote
-                let mut ref_mut = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
-                ref_mut.set_target(fetch_commit.id(), "fast-forward merge")?;
-            } else {
-                // Diverged (force-push or corrupted state) — force-reset
-                // the local branch to the remote tip.  The base repo is a
-                // mirror and must always match remote.
-                let mut ref_mut = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
-                ref_mut.set_target(fetch_commit.id(), "force-reset to remote tip")?;
-            }
-        }
-        Err(_) => {
-            // Branch doesn't exist locally yet — create it pointing at
-            // the fetched commit.
-            repo.reference(
-                &format!("refs/heads/{branch_name}"),
-                fetch_commit.id(),
-                false,
-                "create branch from remote",
-            )?;
+/// Returns `GitError::DirectoryExists` if the target path already exists
+/// and is not an empty directory. Returns `GitError::Git` for clone failures.
+pub fn shallow_clone(
+    url: &str,
+    path: &Path,
+    branch: Option<&str>,
+    token: &str,
+    platform: &str,
+    gitlab_host: Option<&str>,
+) -> Result<Repository, GitError> {
+    // Check if the target directory already exists and is not empty
+    if path.exists() && path.is_dir() {
+        let is_empty = path.read_dir().is_ok_and(|mut d| d.next().is_none());
+        if !is_empty {
+            return Err(GitError::DirectoryExists(path.display().to_string()));
         }
     }
 
-    // Keep HEAD pointing at the fetched commit.  The base repo is kept in
-    // detached-HEAD state (see create_worktree), so we must move HEAD
-    // forward explicitly — otherwise HEAD stays at the old commit and new
-    // branches created from it would start from a stale point.
-    repo.set_head_detached(fetch_commit.id())?;
+    // Create parent directories if needed
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
-    Ok(())
+    // Build an authenticated URL by embedding the token.
+    // Command-line git requires credentials in the URL; libgit2 callback auth
+    // is not available when shelling out.
+    let auth_url = build_authenticated_url(url, token, platform, gitlab_host);
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("clone")
+        .arg("--depth")
+        .arg("1");
+
+    if let Some(branch_name) = branch {
+        cmd.arg("--branch").arg(branch_name);
+    }
+
+    cmd.arg(&auth_url).arg(path);
+
+    let output = cmd.output().map_err(|e| GitError::Command(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Strip auth token from error messages to avoid leaking credentials in logs
+        let safe_stderr = stderr.replace(token, "***");
+        return Err(GitError::Command(safe_stderr));
+    }
+
+    // Open the cloned repository with git2 for subsequent operations
+    let repo = Repository::open(path)?;
+    Ok(repo)
 }
 
-/// Create a worktree for a specific event, branching from the default branch.
+/// Build an authenticated clone URL by embedding the token.
 ///
-/// The worktree is created at `worktree_path` with the specified branch name.
-/// If the branch does not already exist, it is created from the current HEAD.
-/// Branch names containing `/` are sanitized for the worktree administrative
-/// directory name (replacing `/` with `-`) while the actual git branch keeps
-/// its original name.
-///
-/// # Errors
-///
-/// Returns `GitError::Git` for branch creation or worktree addition failures.
-pub fn create_worktree(
-    repo: &Repository,
-    branch_name: &str,
-    worktree_path: &Path,
-) -> Result<(), GitError> {
-    // Detach HEAD before creating the worktree.  Git refuses to create a
-    // worktree from a branch that is currently checked out in the parent
-    // repository ("reference refs/heads/<branch> is already checked out").
-    // Detaching HEAD (pointing it at the commit instead of the branch) means
-    // no branch ref is "checked out", allowing any branch to be used as a
-    // worktree source.
-    {
-        let head = repo.head()?;
-        let head_commit = head.peel_to_commit()?;
-        repo.set_head_detached(head_commit.id())?;
+/// - GitHub: `https://x-access-token:<token>@github.com/owner/repo.git`
+/// - GitLab: `https://oauth2:<token>@gitlab.example.com/owner/repo.git`
+fn build_authenticated_url(
+    url: &str,
+    token: &str,
+    platform: &str,
+    gitlab_host: Option<&str>,
+) -> String {
+    let _host = match platform {
+        "gitlab" => gitlab_host.unwrap_or("gitlab.com"),
+        _ => "github.com",
+    };
+
+    let username = match platform {
+        "gitlab" => "oauth2",
+        _ => "x-access-token",
+    };
+
+    // Insert token into URL: https://host/path.git -> https://user:token@host/path.git
+    if let Some(rest) = url.strip_prefix("https://") {
+        format!("https://{username}:{token}@{rest}")
+    } else {
+        // Fallback: construct URL from scratch
+        build_clone_url(platform, "", "", gitlab_host)
     }
-
-    // Check if the branch already exists
-    let branch_exists = repo.find_branch(branch_name, BranchType::Local).is_ok();
-
-    if !branch_exists {
-        // Create the branch from HEAD
-        let head = repo.head()?;
-        let head_commit = head.peel_to_commit()?;
-        repo.branch(branch_name, &head_commit, false)?;
-    }
-
-    // Find the branch reference for the worktree
-    let branch_ref = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
-
-    // Sanitize worktree name: git2 worktree_add creates directories under
-    // .git/worktrees/<name>/ — slashes create nested dirs that fail.
-    let worktree_name = branch_name.replace('/', "-");
-
-    let mut opts = WorktreeAddOptions::new();
-    opts.reference(Some(&branch_ref));
-
-    repo.worktree(&worktree_name, worktree_path, Some(&opts))?;
-
-    Ok(())
-}
-
-/// Remove a worktree by branch name, cleaning up administrative data.
-///
-/// Uses `WorktreePruneOptions` to force-remove the worktree even if it's
-/// locked or the working directory is still present. Also deletes the
-/// local branch associated with the worktree.
-///
-/// # Errors
-///
-/// Returns `GitError::Git` if the worktree cannot be found or pruned.
-pub fn remove_worktree(repo: &Repository, branch_name: &str) -> Result<(), GitError> {
-    let worktree_name = branch_name.replace('/', "-");
-    let worktree = repo.find_worktree(&worktree_name)?;
-
-    let mut prune_opts = WorktreePruneOptions::new();
-    prune_opts.valid(true).locked(true).working_tree(true);
-
-    worktree.prune(Some(&mut prune_opts))?;
-
-    // Clean up the branch if it still exists
-    if let Ok(mut branch) = repo.find_branch(branch_name, BranchType::Local) {
-        branch.delete()?;
-    }
-
-    Ok(())
 }
 
 /// Check whether a repository contains uncommitted changes.
@@ -524,11 +459,62 @@ mod tests {
             format!("{err}"),
             "target directory already exists: /some/path"
         );
+    }
 
-        let err = GitError::DirtyWorktree("modified file".to_string());
-        assert_eq!(
-            format!("{err}"),
-            "uncommitted changes in worktree: modified file"
+    #[test]
+    fn test_git_error_command_display() {
+        let err = GitError::Command("exit code 128".to_string());
+        assert_eq!(format!("{err}"), "git command failed: exit code 128");
+    }
+
+    // --- build_authenticated_url tests ---
+
+    #[test]
+    fn test_build_authenticated_url_github() {
+        let url = "https://github.com/owner/repo.git";
+        let result = build_authenticated_url(url, "ghp_token123", "github", None);
+        assert_eq!(result, "https://x-access-token:ghp_token123@github.com/owner/repo.git");
+    }
+
+    #[test]
+    fn test_build_authenticated_url_gitlab_default() {
+        let url = "https://gitlab.com/owner/repo.git";
+        let result = build_authenticated_url(url, "glpat_token456", "gitlab", None);
+        assert_eq!(result, "https://oauth2:glpat_token456@gitlab.com/owner/repo.git");
+    }
+
+    #[test]
+    fn test_build_authenticated_url_gitlab_custom_host() {
+        let url = "https://gitlab.mycompany.com/owner/repo.git";
+        let result = build_authenticated_url(url, "glpat_token789", "gitlab", Some("gitlab.mycompany.com"));
+        assert_eq!(result, "https://oauth2:glpat_token789@gitlab.mycompany.com/owner/repo.git");
+    }
+
+    #[test]
+    fn test_shallow_clone_non_empty_dir_fails() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let non_empty_dir = dir.path().join("target");
+        fs::create_dir_all(&non_empty_dir).unwrap();
+        fs::write(non_empty_dir.join("file.txt"), "data").unwrap();
+
+        let result = shallow_clone(
+            "https://github.com/nonexistent/repo.git",
+            &non_empty_dir,
+            None,
+            "fake-token",
+            "github",
+            None,
         );
+
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        match err {
+            GitError::DirectoryExists(path) => {
+                assert_eq!(path, non_empty_dir.display().to_string());
+            }
+            other => panic!("expected DirectoryExists, got: {other}"),
+        }
     }
 }
