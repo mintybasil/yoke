@@ -5,11 +5,13 @@
 //! - Concurrency limiting: semaphore caps parallel workflows
 //! - Persistence: completed/failed events are written to disk
 //! - Graceful shutdown: dispatcher drains in-flight tasks before exiting
-//! - Full lifecycle: event flows through dedup → permit → spawn → complete
+//! - Full lifecycle: event flows through dedup → match → permit → spawn → complete
+//! - Deferred allocation: events with no matching workflow skip permit/in-flight
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use yoke::dispatcher::{
@@ -18,7 +20,49 @@ use yoke::dispatcher::{
 };
 use yoke::reload::WorkflowState;
 use yoke::webhook::TriggerEvent;
-use yoke::workflow::TriggerType;
+
+/// Mutex to serialize tests that read/write the `HERMES_API_KEY` env var.
+static HERMES_KEY_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static HERMES_KEY_SET_MUTEX: StdMutex<()> = StdMutex::new(());
+
+/// RAII guard that sets `HERMES_API_KEY` for the duration of a test.
+///
+/// The dispatcher reads `HERMES_API_KEY` before running any matching workflow.
+/// Tests that dispatch events with matching workflows must set this env var,
+/// even though the test workflows have empty `steps` (bypassing validation)
+/// so the runner never actually uses the key.
+struct HermesApiKeyGuard {
+    _mutex_guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+fn set_hermes_key_sync() {
+    let _g = HERMES_KEY_SET_MUTEX.lock().unwrap();
+    unsafe { std::env::set_var(yoke::config::env::HERMES_API_KEY, "test-key") };
+}
+
+fn clear_hermes_key_sync() {
+    let _g = HERMES_KEY_SET_MUTEX.lock().unwrap();
+    unsafe { std::env::remove_var(yoke::config::env::HERMES_API_KEY) };
+}
+
+impl Drop for HermesApiKeyGuard {
+    fn drop(&mut self) {
+        clear_hermes_key_sync();
+    }
+}
+
+/// Set `HERMES_API_KEY` for the duration of the returned guard.
+///
+/// Acquires `HERMES_KEY_MUTEX` to prevent concurrent tests from interfering.
+/// On drop, the env var is cleared and the mutex is released.
+async fn set_hermes_api_key() -> HermesApiKeyGuard {
+    let guard = HERMES_KEY_MUTEX.lock().await;
+    set_hermes_key_sync();
+    HermesApiKeyGuard {
+        _mutex_guard: guard,
+    }
+}
+use yoke::workflow::{Trigger, TriggerType, Workflow, triggers};
 
 /// Create a Dispatcher for tests with an empty workflow state and no agents.
 fn test_dispatcher(
@@ -31,6 +75,66 @@ fn test_dispatcher(
     Dispatcher::new(
         dedup,
         watermark_store,
+        max_concurrent,
+        workdir,
+        workflow_state,
+        vec![],
+    )
+}
+
+/// Create a Dispatcher for tests with a workflow that matches `GithubIssueAssigned` events
+/// from `test-user`. This is needed for tests that assert on in-flight / completed /
+/// failed dedup state, since `handle_dispatch` now skips resource allocation when no
+/// workflows match (deferred allocation per #168).
+fn test_dispatcher_with_matching_workflows(
+    dedup: yoke::dispatcher::SharedDedupSets,
+    max_concurrent: usize,
+    workdir: PathBuf,
+) -> Dispatcher {
+    test_dispatcher_with_trigger_labels(
+        dedup,
+        max_concurrent,
+        workdir,
+        &[
+            triggers::GITHUB_ISSUE_ASSIGNED,
+            triggers::GITHUB_ISSUE_COMMENT_MENTION,
+            triggers::GITHUB_PULL_REQUEST_REVIEW,
+            triggers::GITLAB_ISSUE_ASSIGNED,
+        ],
+    )
+}
+
+/// Create a Dispatcher for tests with workflows that match the given trigger type
+/// labels for `test-user`. This enables fine-grained control over which trigger
+/// types the test dispatcher will match.
+fn test_dispatcher_with_trigger_labels(
+    dedup: yoke::dispatcher::SharedDedupSets,
+    max_concurrent: usize,
+    workdir: PathBuf,
+    trigger_labels: &[&str],
+) -> Dispatcher {
+    let workflows: Vec<(String, Workflow)> = trigger_labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let workflow = Workflow {
+                path: format!("test-workflow-{i}.toml"),
+                trigger: Trigger {
+                    r#type: label.to_string(),
+                    assigned_to: None,
+                    mentioned_user: None,
+                    allowed_users: Some(vec!["test-user".to_string()]),
+                },
+                git: Default::default(),
+                steps: vec![],
+            };
+            (format!("test-workflow-{i}.toml"), workflow)
+        })
+        .collect();
+    let workflow_state = Arc::new(WorkflowState::new(workflows));
+    Dispatcher::new(
+        dedup,
+        yoke::dispatcher::new_watermark_store(),
         max_concurrent,
         workdir,
         workflow_state,
@@ -68,9 +172,14 @@ fn make_workdir() -> tempfile::TempDir {
 
 #[tokio::test]
 async fn test_full_dispatch_flow_completes_and_persists() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -117,9 +226,14 @@ async fn test_full_dispatch_flow_completes_and_persists() {
 
 #[tokio::test]
 async fn test_duplicate_event_rejected() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -158,10 +272,15 @@ async fn test_duplicate_event_rejected() {
 
 #[tokio::test]
 async fn test_concurrency_limit() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Limit to 1 concurrent workflow
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 1, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        1,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -205,9 +324,14 @@ async fn test_concurrency_limit() {
 
 #[tokio::test]
 async fn test_completed_events_persisted_to_disk() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -252,9 +376,14 @@ async fn test_completed_events_persisted_to_disk() {
 
 #[tokio::test]
 async fn test_graceful_shutdown_drains_in_flight() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -293,9 +422,14 @@ async fn test_graceful_shutdown_drains_in_flight() {
 
 #[tokio::test]
 async fn test_dispatcher_stops_when_channel_closed() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -331,9 +465,14 @@ async fn test_dispatcher_stops_when_channel_closed() {
 
 #[tokio::test]
 async fn test_multiple_different_events_processed() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -378,9 +517,14 @@ async fn test_multiple_different_events_processed() {
 
 #[tokio::test]
 async fn test_on_workflow_complete_success() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     // Manually mark an event as in-flight
     {
@@ -413,9 +557,14 @@ async fn test_on_workflow_complete_success() {
 
 #[tokio::test]
 async fn test_on_workflow_complete_failure() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     // Manually mark an event as in-flight
     {
@@ -450,12 +599,17 @@ async fn test_on_workflow_complete_failure() {
 
 #[tokio::test]
 async fn test_dispatcher_active_count_with_concurrent_events() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Use concurrency limit of 2 so the semaphore is in play
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        2,
+        PathBuf::from(workdir.path()),
+    );
 
-    // Use run_with_permit directly since spawn_workflow is fire-and-forget
+    // Use run_with_permit directly since handle_dispatch is fire-and-forget
     // and active_count is decremented in run_with_permit
     assert_eq!(
         dispatcher.active_count(),
@@ -476,9 +630,14 @@ async fn test_dispatcher_active_count_with_concurrent_events() {
 
 #[tokio::test]
 async fn test_gitlab_event_dispatched() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -516,9 +675,14 @@ async fn test_gitlab_event_dispatched() {
 
 #[tokio::test]
 async fn test_unlimited_throughput() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(2000);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -571,10 +735,15 @@ async fn test_unlimited_throughput() {
 
 #[tokio::test]
 async fn test_concurrency_stress_with_semaphore() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Limit to 4 concurrent workflows
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 4, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        4,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(200);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -616,9 +785,14 @@ async fn test_concurrency_stress_with_semaphore() {
 
 #[tokio::test]
 async fn test_failure_state_transition_via_on_workflow_complete() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     // Mark event as in-flight, then fail it
     {
@@ -665,10 +839,15 @@ async fn test_failure_state_transition_via_on_workflow_complete() {
 
 #[tokio::test]
 async fn test_permits_released_after_completion() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // Use concurrency limit of 2 so the semaphore is in play
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        2,
+        PathBuf::from(workdir.path()),
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -706,13 +885,18 @@ async fn test_permits_released_after_completion() {
     );
 }
 
-// --- Test: active_count returns to 0 after spawn_workflow tasks complete ---
+// --- Test: active_count returns to 0 after handle_dispatch tasks complete ---
 
 #[tokio::test]
-async fn test_active_count_decrements_after_spawn_workflow() {
+async fn test_active_count_decrements_after_handle_dispatch() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        2,
+        PathBuf::from(workdir.path()),
+    );
 
     assert_eq!(
         dispatcher.active_count(),
@@ -758,11 +942,16 @@ async fn test_active_count_decrements_after_spawn_workflow() {
 
 #[tokio::test]
 async fn test_active_count_stays_zero_with_unlimited_concurrency() {
+    let _guard = set_hermes_api_key().await;
     let workdir = make_workdir();
     let dedup_sets = new_dedup_sets();
     // max_concurrent = 0 means no semaphore, so acquire_permit returns None
     // and active_count should never be incremented
-    let dispatcher = test_dispatcher(dedup_sets.clone(), 0, PathBuf::from(workdir.path()));
+    let dispatcher = test_dispatcher_with_matching_workflows(
+        dedup_sets.clone(),
+        0,
+        PathBuf::from(workdir.path()),
+    );
 
     assert_eq!(
         dispatcher.active_count(),
@@ -798,5 +987,61 @@ async fn test_active_count_stays_zero_with_unlimited_concurrency() {
         dispatcher.active_count(),
         0,
         "active_count should remain 0 with unlimited concurrency"
+    );
+}
+
+// --- Test: events with no matching workflow don't consume permits or in-flight marks ---
+
+#[tokio::test]
+async fn test_no_match_does_not_consume_resources() {
+    let workdir = make_workdir();
+    let dedup_sets = new_dedup_sets();
+    // max_concurrent = 2 so permits are observable
+    // Use empty workflow state — we want events with NO matching workflows
+    let dispatcher = test_dispatcher(dedup_sets.clone(), 2, PathBuf::from(workdir.path()));
+
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (_shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let disp = dispatcher.clone();
+    let handle = tokio::spawn(async move {
+        disp.run_with_drain(rx, &mut shutdown_rx, Duration::from_secs(30))
+            .await;
+    });
+
+    // Send events — test_dispatcher has empty workflow state, so no workflows match.
+    // With the deferred-allocation fix, these events should NOT acquire
+    // in-flight marks, concurrency permits, or create workspace directories.
+    for i in 0..5 {
+        let msg = make_message(
+            TriggerType::GithubIssueAssigned { assigned_to: None },
+            &format!("no-match-{i}"),
+        );
+        tx.send(msg).await.unwrap();
+    }
+
+    // Give the dispatcher time to process all events
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    drop(tx);
+    let _ = handle.await;
+
+    // No permits were consumed: active_count stays at 0
+    assert_eq!(
+        dispatcher.active_count(),
+        0,
+        "active_count should stay 0 when no workflows match"
+    );
+
+    // No in-flight marks were set
+    assert!(
+        dedup_sets.read().await.in_flight.is_empty(),
+        "no events should be in_flight when no workflows match"
+    );
+
+    // No completed marks were set either
+    assert!(
+        dedup_sets.read().await.completed.is_empty(),
+        "no events should be marked completed when no workflows match"
     );
 }

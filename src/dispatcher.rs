@@ -358,8 +358,8 @@ impl Dispatcher {
     /// Run the dispatcher loop with a configurable drain timeout.
     ///
     /// Consumes `DispatchMessage`s from the provided `mpsc::Receiver`, performs
-    /// dedup checks, acquires concurrency permits, and spawns workflow runners
-    /// as independent tokio tasks.
+    /// dedup checks, finds matching workflows, acquires concurrency permits,
+    /// and spawns workflow runners as independent tokio tasks.
     ///
     /// When a `shutdown` signal is received (the watch value becomes `true`),
     /// the loop stops consuming new messages and waits for in-flight
@@ -386,7 +386,7 @@ impl Dispatcher {
                 msg = rx.recv() => {
                     match msg {
                         Some(dispatch_msg) => {
-                            self.spawn_workflow(dispatch_msg).await;
+                            self.handle_dispatch(dispatch_msg).await;
                         }
                         None => {
                             tracing::info!("Dispatcher channel closed, stopping");
@@ -480,16 +480,22 @@ impl Dispatcher {
         }
     }
 
-    /// Process a single dispatch message: dedup check, permit acquisition,
-    /// and workflow task spawn.
+    /// Process a single dispatch message: dedup check, workflow match,
+    /// permit acquisition, and workflow task spawn.
     ///
     /// If the event is a duplicate (already in flight, completed, or failed),
-    /// it is skipped with a warning. Otherwise, it is marked in-flight, a
-    /// concurrency permit is acquired (if limiting is enabled), and a tokio
-    /// task is spawned to run the workflow. On completion, the dedup state is
-    /// updated and persisted to disk.
+    /// it is skipped with a warning. If no matching workflow is found for the
+    /// event's trigger type and actor, the event is skipped (DEBUG log) without
+    /// consuming any concurrency permit or dedup state. Otherwise, it is marked
+    /// in-flight, a concurrency permit is acquired (if limiting is enabled), and
+    /// a tokio task is spawned to run the matching workflows. On completion,
+    /// the dedup state is updated and persisted to disk.
+    ///
+    /// Because the dispatcher loop is a single-consumer (mpsc), there is no
+    /// TOCTOU race between the workflow match check and the in-flight mark —
+    /// no other task can modify the same dedup key between these steps.
     #[instrument(skip_all, fields(event_id = %msg.event.event_id, repo = %msg.event.repo_path))]
-    async fn spawn_workflow(&self, msg: DispatchMessage) {
+    async fn handle_dispatch(&self, msg: DispatchMessage) {
         let event = msg.event;
         let event_id = event.event_id.clone();
         let key = build_dedup_key(
@@ -497,6 +503,8 @@ impl Dispatcher {
             &parse_repo(&event.repo_path),
             &event_id,
         );
+
+        tracing::debug!(%key, trigger = %event.trigger_type, "Handling dispatch message");
 
         // Dedup check (sequential — single consumer, no races)
         {
@@ -507,13 +515,32 @@ impl Dispatcher {
             }
         }
 
-        // Mark in-flight
+        // Check for matching workflows before acquiring any resources.
+        // SAFETY: Because the dispatcher loop consumes from a single-consumer
+        // mpsc channel, there is no TOCTOU race between this match check and
+        // the mark_in_flight below — no other task can modify the same dedup
+        // key between these steps.
+        let workflows = self.workflow_state.load();
+        let matching = find_matching_workflows(&workflows, &event.trigger_type, &event.actor);
+
+        if matching.is_empty() {
+            tracing::debug!(
+                trigger = %event.trigger_type,
+                repo = %event.repo_path,
+                event_id = %event.event_id,
+                actor = %event.actor,
+                "No matching workflow found for trigger type and actor, skipping"
+            );
+            return;
+        }
+
+        // Mark in-flight (only after confirming a match exists)
         {
             let mut sets = self.dedup_sets.write().await;
             sets.mark_in_flight(&key);
         }
 
-        // Acquire concurrency permit
+        // Acquire concurrency permit (only after confirming a match exists)
         let permit = match self.acquire_permit().await {
             Ok(p) => p,
             Err(e) => {
@@ -525,13 +552,10 @@ impl Dispatcher {
             }
         };
 
-        tracing::info!(%key, "Spawning workflow");
-
         // Clone what we need for the spawned task
         let dedup_sets = self.dedup_sets.clone();
         let watermark_store = self.watermark_store.clone();
         let workdir = self.workdir.clone();
-        let workflow_state = self.workflow_state.clone();
         let agents = self.agents.clone();
         let active_count = self.active_count.clone();
 
@@ -553,6 +577,8 @@ impl Dispatcher {
             return;
         }
 
+        tracing::info!(%key, "Spawning workflow");
+
         tokio::spawn(async move {
             let result = async {
                 tracing::info!(
@@ -563,23 +589,9 @@ impl Dispatcher {
                     "Processing workflow event"
                 );
 
-                // Find matching workflows from the hot-reloadable state
-                let workflows = workflow_state.load();
-                let matching =
-                    find_matching_workflows(&workflows, &event.trigger_type, &event.actor);
-
-                if matching.is_empty() {
-                    tracing::warn!(
-                        trigger = %event.trigger_type,
-                        repo = %event.repo_path,
-                        event_id = %event.event_id,
-                        actor = %event.actor,
-                        "No matching workflow found for trigger type and actor, skipping"
-                    );
-                    return Ok(());
-                }
-
-                // Read the Hermes API key from the environment
+                // Read the Hermes API key before running workflows.
+                // Validation ensures every workflow has at least one step,
+                // so the API key is always needed.
                 let api_key = std::env::var(crate::config::env::HERMES_API_KEY)
                     .map_err(|_| "HERMES_API_KEY environment variable not set".to_string())?;
 
