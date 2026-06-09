@@ -154,7 +154,7 @@ catch_up_max_age_hours = 24       # max age of events to replay (hours)
 
 ### Catch-up (Event Replay)
 
-When Yoke restarts after downtime, it automatically replays webhook events that were missed while offline. Catch-up queries the platform's delivery APIs for events newer than the last-processed watermark, up to `catch_up_max_age_hours` ago. Events are deduplicated against the existing dedup sets.
+When Yoke restarts after downtime, it automatically replays webhook events that were missed while offline. Catch-up queries the platform's delivery APIs for events newer than the last-processed watermark, up to `catch_up_max_age_hours` ago.
 
 | Setting | Default | Description |
 |---|---|---|
