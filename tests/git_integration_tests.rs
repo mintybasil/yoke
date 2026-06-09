@@ -259,6 +259,147 @@ fn test_has_uncommitted_changes_modified_file() {
     assert!(has_uncommitted_changes(&repo).unwrap());
 }
 
+// --- Regression tests for issue #190 ---
+
+#[test]
+fn test_create_worktree_from_checked_out_branch() {
+    // Regression: creating a worktree from a branch that is currently
+    // checked out in the parent repo used to fail with
+    // "reference refs/heads/main is already checked out".
+    // The fix detaches HEAD before creating the worktree.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    // HEAD points to the default branch (master or main depending on
+    // git config) — this is the exact scenario that triggered the bug.
+    let head = repo.head().unwrap();
+    let branch_name = head.shorthand().expect("HEAD should point to a branch");
+    assert!(
+        branch_name == "main" || branch_name == "master",
+        "expected default branch, got: {branch_name}"
+    );
+
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let worktree_path = worktree_dir.path().join("wt-default");
+
+    // This should succeed — no "already checked out" error.
+    let result = create_worktree(&repo, branch_name, &worktree_path);
+    assert!(
+        result.is_ok(),
+        "create_worktree from checked-out branch failed: {:?}",
+        result.err()
+    );
+
+    // Verify worktree directory exists and has content
+    assert!(worktree_path.exists());
+    assert!(worktree_path.join("README.md").exists());
+
+    remove_worktree(&repo, branch_name).unwrap();
+}
+
+#[test]
+fn test_create_worktree_detaches_head() {
+    // Verify that create_worktree leaves the base repo in a detached HEAD
+    // state (which is safe for subsequent worktree and pull operations).
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let worktree_path = worktree_dir.path().join("wt-detach");
+
+    create_worktree(&repo, "feature-branch", &worktree_path).unwrap();
+
+    // After create_worktree, HEAD should be detached
+    let head = repo.head().unwrap();
+    assert!(
+        head.is_branch() == false || head.shorthand().is_none() || !head.is_branch(),
+        "Expected detached HEAD after create_worktree, but HEAD points to: {:?}",
+        head.shorthand()
+    );
+
+    remove_worktree(&repo, "feature-branch").unwrap();
+}
+
+#[test]
+fn test_create_multiple_worktrees_same_base() {
+    // Verify that creating multiple worktrees from the same base repo works
+    // (this is the real-world dispatcher scenario where multiple events
+    // trigger workflows for the same repo).
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    let wt_dir1 = tempfile::tempdir().unwrap();
+    let wt_path1 = wt_dir1.path().join("wt-1");
+    let wt_dir2 = tempfile::tempdir().unwrap();
+    let wt_path2 = wt_dir2.path().join("wt-2");
+
+    create_worktree(&repo, "branch-1", &wt_path1).unwrap();
+    assert!(wt_path1.exists());
+
+    create_worktree(&repo, "branch-2", &wt_path2).unwrap();
+    assert!(wt_path2.exists());
+
+    remove_worktree(&repo, "branch-1").unwrap();
+    remove_worktree(&repo, "branch-2").unwrap();
+
+    assert!(!wt_path1.exists());
+    assert!(!wt_path2.exists());
+}
+
+// --- Detached-HEAD + pull regression tests ---
+
+#[test]
+fn test_create_worktree_then_pull_advances_detached_head() {
+    // Regression: after create_worktree detaches HEAD, pull_repo must
+    // advance HEAD to the fetched tip.  Otherwise new branches created
+    // in the next create_worktree call start from a stale commit.
+    //
+    // We can't easily test full remote pull in a unit test (no remote),
+    // but we can verify the detached-HEAD contract:
+    // 1. create_worktree detaches HEAD
+    // 2. After creating a new branch in a detached-HEAD repo, the branch
+    //    starts from HEAD's commit
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    // Record the commit HEAD points to before worktree creation
+    let head_oid_before = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+    // Create a worktree — this detaches HEAD
+    let wt_dir = tempfile::tempdir().unwrap();
+    let wt_path = wt_dir.path().join("wt-1");
+    create_worktree(&repo, "branch-1", &wt_path).unwrap();
+
+    // HEAD should be detached but still point to the same commit
+    let head_after = repo.head().unwrap();
+    assert!(
+        !head_after.is_branch(),
+        "HEAD should be detached after create_worktree"
+    );
+    assert_eq!(
+        head_after.peel_to_commit().unwrap().id(),
+        head_oid_before,
+        "Detached HEAD should point to the same commit as before"
+    );
+
+    // A new branch created from this detached HEAD should start from the
+    // same commit — this is what create_worktree does internally
+    let new_branch = repo
+        .branch("branch-2", &head_after.peel_to_commit().unwrap(), false)
+        .unwrap();
+    assert_eq!(
+        new_branch.get().target().unwrap(),
+        head_oid_before,
+        "New branch should start from HEAD's commit"
+    );
+
+    remove_worktree(&repo, "branch-1").unwrap();
+    repo.find_branch("branch-2", git2::BranchType::Local)
+        .unwrap()
+        .delete()
+        .unwrap();
+}
+
 // --- pull_repo error tests ---
 
 #[test]
