@@ -139,6 +139,8 @@ host = "0.0.0.0"
 port = 8644
 webhook_host = "yoke.example.com"
 max_body_size = 1048576   # 1MB default
+catch_up_enabled = true           # replay missed webhook events on startup
+catch_up_max_age_hours = 24       # max age of events to replay (hours)
 
 # GitLab-specific (only when platform = "gitlab")
 # gitlab_url = "https://gitlab.mycompany.com"
@@ -149,6 +151,24 @@ max_body_size = 1048576   # 1MB default
 - `platform` — must be `"github"` or `"gitlab"`
 - `agents` — at least one agent with a unique `name` and valid `base_url`
 - `server.webhook_host` — external hostname used in webhook registration URLs. This must be explicitly set (e.g., `yoke.example.com`) — it is the hostname that GitHub/GitLab will send webhook events to, which typically differs from the bind address (`server.host`).
+
+### Catch-up (Event Replay)
+
+When Yoke restarts after downtime, it automatically replays webhook events that were missed while offline. Catch-up queries the platform's delivery APIs for events newer than the last-processed watermark, up to `catch_up_max_age_hours` ago.
+
+| Setting | Default | Description |
+|---|---|---|
+| `catch_up_enabled` | `true` | Enable/disable catch-up on startup |
+| `catch_up_max_age_hours` | `24` | Maximum age of events to replay (in hours) |
+
+To disable catch-up entirely:
+
+```toml
+[server]
+catch_up_enabled = false
+```
+
+> **Limitations:** GitHub returns at most 100 recent deliveries per webhook. GitLab returns up to 100 events per page. Catch-up runs before the HTTP listener starts, so large backlogs may delay server readiness.
 
 ### Environment Variables
 
