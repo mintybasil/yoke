@@ -412,3 +412,56 @@ fn test_pull_repo_on_fresh_repo_no_remote() {
     let result = pull_repo(&repo, "fake-token", "github");
     assert!(result.is_err());
 }
+
+#[test]
+fn test_pull_repo_force_resets_diverged_branch() {
+    // Verify that a branch reference can be force-reset to an earlier commit,
+    // which is what pull_repo does when the local branch has diverged from
+    // remote.  This tests the core git2 operation, not the full pull_repo
+    // flow (which requires a remote).
+    use git2::Signature;
+
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_with_commit(dir.path());
+
+    // Save the initial commit OID — we'll reset back to this.
+    let original_commit = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+    // Create a second commit to simulate local divergence.
+    let sig = Signature::now("Test", "test@example.com").unwrap();
+    let tree_id = {
+        let mut index = repo.index().unwrap();
+        index.write_tree().unwrap()
+    };
+    let tree = repo.find_tree(tree_id).unwrap();
+    let parent = repo.find_commit(original_commit).unwrap();
+    repo.commit(
+        Some("HEAD"),
+        &sig,
+        &sig,
+        "diverged commit",
+        &tree,
+        &[&parent],
+    )
+    .unwrap();
+
+    // HEAD/branch now points at the diverged commit.  Find the branch ref
+    // and force-reset it back to the original commit.
+    let mut branch_ref = repo
+        .find_reference("refs/heads/master")
+        .or_else(|_| repo.find_reference("refs/heads/main"))
+        .unwrap();
+    branch_ref
+        .set_target(original_commit, "force-reset to remote tip")
+        .unwrap();
+
+    // Re-read the reference from disk (not from the in-memory object).
+    let branch_name = branch_ref.name().unwrap();
+    let branch_ref_after = repo.find_reference(branch_name).unwrap();
+    let branch_commit = branch_ref_after.peel_to_commit().unwrap();
+    assert_eq!(
+        branch_commit.id(),
+        original_commit,
+        "Branch should be force-reset to the original commit"
+    );
+}
