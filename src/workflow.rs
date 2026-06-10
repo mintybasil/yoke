@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Platform;
@@ -54,28 +55,56 @@ pub struct Trigger {
     pub allowed_users: Option<Vec<String>>,
 }
 
-/// Git configuration for cloning and worktree management.
+/// Per-event shallow clone configuration.
 ///
-/// Both `clone` and `worktree` default to `false` (opt-in). A workflow that
-/// needs repository access must explicitly enable `[git] clone = true` and/or
-/// `[git] worktree = true` in its TOML file.
+/// Opt-in: a workflow that needs repository access must explicitly enable
+/// `[git] clone = true` in its TOML file. When enabled, the dispatcher
+/// performs a per-event shallow clone (`git clone --depth=1 -b <branch>`)
+/// into the event's workspace directory.
+///
+/// The `worktree` field is no longer supported. If a TOML file contains
+/// `worktree = true` (or `worktree = false`), loading will fail with a
+/// clear error message directing the user to use `clone = true` instead.
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(try_from = "GitConfigHelper")]
 pub struct GitConfig {
-    /// Whether to clone the repository before running the workflow.
-    /// When true, the dispatcher ensures a base clone exists at
-    /// `{workdir}/repos/{owner}/{repo}/` before spawning the workflow task.
+    /// Whether to perform a per-event shallow clone before running the workflow.
+    /// When true, the dispatcher clones the repository into the event's
+    /// workspace directory using `git clone --depth=1 -b <branch>`.
+    /// Each event gets its own isolated clone — no shared `.git` state.
     #[serde(default)]
     pub clone: bool,
-    /// Whether to create a per-event git worktree from the base clone.
-    /// When true, the dispatcher creates a worktree at
-    /// `{workdir}/{owner}/{repo}/{event_id}/worktree/` checked out to the
-    /// source branch (or `default_branch` if no branch is available).
-    #[serde(default)]
-    pub worktree: bool,
-    /// The default branch used for worktree checkout when no source branch
-    /// is available from the webhook payload (e.g. for issue-assigned triggers).
+    /// The branch to clone when no source branch is available from the webhook
+    /// payload (e.g. for issue-assigned triggers). Defaults to `"main"`.
     #[serde(default = "default_branch")]
     pub default_branch: String,
+}
+
+/// Helper struct for deserialization that intercepts the removed `worktree` field.
+#[derive(Deserialize)]
+struct GitConfigHelper {
+    #[serde(default)]
+    clone: bool,
+    #[serde(default = "default_branch")]
+    default_branch: String,
+    /// Removed field — reject with a clear migration message.
+    worktree: Option<IgnoredAny>,
+}
+
+impl TryFrom<GitConfigHelper> for GitConfig {
+    type Error = String;
+
+    fn try_from(helper: GitConfigHelper) -> Result<Self, Self::Error> {
+        if helper.worktree.is_some() {
+            return Err("The `worktree` field in [git] is no longer supported. \
+                 Use `clone = true` instead for per-event shallow clone behavior."
+                .into());
+        }
+        Ok(GitConfig {
+            clone: helper.clone,
+            default_branch: helper.default_branch,
+        })
+    }
 }
 
 fn default_branch() -> String {
@@ -86,7 +115,6 @@ impl Default for GitConfig {
     fn default() -> Self {
         Self {
             clone: false,
-            worktree: false,
             default_branch: default_branch(),
         }
     }
@@ -566,7 +594,6 @@ mod tests {
 
             [git]
             clone = true
-            worktree = true
             default_branch = "main"
 
             [[steps]]
@@ -592,7 +619,6 @@ mod tests {
 
             [git]
             clone = true
-            worktree = true
             default_branch = "main"
 
             [[steps]]
@@ -612,7 +638,7 @@ mod tests {
             assigned_to = "alice"
             [git]
             clone = true
-            worktree = true
+
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -630,7 +656,7 @@ mod tests {
             type = "unknown_event"
             [git]
             clone = true
-            worktree = true
+
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -649,7 +675,7 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            worktree = true
+
             default_branch = "main"
             steps = []
         "#;
@@ -665,7 +691,7 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            worktree = true
+
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -684,7 +710,7 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            worktree = true
+
             default_branch = "main"
             [[steps]]
             name = "Plan"
@@ -711,7 +737,6 @@ mod tests {
         assert!(wf.validate().is_ok());
         // When [git] section is omitted, defaults should apply (opt-in)
         assert!(!wf.git.clone);
-        assert!(!wf.git.worktree);
         assert_eq!(wf.git.default_branch, "main");
     }
 
@@ -733,33 +758,36 @@ mod tests {
         let wf: Workflow = toml::from_str(toml).unwrap();
         assert!(wf.validate().is_ok());
         assert!(wf.git.clone);
-        assert!(!wf.git.worktree);
         assert_eq!(wf.git.default_branch, "main");
     }
 
     #[test]
-    fn test_git_worktree_requires_clone() {
-        // worktree should work independently of clone — the dispatcher
-        // handles ensuring the base repo when worktree is requested.
+    fn test_git_worktree_rejected() {
         let toml = r#"
             [trigger]
             type = "github_issue_assigned"
             allowed_users = ["testuser"]
 
             [git]
+            clone = true
             worktree = true
-            default_branch = "develop"
 
             [[steps]]
             name = "Step"
             agent = "swe"
             prompt_template = "Do something"
         "#;
-        let wf: Workflow = toml::from_str(toml).unwrap();
-        assert!(wf.validate().is_ok());
-        assert!(!wf.git.clone);
-        assert!(wf.git.worktree);
-        assert_eq!(wf.git.default_branch, "develop");
+        let result = toml::from_str::<Workflow>(toml);
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("worktree"),
+            "expected error to mention 'worktree', got: {msg}"
+        );
+        assert!(
+            msg.contains("clone = true"),
+            "expected error to suggest 'clone = true', got: {msg}"
+        );
     }
 
     #[test]
@@ -770,7 +798,7 @@ mod tests {
             allowed_users = ["testuser"]
             [git]
             clone = true
-            worktree = true
+
             default_branch = "main"
 
             [[steps]]
@@ -807,7 +835,7 @@ mod tests {
 
             [git]
             clone = true
-            worktree = true
+
             default_branch = "main"
 
             [[steps]]
@@ -836,7 +864,7 @@ mod tests {
 
             [git]
             clone = true
-            worktree = true
+
             default_branch = "main"
 
             [[steps]]
@@ -1014,7 +1042,7 @@ allowed_users = ["testuser"]
 
 [git]
 clone = true
-worktree = true
+
 default_branch = "main"
 
 [[steps]]
@@ -1046,7 +1074,7 @@ type = "invalid_trigger"
 
 [git]
 clone = true
-worktree = true
+
 default_branch = "main"
 
 [[steps]]

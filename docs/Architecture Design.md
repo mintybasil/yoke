@@ -49,11 +49,11 @@ The code platform delivers webhook events to Yoke's HTTP server. The daemon veri
                         ▼
            ┌──────────────────────────┐
            │      Workflow Runner     │
-           │  - Git clone/worktree    │
+           │  - Git shallow clone     │
            │  - Step loop             │
            │    pre-hooks → harness → │
            │    post-hooks            │
-           │  - Worktree cleanup      │
+           │  - Cleanup              │
            └────────────┬─────────────┘
                         │ each step
                         ▼
@@ -129,7 +129,6 @@ assigned_to = "alice"
 # Git configuration
 [git]
 clone = true
-worktree = true
 
 # Steps to execute (in order)
 [[steps]]
@@ -212,9 +211,8 @@ See **Appendix A** for the actor source mapping per trigger type.
 |-----------------------------|--------------------------------------------------------------------------|----------|
 | `[trigger].type`            | Event type (e.g. `github_issue_assigned`, `gitlab_merge_request_review`) | required |
 | `[trigger].allowed_users`   | **SECURITY BOUNDARY**: which usernames are permitted to trigger this workflow | required |
-| `[git].clone`               | Whether to git clone the repo                                            | `false`  |
-| `[git].worktree`            | Whether to create a per-event worktree                                   | `false`  |
-| `[git].default_branch`      | Branch for clone/worktree base                                           | `"main"` |
+| `[git].clone`               | Whether to git shallow clone the repo for the event                      | `false`  |
+| `[git].default_branch`      | Branch for shallow clone                                                 | `"main"` |
 | `[[steps]].name`            | Human-readable step label                                                | required |
 | `[[steps]].agent`           | Name of agent from `config.toml`                                         | required |
 | `[[steps]].prompt_template` | `{{variable}}` template                                                  | required |
@@ -485,10 +483,10 @@ When the harness executes a step, it builds a request to the agent's `base_url`:
 
 **Instructions field construction:**
 
-- When `git.clone = true` or `git.worktree = true`: The `instructions` field includes the workspace directory path with an explicit `cd` directive
-- When both are `false`: The `instructions` field omits the workspace path (agent operates without local file access)
+- When `git.clone = true`: The `instructions` field includes the workspace directory path with an explicit `cd` directive
+- When `false`: The `instructions` field omits the workspace path (agent operates without local file access)
 
-The workspace directory is `{workdir}/{owner}/{repo}/{event_id}/` (or `{workdir}/{owner}/{repo}/{event_id}/worktree-{N}/` if worktrees are enabled), where `{event_id}` is the canonical form from `TriggerEvent.event_id` (see Appendix A).
+The workspace directory is `{workdir}/{owner}/{repo}/{event_id}/`, where `{event_id}` is the canonical form from `TriggerEvent.event_id` (see Appendix A).
 
 ### Agent Resolution
 
@@ -503,24 +501,22 @@ At startup, every step's `agent` field is resolved against the `[[agents]]` arra
 - Response parsing extracts `output[].content[].type == "output_text"` blocks
 - `HarnessConfig` is a single struct (not an enum)
 
-## 9. Git & Worktree Management
+## 9. Git & Shallow Clone Management
 
-Yoke manages the git lifecycle for each configured repo:
+Yoke manages the git lifecycle for each configured repo using per-event shallow clones:
 
-1. **Base clone** — Shared bare-ish clone at `{workdir}/{owner}/{repo}/repo/`, created on first event via `git clone`, updated via `git pull` on subsequent events
-2. **Worktree** — Per-event worktree using `git worktree add` from the base clone, for events whose workflow has `[git] worktree = true`
-3. **Branch naming** — `ao/<sanitized-label>-<unix-timestamp>`
-4. **Cleanup** — check for uncommitted changes, remove worktree, delete branch
+1. **Shallow clone** — Each event gets its own `git clone --depth=1 --branch <branch>` at `{workdir}/{owner}/{repo}/{event_id}/`. No shared base repo is needed.
+2. **Branch resolution** — The source branch is resolved from the webhook event (PR source branch, issue default branch), falling back to `git.default_branch`.
+3. **Cleanup** — The event workspace directory is removed after the workflow completes.
 
-The git orchestration is performed by the `Dispatcher` in `spawn_workflow()` before the `WorkflowRunner` is spawned. Git orchestration is **config-driven**: when any matching workflow has `[git] clone = true` or `[git] worktree = true`, the dispatcher performs the corresponding git operations. This is not limited to review triggers — any workflow type can opt into git features via its `[git]` config section. The dispatcher:
+The git orchestration is performed by the `Dispatcher` in `spawn_workflow()` before the `WorkflowRunner` is spawned. Git orchestration is **config-driven**: when a workflow has `[git] clone = true`, the dispatcher performs a shallow clone. The dispatcher:
 
-1. Calls `ensure_base_repo()` to clone (first time) or pull (subsequent) the repository to the base clone path
-2. Resolves the branch: prefers `TriggerEvent.branch` (populated by the webhook handler), falls back to the workflow's `git.default_branch`
-3. Calls `git::create_worktree()` to create a worktree at the event workspace directory on the resolved branch
+1. Resolves the branch: prefers `TriggerEvent.branch` (populated by the webhook handler), falls back to the workflow's `git.default_branch`
+2. Calls `git::shallow_clone()` to clone the repo at the resolved branch into the event workspace directory
 
-If any git operation fails, the event is marked as permanently failed and the workflow is not spawned.
+If the shallow clone fails, the event is marked as permanently failed and the workflow is not spawned.
 
-Authentication via git2 `RemoteCallbacks` with token-based credentials. The token env var is determined by the `platform` setting:
+Authentication is handled by embedding the platform token directly in the clone URL. The token env var is determined by the `platform` setting:
 
 | Platform | Env Var        | Clone URL Pattern                                              |
 |----------|----------------|----------------------------------------------------------------|
@@ -529,9 +525,7 @@ Authentication via git2 `RemoteCallbacks` with token-based credentials. The toke
 
 Where `gitlab_host` is `gitlab.com` by default, or the value of `gitlab_url` for self-hosted instances.
 
-Token never embedded in URLs or git config stored persistently — only used in the clone/pull `RemoteCallbacks`.
-
-The Hermes API agent receives the worktree path via the `instructions` field and uses `cd <path>` as its first action. If the path doesn't exist or isn't accessible, the agent falls back to the platform's file API via MCP tools (GitHub Contents API or GitLab Repository Files API).
+The Hermes API agent receives the workspace path via the `instructions` field and uses `cd <path>` as its first action. If the path doesn't exist or isn't accessible, the agent falls back to the platform's file API via MCP tools (GitHub Contents API or GitLab Repository Files API).
 
 ## 10. Concurrency Model
 
@@ -563,9 +557,7 @@ All managed by a single tokio runtime. Shared state via `Arc<Mutex<_>>` for the 
   failed.json                 # Array of failure entries
   watermark.json              # Per-repo watermark: last delivery ID, last event ID, last processed timestamp
   {owner}/{repo}/
-    repo/                     # shared base clone (when git.clone = true)
-    {event_id}/           # per-event workspace
-      worktree/                # per-event worktree (if git.worktree = true)
+    {event_id}/               # per-event workspace (shallow clone)
       00_Plan.log             # Full Hermes API request + response, with final message rendered
       00_Plan.prompt          # Rendered prompt for auditing
       01_Implement.log
@@ -599,8 +591,8 @@ Two-tier model: startup errors are hard exits, runtime errors are per-event soft
 - No matching trigger → `200` (no-op)
 - Workflow runner failure → event added to `permanently_failed`, error logged
 - Hermes API non-2xx → error written to `.error` file, step fails
-- Git clone/pull failure → workflow fails
-- Worktree cleanup failure → logged, workflow result preserved
+- Git clone failure → workflow fails
+- Shallow clone failure → workflow fails, event marked as permanently failed
 
 ## 13. Module Map
 
@@ -615,7 +607,7 @@ Two-tier model: startup errors are hard exits, runtime errors are per-event soft
 | `src/dispatcher.rs`      | Concurrency control: dedup sets, semaphore, mpsc consumer, persistence              |
 | `src/runner.rs`          | Per-event workflow execution: git ops, step loop, template rendering                |
 | `src/harness.rs`         | Hermes API client: request building, response parsing                               |
-| `src/git.rs`             | Git repo/worktree management: clone/pull, worktree create/remove, auth              |
+| `src/git.rs`             | Git shallow clone management: clone, auth, branch resolution              |
 | `src/hooks.rs`           | Hook enum + run_hook() dispatcher                                                   |
 | `src/template.rs`        | `{{key}}` placeholder renderer                                                      |
 | `src/workflow.rs`        | Workflow definition, trigger types, loading & validation                           |
@@ -713,7 +705,6 @@ allowed_users = ["bob"]            # Authorization: only bob may trigger this wo
 
 [git]
 clone = true
-worktree = true
 
 [[steps]]
 name = "Plan"
@@ -741,7 +732,6 @@ allowed_users = ["alice"]           # Authorization: only alice may trigger this
 
 [git]
 clone = true
-worktree = true
 
 [[steps]]
 name = "Address Review"
@@ -764,7 +754,6 @@ allowed_users = ["bob"]            # Authorization: only bob may trigger this wo
 
 [git]
 clone = true
-worktree = true
 
 [[steps]]
 name = "Plan"
@@ -793,7 +782,6 @@ allowed_users = ["bob"]            # Authorization: only bob may trigger this wo
 
 [git]
 clone = true
-worktree = true
 
 [[steps]]
 name = "Address Review"
@@ -1078,7 +1066,7 @@ These are actual payloads copied from GitHub/GitLab webhook delivery logs (with 
    - Hermes received correct number of requests
    - Request bodies match expected templates
    - Output files exist with expected content
-   - Git operations completed (worktree created/cleaned up)
+   - Git operations completed (shallow clone created/cleaned up)
 
 ### Local Development Testing
 

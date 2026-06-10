@@ -381,7 +381,7 @@ async fn test_workflow_fail_fast_on_first_step_error() {
 
 #[tokio::test]
 async fn test_instructions_include_workspace_dir_when_git_enabled() {
-    // When git.clone or git.worktree is true, instructions should contain
+    // When git.clone is true, instructions should contain
     // the workspace directory path and a cd directive.
     let (base_url, captured) = start_mock_server_with_capture("Done").await;
     let agents = make_agents(&[("pm", &base_url)]);
@@ -399,7 +399,6 @@ async fn test_instructions_include_workspace_dir_when_git_enabled() {
         }],
         GitConfig {
             clone: true,
-            worktree: false,
             default_branch: "main".to_string(),
         },
     );
@@ -425,7 +424,7 @@ async fn test_instructions_include_workspace_dir_when_git_enabled() {
 
 #[tokio::test]
 async fn test_instructions_omitted_when_git_disabled() {
-    // When both git.clone and git.worktree are false, the instructions
+    // When git.clone is false, the instructions
     // field should be omitted (None) from the API request entirely.
     let (base_url, captured) = start_mock_server_with_capture("Done").await;
     let agents = make_agents(&[("pm", &base_url)]);
@@ -442,7 +441,6 @@ async fn test_instructions_omitted_when_git_disabled() {
         }],
         GitConfig {
             clone: false,
-            worktree: false,
             default_branch: "main".to_string(),
         },
     );
@@ -461,49 +459,6 @@ async fn test_instructions_omitted_when_git_disabled() {
     let captured = captured.lock().unwrap();
     assert_eq!(captured.len(), 1);
     assert!(captured[0].is_empty());
-}
-
-#[tokio::test]
-async fn test_instructions_include_workspace_dir_with_worktree() {
-    // When git.worktree is true (even without git.clone), instructions should
-    // still include the workspace directory path and cd directive.
-    let (base_url, captured) = start_mock_server_with_capture("Done").await;
-    let agents = make_agents(&[("pm", &base_url)]);
-
-    let dir = tempfile::tempdir().unwrap();
-    let workspace_dir = dir.path().to_path_buf();
-
-    let workflow = test_workflow_with_git(
-        vec![Step {
-            name: "Plan".to_string(),
-            agent: "pm".to_string(),
-            prompt_template: "Plan the issue".to_string(),
-            pre_hooks: vec![],
-            post_hooks: vec![],
-        }],
-        GitConfig {
-            clone: false,
-            worktree: true,
-            default_branch: "main".to_string(),
-        },
-    );
-
-    let mut runner = WorkflowRunner::new(
-        workflow,
-        HashMap::new(),
-        workspace_dir.clone(),
-        agents,
-        "test-key".to_string(),
-    );
-    let result = runner.run().await;
-    assert!(result.is_ok());
-
-    let captured = captured.lock().unwrap();
-    assert_eq!(captured.len(), 1);
-    let instructions = captured[0].as_str();
-    assert!(instructions.contains(workspace_dir.to_string_lossy().as_ref()));
-    assert!(instructions.contains("cd"));
-    assert!(instructions.contains("All work is in:"));
 }
 
 // --- Per-step agent resolution tests ---
