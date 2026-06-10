@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Platform;
@@ -54,13 +55,18 @@ pub struct Trigger {
     pub allowed_users: Option<Vec<String>>,
 }
 
-/// Git configuration for per-event shallow clone management.
+/// Per-event shallow clone configuration.
 ///
-/// The `clone` field defaults to `false` (opt-in). A workflow that needs
-/// repository access must explicitly enable `[git] clone = true` in its
-/// TOML file. When enabled, the dispatcher performs a per-event shallow clone
-/// (`git clone --depth=1 -b <branch>`) into the event's workspace directory.
+/// Opt-in: a workflow that needs repository access must explicitly enable
+/// `[git] clone = true` in its TOML file. When enabled, the dispatcher
+/// performs a per-event shallow clone (`git clone --depth=1 -b <branch>`)
+/// into the event's workspace directory.
+///
+/// The `worktree` field is no longer supported. If a TOML file contains
+/// `worktree = true` (or `worktree = false`), loading will fail with a
+/// clear error message directing the user to use `clone = true` instead.
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(try_from = "GitConfigHelper")]
 pub struct GitConfig {
     /// Whether to perform a per-event shallow clone before running the workflow.
     /// When true, the dispatcher clones the repository into the event's
@@ -72,6 +78,33 @@ pub struct GitConfig {
     /// payload (e.g. for issue-assigned triggers). Defaults to `"main"`.
     #[serde(default = "default_branch")]
     pub default_branch: String,
+}
+
+/// Helper struct for deserialization that intercepts the removed `worktree` field.
+#[derive(Deserialize)]
+struct GitConfigHelper {
+    #[serde(default)]
+    clone: bool,
+    #[serde(default = "default_branch")]
+    default_branch: String,
+    /// Removed field — reject with a clear migration message.
+    worktree: Option<IgnoredAny>,
+}
+
+impl TryFrom<GitConfigHelper> for GitConfig {
+    type Error = String;
+
+    fn try_from(helper: GitConfigHelper) -> Result<Self, Self::Error> {
+        if helper.worktree.is_some() {
+            return Err("The `worktree` field in [git] is no longer supported. \
+                 Use `clone = true` instead for per-event shallow clone behavior."
+                .into());
+        }
+        Ok(GitConfig {
+            clone: helper.clone,
+            default_branch: helper.default_branch,
+        })
+    }
 }
 
 fn default_branch() -> String {
@@ -726,6 +759,35 @@ mod tests {
         assert!(wf.validate().is_ok());
         assert!(wf.git.clone);
         assert_eq!(wf.git.default_branch, "main");
+    }
+
+    #[test]
+    fn test_git_worktree_rejected() {
+        let toml = r#"
+            [trigger]
+            type = "github_issue_assigned"
+            allowed_users = ["testuser"]
+
+            [git]
+            clone = true
+            worktree = true
+
+            [[steps]]
+            name = "Step"
+            agent = "swe"
+            prompt_template = "Do something"
+        "#;
+        let result = toml::from_str::<Workflow>(toml);
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("worktree"),
+            "expected error to mention 'worktree', got: {msg}"
+        );
+        assert!(
+            msg.contains("clone = true"),
+            "expected error to suggest 'clone = true', got: {msg}"
+        );
     }
 
     #[test]

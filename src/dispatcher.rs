@@ -657,7 +657,8 @@ impl Dispatcher {
                 }
             };
 
-            let url = git::build_clone_url(platform_str, &owner, &repo, self.gitlab_host.as_deref());
+            let url =
+                git::build_clone_url(platform_str, &owner, &repo, self.gitlab_host.as_deref());
             tracing::info!(
                 %key,
                 branch = %branch,
@@ -878,8 +879,6 @@ pub fn new_dedup_sets() -> SharedDedupSets {
 pub fn workspace_dir(workdir: &Path, owner: &str, repo: &str, event_id: &str) -> PathBuf {
     workdir.join(owner).join(repo).join(event_id)
 }
-
-/// Build the per-event workspace directory path.
 
 /// Load and deserialize a JSON dedup file.
 ///

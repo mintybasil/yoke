@@ -460,10 +460,7 @@ mod tests {
     fn test_embed_token_in_url_gitlab() {
         let url = "https://gitlab.com/owner/repo.git";
         let result = embed_token_in_url(url, "gl-token", "oauth2");
-        assert_eq!(
-            result,
-            "https://oauth2:gl-token@gitlab.com/owner/repo.git"
-        );
+        assert_eq!(result, "https://oauth2:gl-token@gitlab.com/owner/repo.git");
     }
 
     #[test]
