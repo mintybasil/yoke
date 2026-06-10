@@ -199,37 +199,12 @@ The tokens used for webhook management must have the correct permissions/scopes,
 
 - `api` scope — required for all webhook management and git operations
 
-## Webhook Management
-
-The `webhooks` subcommand provides a unified CLI for managing repository webhooks across GitHub and GitLab. It reads the `platform` and `repos` settings from `config.toml` and authenticates using `GITHUB_TOKEN` or `GITLAB_TOKEN`.
-
-**List webhooks:**
-
-```bash
-yoke --config config.toml webhooks list
-```
-
-Lists all webhooks for each repository in `config.toml`, including ID, URL, events, active status, and redacted secret.
-
-**Add webhooks:**
-
-```bash
-yoke --config config.toml webhooks add [--workflows <DIR>]
-```
-
-Creates or updates webhooks on all configured repositories, subscribing to the event types derived from your workflow triggers. The operation is idempotent — existing webhooks matching the Yoke URL are updated; new ones are created.
-
-**Remove webhooks:**
-
-```bash
-yoke --config config.toml webhooks remove
-```
-
-Removes all Yoke webhooks (matched by URL) from each configured repository.
-
 ## Workflows
 
-Workflows are defined in `.toml` files in a directory (default: `./workflows`; override with `--workflows`). Each file specifies a trigger, optional git configuration, and a sequence of steps to execute.
+Workflows are defined in `.toml` files in a directory. Each file specifies a trigger, optional git configuration, and a sequence of steps to execute.
+
+> [!NOTE]
+> Sample workflows are available in [mintybasil/yoke-workflows](https://github.com/mintybasil/yoke-workflows).
 
 ### Example workflow
 
@@ -268,7 +243,6 @@ Create a PR with your changes.
 | `[trigger].type` | Event type (e.g. `github_issue_assigned`) | required |
 | `[trigger].allowed_users` | Users permitted to trigger this workflow | required |
 | `[git].clone` | Whether to git clone the repo | `true` |
-| `[git].worktree` | Whether to create a per-event worktree | `true` |
 | `[git].default_branch` | Branch for clone/worktree base | `"main"` |
 | `[[steps]].name` | Human-readable step label | required |
 | `[[steps]].agent` | Agent name from `config.toml` | required |
@@ -332,26 +306,33 @@ Triggers are platform-specific and must match the `platform` setting in `config.
 
 Yoke watches the `--workflows` directory and automatically reloads `.toml` files on change — no restart required. Validation errors during reload are logged and the previous workflow state is preserved.
 
-## CLI Reference
+## Webhook Management
 
+The `webhooks` subcommand provides a unified CLI for managing repository webhooks across GitHub and GitLab. It reads the `platform` and `repos` settings from `config.toml` and authenticates using `GITHUB_TOKEN` or `GITLAB_TOKEN`.
+
+**List webhooks:**
+
+```bash
+yoke --config config.toml webhooks list
 ```
-yoke [OPTIONS]
-yoke webhooks <SUBCOMMAND>
 
-Options:
-  --config <PATH>       Path to config.toml (default: config.toml)
-  --workflows <DIR>      Directory containing workflow TOML files (default: ./workflows)
-  --host <ADDR>          Server bind address (overrides config.toml)
-  --port <PORT>          Server listen port (overrides config.toml)
-  --webhook-host <HOST>  External hostname for webhook URLs (overrides config.toml webhook_host)
-  -h, --help             Print help
-  -V, --version          Print version
+Lists all webhooks for each repository in `config.toml`, including ID, URL, events, active status, and redacted secret.
 
-Webhook subcommands:
-  webhooks list              List webhooks for all configured repositories
-  webhooks add               Add or update webhooks based on workflow triggers
-  webhooks remove            Remove Yoke webhooks from all configured repositories
+**Add webhooks:**
+
+```bash
+yoke --config config.toml webhooks add [--workflows <DIR>]
 ```
+
+Creates or updates webhooks on all configured repositories, subscribing to the event types derived from your workflow triggers. The operation is idempotent — existing webhooks matching the Yoke URL are updated; new ones are created.
+
+**Remove webhooks:**
+
+```bash
+yoke --config config.toml webhooks remove
+```
+
+Removes all Yoke webhooks (matched by URL) from each configured repository.
 
 ## Secure Webhook Exposure with Tailscale Funnel
 
