@@ -294,50 +294,6 @@ impl Dispatcher {
         self.shutting_down.store(true, Ordering::Relaxed);
     }
 
-    /// Ensure a base clone of the repository exists and is up to date.
-    ///
-    /// The base repository is cloned to `{workdir}/repos/{owner}/{repo}` — a
-    /// shared, long-lived clone that serves as the parent for worktrees.
-    /// If the base repo already exists, it is fetched and fast-forwarded to
-    /// the remote's default branch. If it doesn't exist, it is cloned.
-    ///
-    /// Returns the path to the base repository on success.
-    fn ensure_base_repo(
-        &self,
-        owner: &str,
-        repo: &str,
-        platform: &str,
-        token: &str,
-    ) -> Result<PathBuf, git::GitError> {
-        let base_path = base_repo_path(&self.workdir, owner, repo);
-
-        if base_path.exists() {
-            tracing::debug!(
-                owner,
-                repo,
-                path = %base_path.display(),
-                "Base repo exists, pulling latest"
-            );
-            let git_repo = git2::Repository::open(&base_path).map_err(git::GitError::Git)?;
-            git::pull_repo(&git_repo, token, platform)?;
-        } else {
-            tracing::debug!(
-                owner,
-                repo,
-                path = %base_path.display(),
-                "Base repo not found, cloning"
-            );
-            // Create parent directories before cloning
-            if let Some(parent) = base_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let url = git::build_clone_url(platform, owner, repo, self.gitlab_host.as_deref());
-            git::clone_repo(&url, &base_path, token, platform)?;
-        }
-
-        Ok(base_path)
-    }
-
     /// Acquire a concurrency permit from the semaphore.
     ///
     /// Returns `Ok(Some(permit))` when concurrency is limited — the permit
@@ -590,15 +546,14 @@ impl Dispatcher {
         }
 
         // Determine git requirements from matching workflows.
-        // If any matching workflow requests git.clone, the base repo is
-        // ensured. If any requests git.worktree, a worktree is created.
+        // If any matching workflow requests git.clone, perform a per-event
+        // shallow clone into the workspace directory.
         let needs_clone = matching.iter().any(|(_, wf)| wf.git.clone);
-        let needs_worktree = matching.iter().any(|(_, wf)| wf.git.worktree);
         // Collect the default branch from the first workflow that has
-        // worktree enabled (used as fallback when event.branch is None).
+        // clone enabled (used as fallback when event.branch is None).
         let default_branch = matching
             .iter()
-            .find(|(_, wf)| wf.git.worktree)
+            .find(|(_, wf)| wf.git.clone)
             .map(|(_, wf)| wf.git.default_branch.clone());
 
         // Acquire concurrency permit
@@ -640,12 +595,10 @@ impl Dispatcher {
             return;
         }
 
-        // Git orchestration: when any matching workflow requests git.clone
-        // or git.worktree, ensure the base repo is cloned and optionally
-        // create a worktree at the event workspace directory.
-        // This pre-initializes the workspace so the agent has access to
-        // the repository source code.
-        if needs_clone || needs_worktree {
+        // Git orchestration: when any matching workflow requests git.clone,
+        // perform a per-event shallow clone into the workspace directory.
+        // Each event gets its own isolated clone — no shared .git state.
+        if needs_clone {
             let platform_str = match event.trigger_type.platform() {
                 Some(crate::config::Platform::Github) => "github",
                 Some(crate::config::Platform::Gitlab) => "gitlab",
@@ -684,81 +637,16 @@ impl Dispatcher {
                 }
             };
 
-            match self.ensure_base_repo(&owner, &repo, platform_str, &token) {
-                Ok(base_path) => {
-                    if needs_worktree {
-                        // Resolve the branch: prefer the webhook-provided branch,
-                        // fall back to the workflow's configured default_branch.
-                        let branch = event.branch.clone().or(default_branch);
-                        let branch = match branch {
-                            Some(b) => b,
-                            None => {
-                                tracing::error!(
-                                    %key,
-                                    "No branch available for worktree — event has no branch \
-                                     and no workflow default_branch is set"
-                                );
-                                let mut sets = self.dedup_sets.write().await;
-                                sets.mark_failed(&key);
-                                if permit.is_some() {
-                                    self.active_count.fetch_sub(1, Ordering::Relaxed);
-                                }
-                                return;
-                            }
-                        };
-
-                        let worktree_dir = event_ws_dir.join("worktree");
-                        tracing::info!(
-                            %key,
-                            branch = %branch,
-                            base = %base_path.display(),
-                            worktree = %worktree_dir.display(),
-                            "Creating worktree for git orchestration"
-                        );
-
-                        match git2::Repository::open(&base_path) {
-                            Ok(base_repo) => {
-                                if let Err(e) =
-                                    git::create_worktree(&base_repo, &branch, &worktree_dir)
-                                {
-                                    tracing::error!(
-                                        %key,
-                                        branch = %branch,
-                                        error = %e,
-                                        "Failed to create worktree"
-                                    );
-                                    let mut sets = self.dedup_sets.write().await;
-                                    sets.mark_failed(&key);
-                                    if permit.is_some() {
-                                        self.active_count.fetch_sub(1, Ordering::Relaxed);
-                                    }
-                                    return;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    %key,
-                                    path = %base_path.display(),
-                                    error = %e,
-                                    "Failed to open base repo for worktree creation"
-                                );
-                                let mut sets = self.dedup_sets.write().await;
-                                sets.mark_failed(&key);
-                                if permit.is_some() {
-                                    self.active_count.fetch_sub(1, Ordering::Relaxed);
-                                }
-                                return;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
+            // Resolve the branch: prefer the webhook-provided branch,
+            // fall back to the workflow's configured default_branch.
+            let branch = event.branch.clone().or(default_branch);
+            let branch = match branch {
+                Some(b) => b,
+                None => {
                     tracing::error!(
                         %key,
-                        owner = %owner,
-                        repo = %repo,
-                        error = %e,
-                        "Failed to ensure base repo for git orchestration"
+                        "No branch available for shallow clone — event has no branch \
+                         and no workflow default_branch is set"
                     );
                     let mut sets = self.dedup_sets.write().await;
                     sets.mark_failed(&key);
@@ -767,6 +655,31 @@ impl Dispatcher {
                     }
                     return;
                 }
+            };
+
+            let url = git::build_clone_url(platform_str, &owner, &repo, self.gitlab_host.as_deref());
+            tracing::info!(
+                %key,
+                branch = %branch,
+                url = %url,
+                clone_dir = %event_ws_dir.display(),
+                "Performing per-event shallow clone for git orchestration"
+            );
+
+            if let Err(e) = git::shallow_clone(&url, &branch, &event_ws_dir, &token, platform_str) {
+                tracing::error!(
+                    %key,
+                    branch = %branch,
+                    url = %url,
+                    error = %e,
+                    "Failed to perform shallow clone for git orchestration"
+                );
+                let mut sets = self.dedup_sets.write().await;
+                sets.mark_failed(&key);
+                if permit.is_some() {
+                    self.active_count.fetch_sub(1, Ordering::Relaxed);
+                }
+                return;
             }
         }
 
@@ -966,17 +879,7 @@ pub fn workspace_dir(workdir: &Path, owner: &str, repo: &str, event_id: &str) ->
     workdir.join(owner).join(repo).join(event_id)
 }
 
-/// Build the base repository clone path.
-///
-/// The format is `{workdir}/repos/{owner}/{repo}/`. This is a shared,
-/// long-lived clone that serves as the parent for per-event worktrees.
-pub fn base_repo_path(workdir: &Path, owner: &str, repo: &str) -> PathBuf {
-    workdir.join("repos").join(owner).join(repo)
-}
-
-// ---------------------------------------------------------------------------
-// Persistence: loading and saving dedup sets to JSON files
-// ---------------------------------------------------------------------------
+/// Build the per-event workspace directory path.
 
 /// Load and deserialize a JSON dedup file.
 ///

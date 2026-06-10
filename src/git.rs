@@ -1,10 +1,9 @@
-//! Git repository management: clone, pull, worktree creation/removal,
-//! and token-based authentication for GitHub and GitLab.
+//! Git repository management: shallow clone and token-based authentication
+//! for GitHub and GitLab.
 //!
 //! This module provides the git operations layer for Yoke's webhook-driven
-//! workflow execution. On first event for a repo, it clones the repository.
-//! On subsequent events, it pulls the latest changes. For each event, it
-//! can create an isolated worktree and clean it up after workflow completion.
+//! workflow execution. Each event gets its own isolated shallow clone
+//! (`git clone --depth=1`), which is cleaned up when the workflow finishes.
 //!
 //! Authentication uses `git2::RemoteCallbacks` with platform-specific
 //! token prefixes: `x-access-token` for GitHub, `oauth2` for GitLab.
@@ -12,10 +11,7 @@
 
 use std::path::Path;
 
-use git2::{
-    BranchType, Cred, CredentialType, FetchOptions, ProxyOptions, RemoteCallbacks, Repository,
-    WorktreeAddOptions, WorktreePruneOptions,
-};
+use git2::{Cred, CredentialType, FetchOptions, ProxyOptions, RemoteCallbacks, Repository};
 use thiserror::Error;
 
 /// Errors that can occur during git operations.
@@ -27,9 +23,6 @@ pub enum GitError {
     /// The target directory already exists and is not an empty directory.
     #[error("target directory already exists: {0}")]
     DirectoryExists(String),
-    /// The repository has uncommitted changes that prevent worktree removal.
-    #[error("uncommitted changes in worktree: {0}")]
-    DirtyWorktree(String),
     /// An I/O error occurred.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -86,7 +79,7 @@ pub fn sanitize_branch_name(label: &str) -> String {
 /// - GitLab: `https://{host}/{owner}/{repo}.git` (host defaults to `gitlab.com`)
 ///
 /// The URL does **not** include the token — authentication is handled
-/// separately via `RemoteCallbacks` during clone/pull operations.
+/// separately via `RemoteCallbacks` during clone operations.
 pub fn build_clone_url(
     platform: &str,
     owner: &str,
@@ -167,159 +160,93 @@ pub fn clone_repo(
     Ok(repo)
 }
 
-/// Pull (fetch + fast-forward merge) the latest changes from the remote.
+/// Perform a per-event shallow clone of a repository.
 ///
-/// Fetches from `origin` and fast-forwards the default branch to the
-/// remote's tip.  If a fast-forward is not possible (e.g. the remote
-/// was force-pushed or the local branch diverged due to a prior failed
-/// operation), the local branch is **force-reset** to the remote tip.
+/// Creates an isolated `git clone --depth=1 -b <branch>` at the specified
+/// path. Each event gets its own clone, eliminating all shared-state issues
+/// that existed with worktree-based approaches.
 ///
-/// The base repo is only used as an upstream mirror for worktrees, so
-/// preserving local history is never required — it must always reflect
-/// the remote state.
+/// Uses the `git` CLI rather than `git2` because libgit2 does not support
+/// shallow clones. Authentication is provided via the token embedded in the
+/// URL (HTTPS with embedded credentials).
 ///
-/// # Errors
+/// # Arguments
 ///
-/// Returns `GitError::Git` for fetch failures.
-pub fn pull_repo(repo: &Repository, token: &str, platform: &str) -> Result<(), GitError> {
-    let mut remote = repo.find_remote("origin")?;
-
-    let mut fo = create_fetch_options(token, platform);
-    remote.fetch(&[] as &[&str], Some(&mut fo), None)?;
-
-    // Find the remote's default branch
-    let remote_head = remote.default_branch()?;
-    let remote_branch_name = remote_head
-        .as_str()
-        .ok_or_else(|| git2::Error::from_str("remote HEAD is not a valid UTF-8 string"))?;
-
-    // Strip "refs/heads/" prefix to get the branch name
-    let branch_name = remote_branch_name
-        .strip_prefix("refs/heads/")
-        .unwrap_or(remote_branch_name);
-
-    // Find the fetched commit (FETCH_HEAD)
-    let fetch_head = repo.find_reference("FETCH_HEAD")?;
-    let fetch_commit = fetch_head.peel_to_commit()?;
-
-    // Get the local branch reference (may not exist yet on first pull)
-    let local_branch_ref = repo.find_reference(&format!("refs/heads/{branch_name}"));
-
-    match &local_branch_ref {
-        Ok(r) => {
-            let local_commit = r.peel_to_commit()?.id();
-            if local_commit == fetch_commit.id() {
-                // Already up to date — just advance HEAD if needed
-            } else if repo.merge_base(local_commit, fetch_commit.id())? == local_commit {
-                // Fast-forward: local is an ancestor of remote
-                let mut ref_mut = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
-                ref_mut.set_target(fetch_commit.id(), "fast-forward merge")?;
-            } else {
-                // Diverged (force-push or corrupted state) — force-reset
-                // the local branch to the remote tip.  The base repo is a
-                // mirror and must always match remote.
-                let mut ref_mut = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
-                ref_mut.set_target(fetch_commit.id(), "force-reset to remote tip")?;
-            }
-        }
-        Err(_) => {
-            // Branch doesn't exist locally yet — create it pointing at
-            // the fetched commit.
-            repo.reference(
-                &format!("refs/heads/{branch_name}"),
-                fetch_commit.id(),
-                false,
-                "create branch from remote",
-            )?;
-        }
-    }
-
-    // Keep HEAD pointing at the fetched commit.  The base repo is kept in
-    // detached-HEAD state (see create_worktree), so we must move HEAD
-    // forward explicitly — otherwise HEAD stays at the old commit and new
-    // branches created from it would start from a stale point.
-    repo.set_head_detached(fetch_commit.id())?;
-
-    Ok(())
-}
-
-/// Create a worktree for a specific event, branching from the default branch.
-///
-/// The worktree is created at `worktree_path` with the specified branch name.
-/// If the branch does not already exist, it is created from the current HEAD.
-/// Branch names containing `/` are sanitized for the worktree administrative
-/// directory name (replacing `/` with `-`) while the actual git branch keeps
-/// its original name.
+/// * `url` - The clone URL (from `build_clone_url`).
+/// * `branch` - The branch to checkout (e.g. `"main"` or `"ao/feature-123"`).
+/// * `path` - The local directory to clone into.
+/// * `token` - Platform-specific authentication token.
+/// * `platform` - `"github"` or `"gitlab"`.
 ///
 /// # Errors
 ///
-/// Returns `GitError::Git` for branch creation or worktree addition failures.
-pub fn create_worktree(
-    repo: &Repository,
-    branch_name: &str,
-    worktree_path: &Path,
+/// Returns `GitError::DirectoryExists` if the target path is non-empty.
+/// Returns `GitError::Io` if the `git` command fails to execute.
+/// Returns `GitError::Git` if the clone command exits with a non-zero status.
+pub fn shallow_clone(
+    url: &str,
+    branch: &str,
+    path: &Path,
+    token: &str,
+    platform: &str,
 ) -> Result<(), GitError> {
-    // Detach HEAD before creating the worktree.  Git refuses to create a
-    // worktree from a branch that is currently checked out in the parent
-    // repository ("reference refs/heads/<branch> is already checked out").
-    // Detaching HEAD (pointing it at the commit instead of the branch) means
-    // no branch ref is "checked out", allowing any branch to be used as a
-    // worktree source.
-    {
-        let head = repo.head()?;
-        let head_commit = head.peel_to_commit()?;
-        repo.set_head_detached(head_commit.id())?;
+    // Ensure parent directories exist
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
 
-    // Check if the branch already exists
-    let branch_exists = repo.find_branch(branch_name, BranchType::Local).is_ok();
-
-    if !branch_exists {
-        // Create the branch from HEAD
-        let head = repo.head()?;
-        let head_commit = head.peel_to_commit()?;
-        repo.branch(branch_name, &head_commit, false)?;
+    // Check if the target directory already exists and is not empty
+    if path.exists() && path.is_dir() {
+        let is_empty = path.read_dir().is_ok_and(|mut d| d.next().is_none());
+        if !is_empty {
+            return Err(GitError::DirectoryExists(path.display().to_string()));
+        }
     }
 
-    // Find the branch reference for the worktree
-    let branch_ref = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
+    // Build an authenticated URL by embedding the token.
+    // GitHub: https://x-access-token:<token>@github.com/owner/repo.git
+    // GitLab: https://oauth2:<token>@gitlab.com/owner/repo.git
+    let username = match platform {
+        "gitlab" => "oauth2",
+        _ => "x-access-token",
+    };
+    let auth_url = embed_token_in_url(url, token, username);
 
-    // Sanitize worktree name: git2 worktree_add creates directories under
-    // .git/worktrees/<name>/ — slashes create nested dirs that fail.
-    let worktree_name = branch_name.replace('/', "-");
+    let output = std::process::Command::new("git")
+        .args([
+            "clone",
+            "--depth=1",
+            "--branch",
+            branch,
+            &auth_url,
+            &path.to_string_lossy(),
+        ])
+        .output()?;
 
-    let mut opts = WorktreeAddOptions::new();
-    opts.reference(Some(&branch_ref));
-
-    repo.worktree(&worktree_name, worktree_path, Some(&opts))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitError::Git(git2::Error::from_str(&format!(
+            "shallow clone failed: {stderr}"
+        ))));
+    }
 
     Ok(())
 }
 
-/// Remove a worktree by branch name, cleaning up administrative data.
+/// Embed an authentication token into a git HTTPS URL.
 ///
-/// Uses `WorktreePruneOptions` to force-remove the worktree even if it's
-/// locked or the working directory is still present. Also deletes the
-/// local branch associated with the worktree.
-///
-/// # Errors
-///
-/// Returns `GitError::Git` if the worktree cannot be found or pruned.
-pub fn remove_worktree(repo: &Repository, branch_name: &str) -> Result<(), GitError> {
-    let worktree_name = branch_name.replace('/', "-");
-    let worktree = repo.find_worktree(&worktree_name)?;
-
-    let mut prune_opts = WorktreePruneOptions::new();
-    prune_opts.valid(true).locked(true).working_tree(true);
-
-    worktree.prune(Some(&mut prune_opts))?;
-
-    // Clean up the branch if it still exists
-    if let Ok(mut branch) = repo.find_branch(branch_name, BranchType::Local) {
-        branch.delete()?;
+/// Converts `https://github.com/owner/repo.git` into
+/// `https://x-access-token:<token>@github.com/owner/repo.git`.
+fn embed_token_in_url(url: &str, token: &str, username: &str) -> String {
+    // Parse the URL and inject credentials
+    if let Ok(mut parsed) = url::Url::parse(url) {
+        let _ = parsed.set_username(username);
+        let _ = parsed.set_password(Some(token));
+        parsed.to_string()
+    } else {
+        // Fallback: manual string manipulation
+        url.replacen("https://", &format!("https://{username}:{token}@"), 1)
     }
-
-    Ok(())
 }
 
 /// Check whether a repository contains uncommitted changes.
@@ -498,8 +425,10 @@ mod tests {
         // The error should be a GitError::Git, not DirectoryExists
         let err = result.err().unwrap();
         match err {
+            GitError::DirectoryExists(_) => {
+                panic!("empty dir should not trigger DirectoryExists")
+            }
             GitError::Git(_) => {} // expected: clone fails because repo doesn't exist
-            GitError::DirectoryExists(_) => panic!("empty dir should not trigger DirectoryExists"),
             other => panic!("unexpected error: {other}"),
         }
     }
@@ -515,6 +444,95 @@ mod tests {
         assert!(!has_uncommitted_changes(&repo).unwrap());
     }
 
+    // --- embed_token_in_url tests ---
+
+    #[test]
+    fn test_embed_token_in_url_github() {
+        let url = "https://github.com/owner/repo.git";
+        let result = embed_token_in_url(url, "secret-token", "x-access-token");
+        assert_eq!(
+            result,
+            "https://x-access-token:secret-token@github.com/owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn test_embed_token_in_url_gitlab() {
+        let url = "https://gitlab.com/owner/repo.git";
+        let result = embed_token_in_url(url, "gl-token", "oauth2");
+        assert_eq!(
+            result,
+            "https://oauth2:gl-token@gitlab.com/owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn test_embed_token_in_url_gitlab_custom_host() {
+        let url = "https://gitlab.mycompany.com/owner/repo.git";
+        let result = embed_token_in_url(url, "my-token", "oauth2");
+        assert_eq!(
+            result,
+            "https://oauth2:my-token@gitlab.mycompany.com/owner/repo.git"
+        );
+    }
+
+    // --- shallow_clone directory checks ---
+
+    #[test]
+    fn test_shallow_clone_non_empty_dir_fails() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let non_empty_dir = dir.path().join("target");
+        fs::create_dir_all(&non_empty_dir).unwrap();
+        fs::write(non_empty_dir.join("file.txt"), "data").unwrap();
+
+        let result = shallow_clone(
+            "https://github.com/nonexistent/repo.git",
+            "main",
+            &non_empty_dir,
+            "fake-token",
+            "github",
+        );
+
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        match err {
+            GitError::DirectoryExists(path) => {
+                assert_eq!(path, non_empty_dir.display().to_string());
+            }
+            other => panic!("expected DirectoryExists, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_shallow_clone_empty_dir_allowed() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let empty_dir = dir.path().join("target");
+        fs::create_dir_all(&empty_dir).unwrap();
+
+        // This will fail because the URL is invalid, but it should NOT
+        // fail with DirectoryExists
+        let result = shallow_clone(
+            "https://github.com/nonexistent/repo.git",
+            "main",
+            &empty_dir,
+            "fake-token",
+            "github",
+        );
+
+        // The error should be a GitError::Git or Io, not DirectoryExists
+        let err = result.err().unwrap();
+        match err {
+            GitError::DirectoryExists(_) => {
+                panic!("empty dir should not trigger DirectoryExists")
+            }
+            GitError::Git(_) | GitError::Io(_) => {} // expected
+        }
+    }
+
     // --- GitError display tests ---
 
     #[test]
@@ -523,12 +541,6 @@ mod tests {
         assert_eq!(
             format!("{err}"),
             "target directory already exists: /some/path"
-        );
-
-        let err = GitError::DirtyWorktree("modified file".to_string());
-        assert_eq!(
-            format!("{err}"),
-            "uncommitted changes in worktree: modified file"
         );
     }
 }
