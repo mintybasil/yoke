@@ -71,8 +71,8 @@ post_hooks = [{ type = "file_not_empty", path = "plan.md" }]
 ### 4. Set environment variables
 
 ```bash
-export HERMES_API_KEY="your-hermes-api-key"
-export WEBHOOK_SECRET="your-webhook-secret"
+export HERMES_API_KEY="***"
+export WEBHOOK_SECRET="***"
 export GITHUB_TOKEN="***"
 ```
 
@@ -317,7 +317,7 @@ Triggers are platform-specific and must match the `platform` setting in `config.
 | `github_issue_assigned` | Issue assigned to a user | `issue_number`, `assignee`, `issue_title`, `issue_body` | `assigned_to` |
 | `github_issue_comment_mention` | Comment on an issue mentions a user | `issue_number`, `comment_id`, `comment_body` | `mentioned_user` |
 | `github_pull_request_review` | Pull request review submitted | `pr_number`, `review_id`, `review_body` | — |
-| `github_pull_request_comment_mention` | Pull request review comment | `pr_number`, `review_id`, `comment_id`, `comment_body` | `mentioned_user` |
+| `github_pull_request_comment_mention` | Comment on a PR mentions a user | `pr_number`, `comment_id`, `comment_body` | `mentioned_user` |
 
 **GitLab triggers** (`platform = "gitlab"`):
 
