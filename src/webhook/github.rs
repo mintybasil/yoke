@@ -320,13 +320,62 @@ pub fn parse_github_event(
 }
 
 // ---------------------------------------------------------------------------
+// Mention extraction
+// ---------------------------------------------------------------------------
+
+/// Extract the first `@username` mention from a comment body.
+///
+/// GitHub usernames may contain alphanumeric characters and hyphens, but
+/// cannot start or end with a hyphen. This function is intentionally
+/// permissive — it accepts any sequence of `[a-zA-Z0-9_-]` after `@`
+/// (minimum one character) to handle edge cases in real webhook data.
+///
+/// Returns `Some(username)` with the first match (without the `@` prefix),
+/// or `None` if no mention is found.
+pub fn extract_mention(body: &str) -> Option<String> {
+    let bytes = body.as_bytes();
+    let len = bytes.len();
+
+    for i in 0..len {
+        if bytes[i] != b'@' {
+            continue;
+        }
+        // @ at the start of the string, or preceded by a non-word character
+        if i > 0 && bytes[i - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+        // Collect username characters after @
+        let mut end = i + 1;
+        if end >= len || !bytes[end].is_ascii_alphanumeric() {
+            continue; // lone @ or @- followed by non-alnum
+        }
+        while end < len
+            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'-' || bytes[end] == b'_')
+        {
+            end += 1;
+        }
+        // Trim trailing hyphens/underscores (GitHub doesn't allow these at
+        // the end of usernames, but be defensive about real data).
+        while end > i + 1 && (bytes[end - 1] == b'-' || bytes[end - 1] == b'_') {
+            end -= 1;
+        }
+        if end > i + 1 {
+            let username = &body[i + 1..end];
+            return Some(username.to_string());
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Trigger mapping
 // ---------------------------------------------------------------------------
 
 /// Map a parsed `GitHubEvent` to a `TriggerType`.
 ///
 /// Returns `None` if the event action doesn't match any configured trigger
-/// type (e.g. an `issues` event with action `opened` instead of `assigned`).
+/// type (e.g. an `issues` event with action `opened` instead of `assigned`),
+/// or if a mention-based trigger has no `@mention` in the comment body.
 pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
     match (&event.event_type as &str, event.action.as_str()) {
         (GITHUB_ISSUES, "assigned") => {
@@ -343,17 +392,18 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 GitHubPayload::IssueComment(p) => p,
                 _ => return None,
             };
+            let mentioned_user = extract_mention(payload.comment.body.as_deref().unwrap_or(""));
+
+            // Only fire mention triggers when an @mention is actually present.
+            mentioned_user.as_ref()?;
+
             // GitHub uses issue_comment for both issue and PR comments.
             // When a pull_request field is present inside the issue object,
             // this is a comment on a PR — map it to the PR comment trigger.
             if payload.issue.pull_request.is_some() {
-                Some(TriggerType::GithubPullRequestCommentMention {
-                    mentioned_user: None,
-                })
+                Some(TriggerType::GithubPullRequestCommentMention { mentioned_user })
             } else {
-                Some(TriggerType::GithubIssueCommentMention {
-                    mentioned_user: None,
-                })
+                Some(TriggerType::GithubIssueCommentMention { mentioned_user })
             }
         }
         (GITHUB_PULL_REQUEST_REVIEW, "submitted") => {
@@ -372,9 +422,12 @@ pub fn map_to_trigger_event(event: &GitHubEvent) -> Option<TriggerType> {
                 .comment
                 .pull_request_review_id
                 .unwrap_or(payload.comment.id);
-            Some(TriggerType::GithubPullRequestCommentMention {
-                mentioned_user: None,
-            })
+            let mentioned_user = extract_mention(payload.comment.body.as_deref().unwrap_or(""));
+
+            // Only fire mention triggers when an @mention is actually present.
+            mentioned_user.as_ref()?;
+
+            Some(TriggerType::GithubPullRequestCommentMention { mentioned_user })
         }
         _ => None,
     }
@@ -474,6 +527,7 @@ pub fn handle_github_webhook(
             );
         }
         GitHubPayload::IssueComment(p) => {
+            let mentioned = extract_mention(p.comment.body.as_deref().unwrap_or(""));
             if p.issue.pull_request.is_some() {
                 // Comment on a PR via issue_comment event — use PR variables.
                 // The issue number is the PR number when pull_request is present.
@@ -483,6 +537,9 @@ pub fn handle_github_webhook(
                     "comment_body".to_string(),
                     p.comment.body.clone().unwrap_or_default(),
                 );
+                if let Some(user) = &mentioned {
+                    variables.insert("mentioned_user".to_string(), user.clone());
+                }
             } else {
                 // Genuine issue comment
                 variables.insert("issue_number".to_string(), p.issue.number.to_string());
@@ -491,6 +548,9 @@ pub fn handle_github_webhook(
                     "comment_body".to_string(),
                     p.comment.body.clone().unwrap_or_default(),
                 );
+                if let Some(user) = &mentioned {
+                    variables.insert("mentioned_user".to_string(), user.clone());
+                }
             }
         }
         GitHubPayload::PullRequestReview(p) => {
@@ -515,6 +575,9 @@ pub fn handle_github_webhook(
                 "comment_body".to_string(),
                 p.comment.body.clone().unwrap_or_default(),
             );
+            if let Some(user) = extract_mention(p.comment.body.as_deref().unwrap_or("")) {
+                variables.insert("mentioned_user".to_string(), user);
+            }
         }
     }
 
@@ -766,6 +829,93 @@ mod tests {
         ));
     }
 
+    // --- Mention extraction tests ---
+
+    #[test]
+    fn test_extract_mention_simple() {
+        assert_eq!(
+            extract_mention("@alice please review"),
+            Some("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_mention_in_middle() {
+        assert_eq!(
+            extract_mention("hey @bob can you check this?"),
+            Some("bob".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_mention_with_hyphens() {
+        assert_eq!(
+            extract_mention("@some-user-name test"),
+            Some("some-user-name".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_mention_with_underscores() {
+        assert_eq!(
+            extract_mention("@user_name test"),
+            Some("user_name".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_mention_no_mention() {
+        assert_eq!(extract_mention("no mention here"), None);
+    }
+
+    #[test]
+    fn test_extract_mention_empty_string() {
+        assert_eq!(extract_mention(""), None);
+    }
+
+    #[test]
+    fn test_extract_mention_first_of_multiple() {
+        assert_eq!(
+            extract_mention("@alice @bob both mentioned"),
+            Some("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_mention_stops_at_punctuation() {
+        assert_eq!(extract_mention("@alice! what"), Some("alice".to_string()));
+        assert_eq!(extract_mention("@alice, bob"), Some("alice".to_string()));
+        assert_eq!(extract_mention("@alice."), Some("alice".to_string()));
+    }
+
+    #[test]
+    fn test_extract_mention_lone_at_sign() {
+        assert_eq!(extract_mention("@ alone"), None);
+    }
+
+    #[test]
+    fn test_extract_mention_at_start() {
+        assert_eq!(extract_mention("@alice"), Some("alice".to_string()));
+    }
+
+    #[test]
+    fn test_extract_mention_not_email() {
+        // @ inside an email should not be treated as a mention
+        assert_eq!(extract_mention("user@example.com"), None);
+    }
+
+    #[test]
+    fn test_extract_mention_trailing_hyphen_trimmed() {
+        // Trailing hyphens should be trimmed since GitHub doesn't allow them
+        assert_eq!(extract_mention("@alice- test"), Some("alice".to_string()));
+    }
+
+    #[test]
+    fn test_extract_mention_trailing_underscore_trimmed() {
+        // Trailing underscores should be trimmed
+        assert_eq!(extract_mention("@alice_ test"), Some("alice".to_string()));
+    }
+
     // --- Trigger mapping tests ---
 
     #[test]
@@ -821,6 +971,37 @@ mod tests {
             trigger.label(),
             crate::workflow::triggers::GITHUB_ISSUE_COMMENT_MENTION
         );
+        // Verify the mentioned_user is extracted from the comment body
+        if let TriggerType::GithubIssueCommentMention { mentioned_user } = trigger {
+            assert_eq!(mentioned_user, Some("alice".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_map_issue_comment_created_no_mention_returns_none() {
+        // An issue comment without @mention should not produce a mention trigger.
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 12345,
+                "body": "Just a regular comment, no mention"
+            },
+            "issue": {
+                "number": 42,
+                "title": "Some issue",
+                "assignees": []
+            },
+            "sender": {"login": "charlie"},
+            "repository": {"full_name": "owner/repo"}
+        }"#;
+
+        let event = parse_github_event("issue_comment", body.as_bytes()).unwrap();
+        let result = map_to_trigger_event(&event);
+        assert!(
+            result.is_none(),
+            "Expected None for issue comment without @mention, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -850,12 +1031,38 @@ mod tests {
     }
 
     #[test]
-    fn test_map_pull_request_review_comment_created() {
+    fn test_map_pull_request_review_comment_created_no_mention() {
+        // PR review comment without @mention should not produce a mention trigger.
         let body = r#"{
             "action": "created",
             "comment": {
                 "id": 555,
                 "body": "Nit: fix typo",
+                "pull_request_review_id": 999
+            },
+            "pull_request": {
+                "number": 7
+            },
+            "sender": {"login": "commenter"},
+            "repository": {"full_name": "owner/repo"}
+        }"#;
+
+        let event = parse_github_event("pull_request_review_comment", body.as_bytes()).unwrap();
+        let result = map_to_trigger_event(&event);
+        assert!(
+            result.is_none(),
+            "Expected None for PR review comment without @mention, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_map_pull_request_review_comment_created_with_mention() {
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 555,
+                "body": "@alice please fix this",
                 "pull_request_review_id": 999
             },
             "pull_request": {
@@ -876,6 +1083,10 @@ mod tests {
             trigger.label(),
             crate::workflow::triggers::GITHUB_PULL_REQUEST_COMMENT_MENTION
         );
+        // Verify the mentioned_user is extracted
+        if let TriggerType::GithubPullRequestCommentMention { mentioned_user } = trigger {
+            assert_eq!(mentioned_user, Some("alice".to_string()));
+        }
     }
 
     #[test]
@@ -1000,6 +1211,11 @@ mod tests {
         ));
         assert_eq!(event.event_id, "issue-42-comment-12345");
         assert_eq!(event.variables.get("comment_id").unwrap(), "12345");
+        // Verify mentioned_user is extracted and available as a variable
+        assert_eq!(event.variables.get("mentioned_user").unwrap(), "alice");
+        if let TriggerType::GithubIssueCommentMention { mentioned_user } = event.trigger_type {
+            assert_eq!(mentioned_user, Some("alice".to_string()));
+        }
     }
 
     #[test]
@@ -1038,7 +1254,7 @@ mod tests {
             "action": "created",
             "comment": {
                 "id": 555,
-                "body": "Nit: fix typo",
+                "body": "@bob please take a look",
                 "pull_request_review_id": 999
             },
             "pull_request": {"number": 7},
@@ -1062,6 +1278,42 @@ mod tests {
         ));
         assert_eq!(event.event_id, "pr-7-comment-555");
         assert_eq!(event.variables.get("comment_id").unwrap(), "555");
+        // Verify mentioned_user is extracted and available as a variable
+        assert_eq!(event.variables.get("mentioned_user").unwrap(), "bob");
+        if let TriggerType::GithubPullRequestCommentMention { mentioned_user } = event.trigger_type
+        {
+            assert_eq!(mentioned_user, Some("bob".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_handle_github_webhook_pr_review_comment_no_mention_returns_no_matching_trigger() {
+        // PR review comment without @mention should not produce a trigger.
+        let secret = "test-secret";
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 555,
+                "body": "Nit: fix typo",
+                "pull_request_review_id": 999
+            },
+            "pull_request": {"number": 7},
+            "sender": {"login": "commenter"},
+            "repository": {"full_name": "owner/repo"}
+        }"#;
+        let payload = body.as_bytes();
+        let signature = make_signature(payload, secret);
+
+        let result = handle_github_webhook(
+            &signature,
+            GITHUB_PULL_REQUEST_REVIEW_COMMENT,
+            payload,
+            secret,
+        );
+        assert!(matches!(
+            result,
+            Err(WebhookError::NoMatchingTrigger { .. })
+        ));
     }
 
     #[test]
@@ -1129,9 +1381,8 @@ mod tests {
 
     #[test]
     fn test_pr_review_comment_should_not_trigger_issue_mention() {
-        // An issue_comment event on a PR should map to
-        // GithubPullRequestCommentMention, not GithubIssueCommentMention.
-        // In GitHub's schema, pull_request is nested inside the issue object.
+        // An issue_comment event on a PR without @mention should map to None.
+        // Only comments with @mentions produce mention triggers.
         let body = r#"{
             "action": "created",
             "comment": {
@@ -1154,19 +1405,19 @@ mod tests {
         }"#;
 
         let event = parse_github_event("issue_comment", body.as_bytes()).unwrap();
-        let trigger = map_to_trigger_event(&event).expect("Should map to a trigger");
+        let result = map_to_trigger_event(&event);
 
         assert!(
-            matches!(trigger, TriggerType::GithubPullRequestCommentMention { .. }),
-            "PR review comments via issue_comment should trigger GithubPullRequestCommentMention, got {:?}",
-            trigger
+            result.is_none(),
+            "Expected None for PR comment without @mention, got {:?}",
+            result
         );
     }
 
     #[test]
     fn test_issue_comment_without_pr_should_trigger_issue_mention() {
-        // An issue_comment event without a pull_request field should still
-        // map to GithubIssueCommentMention (genuine issue comment).
+        // An issue_comment event without a pull_request field and with @mention
+        // should map to GithubIssueCommentMention with the mentioned user.
         let body = r#"{
             "action": "created",
             "comment": {
@@ -1189,6 +1440,38 @@ mod tests {
             matches!(trigger, TriggerType::GithubIssueCommentMention { .. }),
             "Issue comments without pull_request should trigger GithubIssueCommentMention, got {:?}",
             trigger
+        );
+        // Verify mentioned_user is extracted
+        if let TriggerType::GithubIssueCommentMention { mentioned_user } = trigger {
+            assert_eq!(mentioned_user, Some("alice".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_issue_comment_without_mention_returns_none() {
+        // An issue_comment event without any @mention should not produce a
+        // mention trigger, even if it's a valid issue comment.
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 12345,
+                "body": "Just a regular comment"
+            },
+            "issue": {
+                "number": 42,
+                "title": "Some issue",
+                "assignees": []
+            },
+            "sender": {"login": "charlie"},
+            "repository": {"full_name": "owner/repo"}
+        }"#;
+
+        let event = parse_github_event("issue_comment", body.as_bytes()).unwrap();
+        let result = map_to_trigger_event(&event);
+        assert!(
+            result.is_none(),
+            "Expected None for issue comment without @mention, got {:?}",
+            result
         );
     }
 
@@ -1257,8 +1540,8 @@ mod tests {
 
     #[test]
     fn test_handle_github_webhook_pr_comment_via_issue_comment() {
-        // Full pipeline test: issue_comment on a PR should produce
-        // PR-style event_id and variables.
+        // Full pipeline test: issue_comment on a PR with @mention should produce
+        // PR-style event_id and variables with the mentioned user extracted.
         // In GitHub's schema, pull_request is nested inside the issue object,
         // and issue.number IS the PR number.
         let secret = "test-secret";
@@ -1266,7 +1549,7 @@ mod tests {
             "action": "created",
             "comment": {
                 "id": 99999,
-                "body": "PR comment via issue_comment"
+                "body": "@carol please review this PR"
             },
             "issue": {
                 "number": 42,
@@ -1298,5 +1581,45 @@ mod tests {
         assert_eq!(event.variables.get("comment_id").unwrap(), "99999");
         // Should NOT have issue_number
         assert!(!event.variables.contains_key("issue_number"));
+        // Verify mentioned_user is extracted and available as a variable
+        assert_eq!(event.variables.get("mentioned_user").unwrap(), "carol");
+        if let TriggerType::GithubPullRequestCommentMention { mentioned_user } = event.trigger_type
+        {
+            assert_eq!(mentioned_user, Some("carol".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_handle_github_webhook_pr_comment_via_issue_comment_no_mention() {
+        // PR comment via issue_comment without @mention should not produce a trigger.
+        let secret = "test-secret";
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 99999,
+                "body": "PR comment via issue_comment"
+            },
+            "issue": {
+                "number": 42,
+                "title": "Some PR",
+                "assignees": [],
+                "pull_request": {
+                    "url": "https://api.github.com/repos/owner/repo/pulls/42",
+                    "html_url": "https://github.com/owner/repo/pull/42",
+                    "diff_url": "https://github.com/owner/repo/pull/42.diff",
+                    "patch_url": "https://github.com/owner/repo/pull/42.patch"
+                }
+            },
+            "sender": {"login": "reviewer"},
+            "repository": {"full_name": "owner/repo"}
+        }"#;
+        let payload = body.as_bytes();
+        let signature = make_signature(payload, secret);
+
+        let result = handle_github_webhook(&signature, GITHUB_ISSUE_COMMENT, payload, secret);
+        assert!(matches!(
+            result,
+            Err(WebhookError::NoMatchingTrigger { .. })
+        ));
     }
 }
