@@ -9,19 +9,25 @@
 //!
 //! # First-run behavior
 //!
-//! On the very first run (no persisted watermark), catch-up is **skipped**
-//! because there is no baseline timestamp to compare against. Without a
-//! watermark, replaying all events within the `catch_up_max_age_hours` window
-//! could trigger unexpected behaviour. Catch-up resumes on subsequent starts
-//! once a watermark has been established.
+//! On the very first run (no persisted watermarks for any repo), catch-up is
+//! **skipped entirely** before entering the per-repo loop because there is no
+//! baseline timestamp to compare against. Without watermarks, replaying all
+//! events within the `catch_up_max_age_hours` window could trigger unexpected
+//! behaviour. Catch-up resumes on subsequent starts once watermarks have been
+//! established by processing live webhook events.
+//!
+//! If some repos have watermarks and others don't (e.g. a new repo was added
+//! to config after a previous run), the per-repo check still skips individual
+//! repos with no watermark.
 //!
 //! # Flow
 //!
 //! ```text
 //! Server startup
 //!   ├── Load watermarks from watermark.json
+//!   ├── Watermark store empty? → Skip catch-up entirely (first run)
 //!   ├── For each configured repo:
-//!   │     ├── No watermark? → Skip catch-up (first run)
+//!   │     ├── No watermark for this repo? → Skip catch-up for this repo
 //!   │     ├── Get last_processed_at from watermark
 //!   │     ├── Get hook_id for our webhook (from list_webhooks)
 //!   │     ├── GitHub: list_deliveries(owner, repo, hook_id)
@@ -96,6 +102,22 @@ pub async fn run_catch_up(
     if config.repos.is_empty() {
         tracing::info!("No repos configured, skipping catch-up");
         return CatchUpSummary::default();
+    }
+
+    // On the very first run (no watermarks at all), skip catch-up entirely.
+    // Without a persisted baseline timestamp, replaying events within the
+    // max_age window could trigger unexpected behaviour. Catch-up will
+    // resume on subsequent starts once watermarks have been established
+    // by processing live webhook events.
+    {
+        let store = watermark_store.read().await;
+        if store.marks.is_empty() {
+            tracing::info!(
+                repo_count = config.repos.len(),
+                "No watermarks found — skipping catch-up on first run"
+            );
+            return CatchUpSummary::default();
+        }
     }
 
     // Derive the cutoff time from max_age_hours
@@ -928,15 +950,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_catch_up_skips_on_first_run_no_watermark() {
-        // When no watermark exists for a repo, catch-up should be skipped
-        // entirely to avoid replaying all events within the max_age window.
+        // When no watermarks exist at all, catch-up should be skipped entirely
+        // at the top level to avoid iterating through every repo and to
+        // prevent replaying all events within the max_age window.
         let config = test_config();
         let watermark_store = Arc::new(RwLock::new(WatermarkStore::default()));
         let (tx, _rx) = tokio::sync::mpsc::channel(100);
 
         let summary = run_catch_up(&config, &config.server, &watermark_store, &tx).await;
-        // The repo should be processed (no error), but with zero events
-        assert_eq!(summary.repos_processed, 1);
+        // No repos should be processed — the top-level check skips everything
+        assert_eq!(summary.repos_processed, 0);
         assert_eq!(summary.repos_with_errors, 0);
         assert_eq!(summary.events_replayed, 0);
         assert_eq!(summary.events_skipped, 0);
