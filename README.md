@@ -6,13 +6,7 @@ A Rust daemon that receives webhook events from GitHub or GitLab and runs multi-
 
 This walkthrough shows a complete setup from zero to a running Yoke instance with webhooks configured on GitHub.
 
-### 1. Build
-
-```bash
-cargo build
-```
-
-### 2. Create a config file
+### 1. Create a config file
 
 Create `config.toml` in your project directory:
 
@@ -41,9 +35,9 @@ port = 8644
 webhook_host = "yoke.example.com"
 ```
 
-### 3. Create a workflow
+### 2. Create a workflow
 
-Create a `.toml` file in your workflows directory (default: `./workflows`):
+Create a `.toml` file in your workflows directory (default: `./workflows`), see [yoke-workflows](https://github.com/mintybasil/yoke-workflows) for sample workflows:
 
 ```toml
 [trigger]
@@ -53,7 +47,6 @@ allowed_users = ["your-username"]
 
 [git]
 clone = true
-worktree = true
 default_branch = "main"
 
 [[steps]]
@@ -68,7 +61,7 @@ prompt_template = "Implement the plan in plan.md"
 post_hooks = [{ type = "file_not_empty", path = "plan.md" }]
 ```
 
-### 4. Set environment variables
+### 3. Set environment variables
 
 ```bash
 export HERMES_API_KEY="***"
@@ -76,7 +69,7 @@ export WEBHOOK_SECRET="***"
 export GITHUB_TOKEN="***"
 ```
 
-### 5. Register webhooks on your repositories
+### 4. Register webhooks on your repositories
 
 ```bash
 yoke --config config.toml webhooks add --workflows .
@@ -90,13 +83,9 @@ Verify the webhooks were created:
 yoke --config config.toml webhooks list
 ```
 
-### 6. Run Yoke
+### 5. Run Yoke
 
 ```bash
-# Run with defaults (loads config.toml from current directory)
-cargo run
-
-# Or specify config and workflows paths
 cargo run -- --config /path/to/config.toml --workflows /path/to/workflows
 ```
 
