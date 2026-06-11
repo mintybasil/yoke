@@ -211,6 +211,7 @@ Create a PR with your changes.
 |---|---|---|
 | `[trigger].type` | Event type (e.g. `github_issue_assigned`) | Yes |
 | `[trigger].allowed_users` | Users permitted to trigger this workflow | Yes |
+| `[trigger].mentioned_user` | Filter: only match events mentioning this user (mention triggers only) | No |
 | `[git].clone` | Whether to git clone the repo | No (default: `true`) |
 | `[git].default_branch` | Branch for clone/worktree base | No (default: `"main"`) |
 | `[[steps]].name` | Human-readable step label | Yes |
@@ -258,9 +259,9 @@ Triggers are platform-specific and must match the `platform` setting in `config.
 | Trigger | Event | Variables | Event Filter |
 |---|---|---|---|
 | `github_issue_assigned` | Issue assigned to a user | `issue_number`, `assignee`, `issue_title`, `issue_body` | `assigned_to` |
-| `github_issue_comment_mention` | Comment on an issue mentions a user | `issue_number`, `comment_id`, `comment_body` | `mentioned_user` |
+| `github_issue_comment_mention` | Comment on an issue mentions a user | `issue_number`, `comment_id`, `comment_body`, `mentioned_user` | `mentioned_user` |
 | `github_pull_request_review` | Pull request review submitted | `pr_number`, `review_id`, `review_body` | none |
-| `github_pull_request_comment_mention` | Pull request review comment | `pr_number`, `comment_id`, `comment_body` | `mentioned_user` |
+| `github_pull_request_comment_mention` | Pull request review comment | `pr_number`, `comment_id`, `comment_body`, `mentioned_user` | `mentioned_user` |
 
 **GitLab triggers** (`platform = "gitlab"`):
 
