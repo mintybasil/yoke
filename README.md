@@ -211,7 +211,6 @@ Create a PR with your changes.
 |---|---|---|
 | `[trigger].type` | Event type (e.g. `github_issue_assigned`) | Yes |
 | `[trigger].allowed_users` | Users permitted to trigger this workflow | Yes |
-| `[trigger].mentioned_user` | Filter: only match events mentioning this user (mention triggers only) | No |
 | `[git].clone` | Whether to git clone the repo | No (default: `true`) |
 | `[git].default_branch` | Branch for clone/worktree base | No (default: `"main"`) |
 | `[[steps]].name` | Human-readable step label | Yes |
