@@ -156,7 +156,6 @@ catch_up_max_age_hours = 24       # max age of events to replay (hours)
 
 When Yoke restarts after downtime, it automatically replays webhook events that were missed while offline. Catch-up queries the platform's delivery APIs for events newer than the last-processed watermark, up to `catch_up_max_age_hours` ago.
 
-> **First run:** If no watermark exists for a repository (e.g., the very first startup), catch-up is skipped for that repo. Without a baseline timestamp, replaying all events within the `catch_up_max_age_hours` window could trigger unexpected behaviour. Catch-up resumes on subsequent starts once a watermark has been established.
 | Setting | Default | Description |
 |---|---|---|
 | `catch_up_enabled` | `true` | Enable/disable catch-up on startup |
