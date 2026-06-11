@@ -7,12 +7,21 @@
 //! channel used by live webhooks. The existing dedup sets naturally prevent
 //! re-processing of events that were already handled.
 //!
+//! # First-run behavior
+//!
+//! On the very first run (no persisted watermark), catch-up is **skipped**
+//! because there is no baseline timestamp to compare against. Without a
+//! watermark, replaying all events within the `catch_up_max_age_hours` window
+//! could trigger unexpected behaviour. Catch-up resumes on subsequent starts
+//! once a watermark has been established.
+//!
 //! # Flow
 //!
 //! ```text
 //! Server startup
 //!   ├── Load watermarks from watermark.json
 //!   ├── For each configured repo:
+//!   │     ├── No watermark? → Skip catch-up (first run)
 //!   │     ├── Get last_processed_at from watermark
 //!   │     ├── Get hook_id for our webhook (from list_webhooks)
 //!   │     ├── GitHub: list_deliveries(owner, repo, hook_id)
@@ -142,9 +151,14 @@ struct RepoCatchUpResult {
 
 /// Run catch-up for a single repository.
 ///
-/// Queries the platform API for events newer than the watermark (or the
-/// cutoff time, whichever is more recent), and sends them through the
-/// dispatcher channel.
+/// If no watermark exists for this repo, catch-up is skipped entirely —
+/// on the very first run there is no baseline to compare against, so
+/// replaying all events within the `catch_up_max_age_hours` window could
+/// trigger unexpected behaviour.
+///
+/// When a watermark exists, queries the platform API for events newer
+/// than the watermark (or the cutoff time, whichever is more recent),
+/// and sends them through the dispatcher channel.
 async fn run_catch_up_for_repo(
     config: &Config,
     repo: &Repo,
@@ -154,7 +168,11 @@ async fn run_catch_up_for_repo(
 ) -> Result<RepoCatchUpResult, String> {
     let repo_key = format!("{}/{}", repo.owner, repo.repo);
 
-    // Determine the starting point from the watermark
+    // Determine the starting point from the watermark.
+    // If no watermark exists for this repo, skip catch-up entirely —
+    // on the very first run we have no baseline to compare against, so
+    // replaying all events within the max_age window could trigger
+    // unexpected behaviour.
     let since = {
         let store = watermark_store.read().await;
         match store.marks.get(&repo_key) {
@@ -166,7 +184,18 @@ async fn run_catch_up_for_repo(
                     cutoff
                 }
             }
-            None => cutoff, // No watermark — use the max_age cutoff
+            None => {
+                tracing::info!(
+                    owner = %repo.owner,
+                    repo = %repo.repo,
+                    "No watermark found for repo, skipping catch-up on first run"
+                );
+                return Ok(RepoCatchUpResult {
+                    events_replayed: 0,
+                    events_skipped: 0,
+                    had_error: false,
+                });
+            }
         }
     };
 
@@ -895,6 +924,22 @@ mod tests {
         // The repo should be processed (even if it errors)
         assert_eq!(summary.repos_processed, 1);
         assert_eq!(summary.repos_with_errors, 1);
+    }
+
+    #[tokio::test]
+    async fn test_catch_up_skips_on_first_run_no_watermark() {
+        // When no watermark exists for a repo, catch-up should be skipped
+        // entirely to avoid replaying all events within the max_age window.
+        let config = test_config();
+        let watermark_store = Arc::new(RwLock::new(WatermarkStore::default()));
+        let (tx, _rx) = tokio::sync::mpsc::channel(100);
+
+        let summary = run_catch_up(&config, &config.server, &watermark_store, &tx).await;
+        // The repo should be processed (no error), but with zero events
+        assert_eq!(summary.repos_processed, 1);
+        assert_eq!(summary.repos_with_errors, 0);
+        assert_eq!(summary.events_replayed, 0);
+        assert_eq!(summary.events_skipped, 0);
     }
 
     #[test]
