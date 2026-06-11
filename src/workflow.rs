@@ -331,6 +331,7 @@ impl TriggerType {
                 vars.insert("issue_number".to_string());
                 vars.insert("comment_id".to_string());
                 vars.insert("comment_body".to_string());
+                vars.insert("mentioned_user".to_string());
             }
             TriggerType::GithubPullRequestReview => {
                 vars.insert("pr_number".to_string());
@@ -342,6 +343,7 @@ impl TriggerType {
                 vars.insert("review_id".to_string());
                 vars.insert("comment_id".to_string());
                 vars.insert("comment_body".to_string());
+                vars.insert("mentioned_user".to_string());
             }
             TriggerType::GitlabIssueAssigned { .. } => {
                 vars.insert("issue_iid".to_string());
