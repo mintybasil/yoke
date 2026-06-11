@@ -71,8 +71,8 @@ post_hooks = [{ type = "file_not_empty", path = "plan.md" }]
 ### 4. Set environment variables
 
 ```bash
-export HERMES_API_KEY="your-h...-key"
-export WEBHOOK_SECRET="your-w...cret"
+export HERMES_API_KEY="***"
+export WEBHOOK_SECRET="***"
 export GITHUB_TOKEN="***"
 ```
 
