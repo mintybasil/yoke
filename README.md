@@ -108,65 +108,45 @@ Yoke reads configuration from a `config.toml` file. The default path is `config.
 
 ### config.toml
 
-```toml
-# Platform: "github" or "gitlab"
-platform = "github"
-
-# Repos to monitor — shared across all workflows
-repos = [
-    { owner = "example-corp", repo = "backend-service" },
-    { owner = "example-corp", repo = "frontend-app" },
-]
-
-# Named agent instances (Hermes API configs)
-[[agents]]
-name = "pm"
-base_url = "http://localhost:8000"
-
-[[agents]]
-name = "swe"
-base_url = "http://localhost:8001"
-
-# Runtime settings
-[runtime]
-max_concurrent = 2       # max concurrent workflows (0 = unlimited)
-workdir = "~/.yoke"      # runtime data directory (supports ~ expansion)
-drain_timeout_secs = 30  # seconds to wait for in-flight workflows on shutdown
-
-# Server settings
-[server]
-host = "0.0.0.0"
-port = 8644
-webhook_host = "yoke.example.com"
-max_body_size = 1048576   # 1MB default
-catch_up_enabled = true           # replay missed webhook events on startup
-catch_up_max_age_hours = 24       # max age of events to replay (hours)
-
-# GitLab-specific (only when platform = "gitlab")
-# gitlab_url = "https://gitlab.mycompany.com"
-```
-
-### Required Fields
-
-- `platform` — must be `"github"` or `"gitlab"`
-- `agents` — at least one agent with a unique `name` and valid `base_url`
-- `server.webhook_host` — external hostname used in webhook registration URLs. This must be explicitly set (e.g., `yoke.example.com`) — it is the hostname that GitHub/GitLab will send webhook events to, which typically differs from the bind address (`server.host`).
-
-### Catch-up (Event Replay)
-
-When Yoke restarts after downtime, it automatically replays webhook events that were missed while offline. Catch-up queries the platform's delivery APIs for events newer than the last-processed watermark, up to `catch_up_max_age_hours` ago.
-
-| Setting | Default | Description |
+| Field | Default | Description |
 |---|---|---|
-| `catch_up_enabled` | `true` | Enable/disable catch-up on startup |
+| `platform` | — | `"github"` or `"gitlab"` (**required**) |
+| `repos` | `[]` | Repositories to monitor: `[{owner = "...", repo = "..."}]` |
+| `gitlab_url` | — | Top-level convenience override for `gitlab.gitlab_url` (GitLab only) |
+
+**`[[agents]]`** — at least one required, each with a unique `name`:
+
+| Field | Default | Description |
+|---|---|---|
+| `name` | — | Agent name referenced in workflow steps (**required**) |
+| `base_url` | — | Hermes API URL, e.g. `http://localhost:8000` (**required**) |
+
+**`[runtime]`** — all fields optional:
+
+| Field | Default | Description |
+|---|---|---|
+| `max_concurrent` | `0` | Maximum concurrent workflows (`0` = unlimited) |
+| `workdir` | `"~/.yoke"` | Runtime data directory (supports `~` expansion) |
+| `drain_timeout_secs` | `30` | Seconds to wait for in-flight workflows on shutdown |
+
+**`[server]`**:
+
+| Field | Default | Description |
+|---|---|---|
+| `host` | `"0.0.0.0"` | Server bind address |
+| `port` | `8644` | Server listen port |
+| `webhook_host` | — | External hostname for webhook registration URLs (**required**) |
+| `max_body_size` | `1048576` | Maximum request body size in bytes (1 MB default) |
+| `catch_up_enabled` | `true` | Replay missed webhook events on startup |
 | `catch_up_max_age_hours` | `24` | Maximum age of events to replay (in hours) |
 
-To disable catch-up entirely:
+**`[gitlab]`** — only when `platform = "gitlab"`:
 
-```toml
-[server]
-catch_up_enabled = false
-```
+| Field | Default | Description |
+|---|---|---|
+| `gitlab_url` | `"https://gitlab.com"` | GitLab instance URL (for self-hosted GitLab) |
+
+`server.webhook_host` must be explicitly set — it is the hostname that GitHub/GitLab will send webhook events to, which typically differs from the bind address (`server.host`).
 
 > **Limitations:** GitHub returns at most 100 recent deliveries per webhook. GitLab returns up to 100 events per page. Catch-up runs before the HTTP listener starts, so large backlogs may delay server readiness.
 
