@@ -82,7 +82,7 @@ export GITHUB_TOKEN="***"
 yoke --config config.toml webhooks add --workflows .
 ```
 
-This reads your workflow trigger definitions and creates (or updates) the appropriate webhooks on each repository. The operation is idempotent — running it again will update existing webhooks rather than create duplicates.
+This reads your workflow trigger definitions and creates (or updates) the appropriate webhooks on each repository. The operation is idempotent: running it again will update existing webhooks rather than create duplicates.
 
 Verify the webhooks were created:
 
@@ -100,7 +100,7 @@ cargo run
 cargo run -- --config /path/to/config.toml --workflows /path/to/workflows
 ```
 
-Yoke listens for webhook events on `http://{host}:{port}/webhook`. The `webhook_host` setting determines the hostname used in webhook registration URLs, which may differ from the bind address (`host`) — for example, binding to `0.0.0.0` locally while advertising `yoke.example.com` in webhook URLs. 
+Yoke listens for webhook events on `http://{host}:{port}/webhook`. The `webhook_host` setting determines the hostname used in webhook registration URLs, which may differ from the bind address (`host`), for example, binding to `0.0.0.0` locally while advertising `yoke.example.com` in webhook URLs. 
 
 ## Configuration
 
@@ -108,45 +108,45 @@ Yoke reads configuration from a `config.toml` file. The default path is `config.
 
 ### config.toml
 
-| Field | Default | Description |
+| Field | Required | Description |
 |---|---|---|
-| `platform` | — | `"github"` or `"gitlab"` (**required**) |
-| `repos` | `[]` | Repositories to monitor: `[{owner = "...", repo = "..."}]` |
-| `gitlab_url` | — | Top-level convenience override for `gitlab.gitlab_url` (GitLab only) |
+| `platform` | Yes | `"github"` or `"gitlab"` |
+| `repos` | No (default: `[]`) | Repositories to monitor: `[{owner = "...", repo = "..."}]` |
+| `gitlab_url` | No | Top-level convenience override for `gitlab.gitlab_url` (GitLab only) |
 
-**`[[agents]]`** — at least one required, each with a unique `name`:
+**`[[agents]]`**: at least one required, each with a unique `name`:
 
-| Field | Default | Description |
+| Field | Required | Description |
 |---|---|---|
-| `name` | — | Agent name referenced in workflow steps (**required**) |
-| `base_url` | — | Hermes API URL, e.g. `http://localhost:8000` (**required**) |
+| `name` | Yes | Agent name referenced in workflow steps |
+| `base_url` | Yes | Hermes API URL, e.g. `http://localhost:8000` |
 
-**`[runtime]`** — all fields optional:
+**`[runtime]`**: all fields optional:
 
-| Field | Default | Description |
+| Field | Required | Description |
 |---|---|---|
-| `max_concurrent` | `0` | Maximum concurrent workflows (`0` = unlimited) |
-| `workdir` | `"~/.yoke"` | Runtime data directory (supports `~` expansion) |
-| `drain_timeout_secs` | `30` | Seconds to wait for in-flight workflows on shutdown |
+| `max_concurrent` | No (default: `0`) | Maximum concurrent workflows (`0` = unlimited) |
+| `workdir` | No (default: `"~/.yoke"`) | Runtime data directory (supports `~` expansion) |
+| `drain_timeout_secs` | No (default: `30`) | Seconds to wait for in-flight workflows on shutdown |
 
 **`[server]`**:
 
-| Field | Default | Description |
+| Field | Required | Description |
 |---|---|---|
-| `host` | `"0.0.0.0"` | Server bind address |
-| `port` | `8644` | Server listen port |
-| `webhook_host` | — | External hostname for webhook registration URLs (**required**) |
-| `max_body_size` | `1048576` | Maximum request body size in bytes (1 MB default) |
-| `catch_up_enabled` | `true` | Replay missed webhook events on startup |
-| `catch_up_max_age_hours` | `24` | Maximum age of events to replay (in hours) |
+| `host` | No (default: `"0.0.0.0"`) | Server bind address |
+| `port` | No (default: `8644`) | Server listen port |
+| `webhook_host` | Yes | External hostname for webhook registration URLs |
+| `max_body_size` | No (default: `1048576`) | Maximum request body size in bytes |
+| `catch_up_enabled` | No (default: `true`) | Replay missed webhook events on startup |
+| `catch_up_max_age_hours` | No (default: `24`) | Maximum age of events to replay (in hours) |
 
-**`[gitlab]`** — only when `platform = "gitlab"`:
+**`[gitlab]`**: only when `platform = "gitlab"`:
 
-| Field | Default | Description |
+| Field | Required | Description |
 |---|---|---|
-| `gitlab_url` | `"https://gitlab.com"` | GitLab instance URL (for self-hosted GitLab) |
+| `gitlab_url` | No (default: `"https://gitlab.com"`) | GitLab instance URL (for self-hosted GitLab) |
 
-`server.webhook_host` must be explicitly set — it is the hostname that GitHub/GitLab will send webhook events to, which typically differs from the bind address (`server.host`).
+`server.webhook_host` must be explicitly set: it is the hostname that GitHub/GitLab will send webhook events to, which typically differs from the bind address (`server.host`).
 
 > **Limitations:** GitHub returns at most 100 recent deliveries per webhook. GitLab returns up to 100 events per page. Catch-up runs before the HTTP listener starts, so large backlogs may delay server readiness.
 
@@ -165,19 +165,19 @@ The tokens used for webhook management must have the correct permissions/scopes,
 
 **GitHub Classic Token (Personal Access Token):**
 
-- `repo` (full repository access) — required for cloning/pushing
-- `admin:repo_hook` (read/write) — required for webhook management
+- `repo` (full repository access), required for cloning/pushing
+- `admin:repo_hook` (read/write), required for webhook management
 - Or simply enable the full `repo` scope which includes `admin:repo_hook`
 
 **GitHub Fine-grained Token:**
 
-- **Repository permissions → Administration**: Read and Write — required for webhook management
-- **Repository permissions → Contents**: Read — required for git operations
+- **Repository permissions → Administration**: Read and Write, required for webhook management
+- **Repository permissions → Contents**: Read, required for git operations
 - Note: Fine-grained tokens use `Bearer` authentication (which Yoke now sends). Using a fine-grained token without the Administration permission will cause 404 responses on the webhooks endpoints.
 
 **GitLab Token:**
 
-- `api` scope — required for all webhook management and git operations
+- `api` scope, required for all webhook management and git operations
 
 ## Workflows
 
@@ -218,17 +218,17 @@ Create a PR with your changes.
 
 ### Workflow fields
 
-| Field | Purpose | Default |
+| Field | Purpose | Required |
 |---|---|---|
-| `[trigger].type` | Event type (e.g. `github_issue_assigned`) | required |
-| `[trigger].allowed_users` | Users permitted to trigger this workflow | required |
-| `[git].clone` | Whether to git clone the repo | `true` |
-| `[git].default_branch` | Branch for clone/worktree base | `"main"` |
-| `[[steps]].name` | Human-readable step label | required |
-| `[[steps]].agent` | Agent name from `config.toml` | required |
-| `[[steps]].prompt_template` | `{{variable}}` template rendered at runtime | required |
-| `[[steps]].pre_hooks` | Hooks to check before step | none |
-| `[[steps]].post_hooks` | Hooks to check after step | none |
+| `[trigger].type` | Event type (e.g. `github_issue_assigned`) | Yes |
+| `[trigger].allowed_users` | Users permitted to trigger this workflow | Yes |
+| `[git].clone` | Whether to git clone the repo | No (default: `true`) |
+| `[git].default_branch` | Branch for clone/worktree base | No (default: `"main"`) |
+| `[[steps]].name` | Human-readable step label | Yes |
+| `[[steps]].agent` | Agent name from `config.toml` | Yes |
+| `[[steps]].prompt_template` | `{{variable}}` template rendered at runtime | Yes |
+| `[[steps]].pre_hooks` | Hooks to check before step | No (default: none) |
+| `[[steps]].post_hooks` | Hooks to check after step | No (default: none) |
 
 ### Hooks
 
@@ -258,7 +258,7 @@ Step `prompt_template` fields use `{{variable}}` syntax. The following variables
 | `event_id` | Unique event identifier for deduplication |
 | `repo_path` | Full repository path (`owner/repo`) |
 
-Additional variables are available depending on the trigger type — see the trigger tables below. The [Architecture Design](docs/Architecture%20Design.md#appendix-a-trigger-reference) doc has the full reference including event ID formats and actor sources.
+Additional variables are available depending on the trigger type (see the trigger tables below). The [Architecture Design](docs/Architecture%20Design.md#appendix-a-trigger-reference) doc has the full reference including event ID formats and actor sources.
 
 ### Trigger types
 
@@ -270,7 +270,7 @@ Triggers are platform-specific and must match the `platform` setting in `config.
 |---|---|---|---|
 | `github_issue_assigned` | Issue assigned to a user | `issue_number`, `assignee`, `issue_title`, `issue_body` | `assigned_to` |
 | `github_issue_comment_mention` | Comment on an issue mentions a user | `issue_number`, `comment_id`, `comment_body` | `mentioned_user` |
-| `github_pull_request_review` | Pull request review submitted | `pr_number`, `review_id`, `review_body` | — |
+| `github_pull_request_review` | Pull request review submitted | `pr_number`, `review_id`, `review_body` | none |
 | `github_pull_request_comment_mention` | Pull request review comment | `pr_number`, `review_id`, `comment_id`, `comment_body` | `mentioned_user` |
 
 **GitLab triggers** (`platform = "gitlab"`):
@@ -279,12 +279,12 @@ Triggers are platform-specific and must match the `platform` setting in `config.
 |---|---|---|---|
 | `gitlab_issue_assigned` | Issue assigned to a user | `issue_iid`, `action`, `assignee_username`, `issue_title`, `issue_body` | `assigned_to` |
 | `gitlab_issue_mention` | Note on an issue mentions a user | `issue_iid`, `note_id`, `comment_body` | `mentioned_user` |
-| `gitlab_merge_request_review` | Note on a merge request | `mr_iid`, `review_id`, `review_body` | — |
+| `gitlab_merge_request_review` | Note on a merge request | `mr_iid`, `review_id`, `review_body` | none |
 | `gitlab_merge_request_comment_mention` | DiffNote on a merge request | `mr_iid`, `note_id`, `comment_body` | `mentioned_user` |
 
 ### Hot-reload
 
-Yoke watches the `--workflows` directory and automatically reloads `.toml` files on change — no restart required. Validation errors during reload are logged and the previous workflow state is preserved.
+Yoke watches the `--workflows` directory and automatically reloads `.toml` files on change: no restart required. Validation errors during reload are logged and the previous workflow state is preserved.
 
 ## Webhook Management
 
@@ -304,7 +304,7 @@ Lists all webhooks for each repository in `config.toml`, including ID, URL, even
 yoke --config config.toml webhooks add [--workflows <DIR>]
 ```
 
-Creates or updates webhooks on all configured repositories, subscribing to the event types derived from your workflow triggers. The operation is idempotent — existing webhooks matching the Yoke URL are updated; new ones are created.
+Creates or updates webhooks on all configured repositories, subscribing to the event types derived from your workflow triggers. The operation is idempotent: existing webhooks matching the Yoke URL are updated; new ones are created.
 
 **Remove webhooks:**
 
@@ -339,4 +339,4 @@ For detailed configuration and advanced options, refer to the [official Tailscal
 
 ## Further Reading
 
-- [Architecture Design](docs/Architecture%20Design.md) — internal design, data flow, and full trigger variable reference
+- [Architecture Design](docs/Architecture%20Design.md): internal design, data flow, and full trigger variable reference
