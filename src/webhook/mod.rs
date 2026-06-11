@@ -118,7 +118,7 @@ impl WebhookHandler {
         trigger_event.delivery_id = delivery_id;
         // Wrap TriggerEvent in DispatchMessage and send to dispatcher
         let event_id = trigger_event.event_id.clone();
-        let trigger_type = format!("{:?}", trigger_event.trigger_type);
+        let trigger_type = format!("{}", trigger_event.trigger_type);
         self.sender
             .send(DispatchMessage {
                 event: trigger_event,

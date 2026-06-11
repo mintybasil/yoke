@@ -1019,10 +1019,15 @@ pub fn new_watermark_store() -> Arc<RwLock<WatermarkStore>> {
 /// **and** whose `allowed_users` list includes the event's actor.
 ///
 /// Matching is based on exact comparison between the workflow's `trigger.type`
-/// string and `TriggerType::label()`. Additionally, the actor extracted from
-/// the webhook payload must be present in the workflow's `trigger.allowed_users`
-/// list — this is a security boundary that prevents unauthorized users from
-/// triggering workflows.
+/// string and `TriggerType::label()`. Additionally:
+///
+/// - The actor extracted from the webhook payload must be present in the
+///   workflow's `trigger.allowed_users` list — this is a security boundary that
+///   prevents unauthorized users from triggering workflows.
+///
+/// - If the workflow's `trigger.mentioned_user` is set, the event's
+///   `mentioned_user` must match. When `mentioned_user` is `None` in the
+///   workflow config, any mentioned user matches (no filter).
 fn find_matching_workflows(
     workflows: &Arc<Vec<(String, Workflow)>>,
     trigger_type: &TriggerType,
@@ -1041,6 +1046,42 @@ fn find_matching_workflows(
                 .as_ref()
                 .is_some_and(|users| users.iter().any(|u| u == actor))
         })
+        .filter(|(_, wf)| {
+            // If the workflow specifies a mentioned_user filter, only match when
+            // the event's mentioned_user is the same. When the workflow has no
+            // filter (None), any mentioned user matches.
+            match (&wf.trigger.mentioned_user, trigger_type) {
+                (
+                    Some(filter_user),
+                    TriggerType::GithubIssueCommentMention {
+                        mentioned_user: Some(event_user),
+                    },
+                )
+                | (
+                    Some(filter_user),
+                    TriggerType::GithubPullRequestCommentMention {
+                        mentioned_user: Some(event_user),
+                    },
+                )
+                | (
+                    Some(filter_user),
+                    TriggerType::GitlabIssueMention {
+                        mentioned_user: Some(event_user),
+                    },
+                )
+                | (
+                    Some(filter_user),
+                    TriggerType::GitlabMergeRequestCommentMention {
+                        mentioned_user: Some(event_user),
+                    },
+                ) => filter_user == event_user,
+                // Workflow has no mentioned_user filter — match any mention.
+                (None, _) => true,
+                // Workflow has a filter but event's mentioned_user is None or
+                // trigger type doesn't carry one — no match.
+                (Some(_), _) => false,
+            }
+        })
         .cloned()
         .collect()
 }
@@ -1048,7 +1089,7 @@ fn find_matching_workflows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::TriggerType;
+    use crate::workflow::{GitConfig, Trigger, TriggerType};
 
     /// Helper to create a test Dispatcher with an empty WorkflowState and no agents.
     fn test_dispatcher(dedup: SharedDedupSets, max_concurrent: usize) -> Dispatcher {
@@ -2107,5 +2148,145 @@ mod tests {
         let store = new_watermark_store();
         let locked = store.blocking_read();
         assert!(locked.marks.is_empty());
+    }
+
+    // --- find_matching_workflows tests ---
+
+    fn make_workflow(
+        trigger_type: &str,
+        mentioned_user: Option<&str>,
+        allowed_users: Vec<&str>,
+    ) -> (String, Workflow) {
+        (
+            "test_workflow".to_string(),
+            Workflow {
+                path: "test.toml".to_string(),
+                trigger: Trigger {
+                    r#type: trigger_type.to_string(),
+                    assigned_to: None,
+                    mentioned_user: mentioned_user.map(|s| s.to_string()),
+                    allowed_users: Some(allowed_users.iter().map(|s| s.to_string()).collect()),
+                },
+                git: GitConfig::default(),
+                steps: vec![],
+            },
+        )
+    }
+
+    #[test]
+    fn test_find_matching_workflows_no_mentioned_user_filter() {
+        let workflows = Arc::new(vec![make_workflow(
+            "github_pull_request_comment_mention",
+            None,
+            vec!["alice"],
+        )]);
+        let trigger = TriggerType::GithubPullRequestCommentMention {
+            mentioned_user: Some("bob".to_string()),
+        };
+        let result = find_matching_workflows(&workflows, &trigger, "alice");
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_find_matching_workflows_mentioned_user_filter_matches() {
+        let workflows = Arc::new(vec![make_workflow(
+            "github_pull_request_comment_mention",
+            Some("bob"),
+            vec!["alice"],
+        )]);
+        let trigger = TriggerType::GithubPullRequestCommentMention {
+            mentioned_user: Some("bob".to_string()),
+        };
+        let result = find_matching_workflows(&workflows, &trigger, "alice");
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_find_matching_workflows_mentioned_user_filter_no_match() {
+        let workflows = Arc::new(vec![make_workflow(
+            "github_pull_request_comment_mention",
+            Some("carol"),
+            vec!["alice"],
+        )]);
+        let trigger = TriggerType::GithubPullRequestCommentMention {
+            mentioned_user: Some("bob".to_string()),
+        };
+        let result = find_matching_workflows(&workflows, &trigger, "alice");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_find_matching_workflows_mentioned_user_filter_event_none() {
+        // Workflow has a mentioned_user filter but event's mentioned_user is None.
+        // This shouldn't happen in practice (map_to_trigger_event guards against it),
+        // but the filter should correctly reject it.
+        let workflows = Arc::new(vec![make_workflow(
+            "github_pull_request_comment_mention",
+            Some("bob"),
+            vec!["alice"],
+        )]);
+        let trigger = TriggerType::GithubPullRequestCommentMention {
+            mentioned_user: None,
+        };
+        let result = find_matching_workflows(&workflows, &trigger, "alice");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_find_matching_workflows_issue_comment_mention_filter() {
+        let workflows = Arc::new(vec![make_workflow(
+            "github_issue_comment_mention",
+            Some("bob"),
+            vec!["alice"],
+        )]);
+        let trigger = TriggerType::GithubIssueCommentMention {
+            mentioned_user: Some("bob".to_string()),
+        };
+        let result = find_matching_workflows(&workflows, &trigger, "alice");
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_find_matching_workflows_non_mention_trigger_ignores_filter() {
+        // Non-mention triggers (e.g. GithubPullRequestReview) should not be
+        // filtered by mentioned_user — the workflow's mentioned_user filter
+        // only applies when the trigger type carries a mentioned_user field.
+        let workflows = Arc::new(vec![make_workflow(
+            "github_pull_request_review",
+            Some("bob"), // This filter is irrelevant for review triggers
+            vec!["alice"],
+        )]);
+        let trigger = TriggerType::GithubPullRequestReview;
+        let result = find_matching_workflows(&workflows, &trigger, "alice");
+        // The mentioned_user filter on the workflow should not match because
+        // GithubPullRequestReview doesn't carry a mentioned_user field,
+        // so the (Some(_), _) arm returns false.
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_find_matching_workflows_multiple_workflows_mixed_filter() {
+        let workflows = Arc::new(vec![
+            make_workflow(
+                "github_pull_request_comment_mention",
+                None, // no filter — matches any mention
+                vec!["alice"],
+            ),
+            make_workflow(
+                "github_pull_request_comment_mention",
+                Some("carol"), // only matches carol
+                vec!["alice"],
+            ),
+            make_workflow(
+                "github_pull_request_comment_mention",
+                Some("bob"), // only matches bob
+                vec!["alice"],
+            ),
+        ]);
+        let trigger = TriggerType::GithubPullRequestCommentMention {
+            mentioned_user: Some("bob".to_string()),
+        };
+        let result = find_matching_workflows(&workflows, &trigger, "alice");
+        assert_eq!(result.len(), 2); // no-filter + bob filter
     }
 }

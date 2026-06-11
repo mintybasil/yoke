@@ -685,6 +685,11 @@ fn replay_github_delivery(
                 "comment_body".to_string(),
                 p.comment.body.clone().unwrap_or_default(),
             );
+            if let Some(user) =
+                crate::webhook::github::extract_mention(p.comment.body.as_deref().unwrap_or(""))
+            {
+                variables.insert("mentioned_user".to_string(), user);
+            }
         }
         crate::webhook::github::GitHubPayload::PullRequestReview(p) => {
             variables.insert("pr_number".to_string(), p.pull_request.number.to_string());
@@ -708,6 +713,11 @@ fn replay_github_delivery(
                 "comment_body".to_string(),
                 p.comment.body.clone().unwrap_or_default(),
             );
+            if let Some(user) =
+                crate::webhook::github::extract_mention(p.comment.body.as_deref().unwrap_or(""))
+            {
+                variables.insert("mentioned_user".to_string(), user);
+            }
         }
     }
 
@@ -1027,5 +1037,142 @@ mod tests {
         assert!(display.contains("2 skipped"));
         assert!(display.contains("3 repos"));
         assert!(display.contains("1 errors"));
+    }
+
+    #[test]
+    fn test_replay_github_delivery_pr_comment_mention() {
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 4682720523,
+                "body": "@zeroklaw Please can you convert the example config file"
+            },
+            "issue": {
+                "number": 204,
+                "title": "Test PR",
+                "pull_request": {
+                    "url": "https://api.github.com/repos/mintybasil/yoke/pulls/204",
+                    "html_url": "https://github.com/mintybasil/yoke/pull/204",
+                    "diff_url": "https://github.com/mintybasil/yoke/pull/204.diff",
+                    "patch_url": "https://github.com/mintybasil/yoke/pull/204.patch"
+                }
+            },
+            "sender": { "login": "bob" },
+            "repository": { "full_name": "mintybasil/yoke" }
+        }"#;
+
+        let result = replay_github_delivery("issue_comment", body, "delivery-guid-abc");
+        assert!(result.is_some());
+        let event = result.unwrap();
+        assert_eq!(event.repo_path, "mintybasil/yoke");
+        assert_eq!(event.event_id, "pr-204-comment-4682720523");
+        assert_eq!(event.actor, "bob");
+        // Verify mentioned_user is in the variables map
+        assert_eq!(
+            event.variables.get("mentioned_user"),
+            Some(&"zeroklaw".to_string())
+        );
+        // Verify TriggerType also has mentioned_user
+        if let crate::workflow::TriggerType::GithubPullRequestCommentMention { mentioned_user } =
+            event.trigger_type
+        {
+            assert_eq!(mentioned_user, Some("zeroklaw".to_string()));
+        } else {
+            panic!("Expected GithubPullRequestCommentMention trigger type");
+        }
+    }
+
+    #[test]
+    fn test_replay_github_delivery_issue_comment_mention() {
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 999,
+                "body": "@alice please review this issue"
+            },
+            "issue": {
+                "number": 42,
+                "title": "Test issue"
+            },
+            "sender": { "login": "bob" },
+            "repository": { "full_name": "owner/repo" }
+        }"#;
+
+        let result = replay_github_delivery("issue_comment", body, "delivery-guid-def");
+        assert!(result.is_some());
+        let event = result.unwrap();
+        assert_eq!(event.event_id, "issue-42-comment-999");
+        assert_eq!(
+            event.variables.get("mentioned_user"),
+            Some(&"alice".to_string())
+        );
+        if let crate::workflow::TriggerType::GithubIssueCommentMention { mentioned_user } =
+            event.trigger_type
+        {
+            assert_eq!(mentioned_user, Some("alice".to_string()));
+        } else {
+            panic!("Expected GithubIssueCommentMention trigger type");
+        }
+    }
+
+    #[test]
+    fn test_replay_github_delivery_pr_review_comment_mention() {
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 555,
+                "pull_request_review_id": 300,
+                "body": "@reviewer check this code"
+            },
+            "pull_request": {
+                "number": 10
+            },
+            "sender": { "login": "bob" },
+            "repository": { "full_name": "owner/repo" }
+        }"#;
+
+        let result =
+            replay_github_delivery("pull_request_review_comment", body, "delivery-guid-ghi");
+        assert!(result.is_some());
+        let event = result.unwrap();
+        assert_eq!(event.event_id, "pr-10-comment-555");
+        assert_eq!(
+            event.variables.get("mentioned_user"),
+            Some(&"reviewer".to_string())
+        );
+        if let crate::workflow::TriggerType::GithubPullRequestCommentMention { mentioned_user } =
+            event.trigger_type
+        {
+            assert_eq!(mentioned_user, Some("reviewer".to_string()));
+        } else {
+            panic!("Expected GithubPullRequestCommentMention trigger type");
+        }
+    }
+
+    #[test]
+    fn test_replay_github_delivery_comment_no_mention() {
+        let body = r#"{
+            "action": "created",
+            "comment": {
+                "id": 777,
+                "body": "Just a regular comment without mentions"
+            },
+            "issue": {
+                "number": 42,
+                "title": "Test PR",
+                "pull_request": {
+                    "url": "https://api.github.com/repos/owner/repo/pulls/42",
+                    "html_url": "https://github.com/owner/repo/pull/42",
+                    "diff_url": "https://github.com/owner/repo/pull/42.diff",
+                    "patch_url": "https://github.com/owner/repo/pull/42.patch"
+                }
+            },
+            "sender": { "login": "bob" },
+            "repository": { "full_name": "owner/repo" }
+        }"#;
+
+        let result = replay_github_delivery("issue_comment", body, "delivery-guid-no-mention");
+        // No @mention in body → map_to_trigger_event returns None → no trigger
+        assert!(result.is_none());
     }
 }
