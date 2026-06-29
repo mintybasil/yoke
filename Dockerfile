@@ -20,7 +20,7 @@ RUN cargo build --release --bin yoke
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        openssl ca-certificates \
+        openssl ca-certificates git \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

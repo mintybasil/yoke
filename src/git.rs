@@ -181,8 +181,9 @@ pub fn clone_repo(
 /// # Errors
 ///
 /// Returns `GitError::DirectoryExists` if the target path is non-empty.
-/// Returns `GitError::Io` if the `git` command fails to execute.
-/// Returns `GitError::Git` if the clone command exits with a non-zero status.
+/// Returns `GitError::Io` if parent directory creation fails.
+/// Returns `GitError::Git` if the `git` command cannot be executed
+/// (e.g. `git` is not installed) or exits with a non-zero status.
 pub fn shallow_clone(
     url: &str,
     branch: &str,
@@ -221,7 +222,19 @@ pub fn shallow_clone(
             &auth_url,
             &path.to_string_lossy(),
         ])
-        .output()?;
+        .output()
+        .map_err(|e| {
+            let msg = if e.kind() == std::io::ErrorKind::NotFound {
+                format!(
+                    "failed to execute `git clone`: `git` binary not found in PATH \
+                     (os error 2). Ensure git is installed in the runtime environment. \
+                     Underlying error: {e}"
+                )
+            } else {
+                format!("failed to execute `git clone` for {url}: {e}")
+            };
+            GitError::Git(git2::Error::from_str(&msg))
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
