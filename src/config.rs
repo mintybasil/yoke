@@ -165,7 +165,11 @@ impl Config {
     ///
     /// Performs tilde expansion on the `runtime.workdir` path.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
-        let content = fs::read_to_string(path).map_err(ConfigError::Io)?;
+        let path_ref = path.as_ref();
+        let content = fs::read_to_string(path_ref).map_err(|e| ConfigError::Io {
+            path: path_ref.display().to_string(),
+            source: e,
+        })?;
         Self::from_str(&content)
     }
 
@@ -238,7 +242,12 @@ impl Config {
 #[derive(Debug)]
 pub enum ConfigError {
     /// I/O error reading the config file.
-    Io(std::io::Error),
+    Io {
+        /// The path that was being read when the error occurred.
+        path: String,
+        /// The underlying I/O error.
+        source: std::io::Error,
+    },
     /// TOML parse or deserialize error.
     Parse(toml::de::Error),
     /// Semantic validation error.
@@ -254,7 +263,9 @@ pub enum ConfigError {
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConfigError::Io(e) => write!(f, "I/O error: {e}"),
+            ConfigError::Io { path, source } => {
+                write!(f, "failed to read config file '{path}': {source}")
+            }
             ConfigError::Parse(e) => write!(f, "config parse error: {e}"),
             ConfigError::Validation(msg) => write!(f, "config validation error: {msg}"),
             ConfigError::ShellExpand(msg) => write!(f, "shell expansion error: {msg}"),
@@ -267,7 +278,7 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            ConfigError::Io(e) => Some(e),
+            ConfigError::Io { source, .. } => Some(source),
             ConfigError::Parse(e) => Some(e),
             _ => None,
         }
@@ -669,7 +680,7 @@ webhook_host = "yoke.example.com"
         let result = Config::load("/nonexistent/path/config.toml");
         assert!(result.is_err(), "should fail for missing file");
         match result.unwrap_err() {
-            ConfigError::Io(_) => {} // expected
+            ConfigError::Io { .. } => {} // expected
             other => panic!("expected Io error, got: {other}"),
         }
     }
@@ -710,6 +721,19 @@ webhook_host = "yoke.example.com"
         assert_eq!(
             err.to_string(),
             "environment variable error: Missing required env var: GITHUB_TOKEN"
+        );
+    }
+
+    #[test]
+    fn test_config_io_error_includes_path() {
+        let err = ConfigError::Io {
+            path: "/etc/yoke/config.toml".to_string(),
+            source: std::io::Error::other("test"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("/etc/yoke/config.toml"),
+            "Io error should include the path, got: {msg}"
         );
     }
 

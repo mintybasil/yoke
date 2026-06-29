@@ -495,13 +495,24 @@ pub fn validate_triggers(
 /// Returns a list of `(file_path, Workflow)` pairs. The file path is preserved
 /// for use in error messages during trigger platform validation.
 pub fn load_workflows<P: AsRef<Path>>(dir: P) -> Result<Vec<(String, Workflow)>, WorkflowError> {
+    let dir_ref = dir.as_ref();
+    let dir_str = dir_ref.display().to_string();
     let mut workflows = Vec::new();
-    for entry in fs::read_dir(dir).map_err(WorkflowError::Io)? {
-        let entry = entry.map_err(WorkflowError::Io)?;
+    for entry in fs::read_dir(dir_ref).map_err(|e| WorkflowError::Io {
+        path: dir_str.clone(),
+        source: e,
+    })? {
+        let entry = entry.map_err(|e| WorkflowError::Io {
+            path: dir_str.clone(),
+            source: e,
+        })?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("toml") {
             let path_str = path.display().to_string();
-            let content = fs::read_to_string(&path).map_err(WorkflowError::Io)?;
+            let content = fs::read_to_string(&path).map_err(|e| WorkflowError::Io {
+                path: path_str.clone(),
+                source: e,
+            })?;
             let mut workflow: Workflow =
                 toml::from_str(&content).map_err(|e| WorkflowError::Parse {
                     path: path_str.clone(),
@@ -528,8 +539,13 @@ pub fn load_workflows<P: AsRef<Path>>(dir: P) -> Result<Vec<(String, Workflow)>,
 /// Errors that can occur during workflow loading or validation.
 #[derive(Debug)]
 pub enum WorkflowError {
-    /// I/O error reading a file or directory.
-    Io(std::io::Error),
+    /// I/O error reading the workflow directory.
+    Io {
+        /// The path being accessed when the error occurred.
+        path: String,
+        /// The underlying I/O error.
+        source: std::io::Error,
+    },
     /// TOML parse or deserialize error.
     Parse {
         path: String,
@@ -544,7 +560,9 @@ pub enum WorkflowError {
 impl std::fmt::Display for WorkflowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WorkflowError::Io(e) => write!(f, "I/O error: {e}"),
+            WorkflowError::Io { path, source } => {
+                write!(f, "failed to read workflow path '{path}': {source}")
+            }
             WorkflowError::Parse { path, source } => {
                 write!(f, "parse error in {path}: {source}")
             }
@@ -561,7 +579,7 @@ impl std::fmt::Display for WorkflowError {
 impl std::error::Error for WorkflowError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            WorkflowError::Io(e) => Some(e),
+            WorkflowError::Io { source, .. } => Some(source),
             WorkflowError::Parse { source, .. } => Some(source),
             WorkflowError::Validation { .. } | WorkflowError::EmptyDirectory(_) => None,
         }
@@ -1108,6 +1126,19 @@ prompt_template = "Plan"
         let msg = err.to_string();
         assert!(msg.contains("flows/bad.toml"));
         assert!(msg.contains("invalid trigger type: foo"));
+    }
+
+    #[test]
+    fn test_io_error_includes_path() {
+        let err = WorkflowError::Io {
+            path: "workflows/bad.toml".to_string(),
+            source: std::io::Error::other("test"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("workflows/bad.toml"),
+            "Io error should include the path, got: {msg}"
+        );
     }
 
     // --- Trigger platform validation tests ---
