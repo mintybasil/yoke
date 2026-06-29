@@ -374,7 +374,10 @@ impl GitHubClient {
             return Err(Self::map_status_with_body(status, &body));
         }
 
-        response.json().await.map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
+        response
+            .json()
+            .await
+            .map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
     }
 
     /// Update an existing webhook for the given repository.
@@ -413,7 +416,10 @@ impl GitHubClient {
             return Err(Self::map_status_with_body(status, &body));
         }
 
-        response.json().await.map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
+        response
+            .json()
+            .await
+            .map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
     }
 
     /// Delete a webhook for the given repository.
@@ -519,7 +525,10 @@ impl GitHubClient {
             return Err(Self::map_status_with_body(status, &body));
         }
 
-        response.json().await.map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
+        response
+            .json()
+            .await
+            .map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
     }
 
     /// Trigger GitHub to re-send a specific webhook delivery.
@@ -589,7 +598,10 @@ impl GitHubClient {
             return Err(Self::map_status_with_body(status, &body));
         }
 
-        response.json().await.map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
+        response
+            .json()
+            .await
+            .map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
     }
 
     /// Get the current state of a GitHub pull request.
@@ -623,7 +635,10 @@ impl GitHubClient {
             return Err(Self::map_status_with_body(status, &body));
         }
 
-        response.json().await.map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
+        response
+            .json()
+            .await
+            .map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
     }
 
     /// Ensures a webhook exists with the given configuration.
@@ -1460,10 +1475,7 @@ mod tests {
                 // the request, and should NOT just be "HTTP request failed: "
                 // with a bare reqwest::Error Display that only says "error
                 // sending request for url (...)".
-                assert!(
-                    !msg.is_empty(),
-                    "RequestError message should not be empty"
-                );
+                assert!(!msg.is_empty(), "RequestError message should not be empty");
                 // The formatted chain should include the top-level message,
                 // which for reqwest contains "error sending request".
                 assert!(

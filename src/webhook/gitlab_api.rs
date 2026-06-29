@@ -1367,10 +1367,7 @@ mod tests {
 
         match result {
             Err(GitLabError::RequestError(msg)) => {
-                assert!(
-                    !msg.is_empty(),
-                    "RequestError message should not be empty"
-                );
+                assert!(!msg.is_empty(), "RequestError message should not be empty");
                 assert!(
                     msg.contains("error sending request"),
                     "expected 'error sending request' in message, got: {msg}"

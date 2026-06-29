@@ -6,7 +6,9 @@
 use std::fs;
 use std::sync::Mutex as StdMutex;
 use yoke::config::{Config, Repo, ServerConfig};
-use yoke::webhooks::{self, AddSummary, GitHubWebhookClient, ListSummary, RemoveSummary, WebhookClient};
+use yoke::webhooks::{
+    self, AddSummary, GitHubWebhookClient, ListSummary, RemoveSummary, WebhookClient,
+};
 
 /// Mutex to serialize tests that read/write the `WEBHOOK_SECRET` env var.
 /// Uses `tokio::sync::Mutex` so the guard can be held across `.await` points.
