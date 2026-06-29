@@ -64,10 +64,7 @@ pub fn setup_signal_handler(shutdown_tx: watch::Sender<bool>) -> tokio::task::Jo
 /// The `{e:#}` format in `main()` will print:
 /// `context: <original error Display>`
 /// followed by each `source()` in turn, joined by `: `.
-fn context<T, E>(
-    context: &str,
-    result: Result<T, E>,
-) -> Result<T, ContextError>
+fn context<T, E>(context: &str, result: Result<T, E>) -> Result<T, ContextError>
 where
     E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
