@@ -386,6 +386,13 @@ impl WebhookClient {
 // High-level command handlers
 // ---------------------------------------------------------------------------
 
+/// Summary counters returned by [`webhooks_list`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ListSummary {
+    pub listed: usize,
+    pub errors: usize,
+}
+
 /// Summary counters returned by [`webhooks_add`].
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct AddSummary {
@@ -418,8 +425,16 @@ fn yoke_webhook_url(config: &Config) -> String {
 /// `ID | URL | Secret (last 4) | Events | Active`.
 /// Webhooks whose URL matches Yoke's configured webhook URL are marked with
 /// a `(yoke)` label.
-pub async fn webhooks_list(config: &Config, client: &WebhookClient) -> Result<(), WebhookError> {
+///
+/// Returns a [`ListSummary`] with the number of repos successfully listed
+/// and the number that encountered errors. A non-zero `errors` count
+/// indicates that at least one repo's webhooks could not be fetched.
+pub async fn webhooks_list(
+    config: &Config,
+    client: &WebhookClient,
+) -> Result<ListSummary, WebhookError> {
     let yoke_url = yoke_webhook_url(config);
+    let mut summary = ListSummary::default();
 
     for repo in &config.repos {
         let repo_display = format!("{}/{}", repo.owner, repo.repo);
@@ -427,11 +442,12 @@ pub async fn webhooks_list(config: &Config, client: &WebhookClient) -> Result<()
             Ok(hooks) => {
                 tracing::info!(repo = %repo_display, "Listing webhooks");
                 if hooks.is_empty() {
-                    tracing::info!("No webhooks found");
+                    tracing::info!(repo = %repo_display, "No webhooks found");
                 }
                 for hook in hooks {
                     if hook.url == yoke_url {
                         tracing::info!(
+                            repo = %repo_display,
                             id = hook.id,
                             url = %hook.url,
                             events = ?hook.events,
@@ -440,6 +456,7 @@ pub async fn webhooks_list(config: &Config, client: &WebhookClient) -> Result<()
                         );
                     } else {
                         tracing::debug!(
+                            repo = %repo_display,
                             id = hook.id,
                             url = %hook.url,
                             events = ?hook.events,
@@ -448,13 +465,21 @@ pub async fn webhooks_list(config: &Config, client: &WebhookClient) -> Result<()
                         );
                     }
                 }
+                summary.listed += 1;
             }
             Err(e) => {
                 tracing::error!(repo = %repo_display, error = %e, "Failed to list webhooks");
+                summary.errors += 1;
             }
         }
     }
-    Ok(())
+
+    tracing::info!(
+        listed = summary.listed,
+        errors = summary.errors,
+        "Webhook listing complete"
+    );
+    Ok(summary)
 }
 
 /// Remove all webhooks matching Yoke's URL from configured repositories.

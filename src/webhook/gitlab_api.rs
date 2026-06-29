@@ -22,8 +22,12 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum GitLabError {
     /// The HTTP request itself failed (network error, timeout, etc.).
+    ///
+    /// Stores a pre-formatted string that includes the full error cause
+    /// chain so the user can see the root reason (DNS failure, connection
+    /// refused, TLS error, etc.) rather than just "error sending request".
     #[error("HTTP request failed: {0}")]
-    RequestError(#[from] reqwest::Error),
+    RequestError(String),
     /// Authentication failed (HTTP 401).
     #[error("Authentication failed (401)")]
     Unauthorized,
@@ -33,6 +37,30 @@ pub enum GitLabError {
     /// Any other API error with an HTTP status code.
     #[error("API error: {0}")]
     ApiError(String),
+}
+
+/// Walk the full `source()` chain of an error and join each layer's Display
+/// with `": "`, producing a single string that surfaces the root cause
+/// (e.g. DNS failure, connection refused) rather than just the top-level
+/// message (which for `reqwest::Error` is typically only "error sending
+/// request for url (...)").
+fn format_error_chain(err: &dyn std::error::Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut source = err.source();
+    while let Some(s) = source {
+        parts.push(s.to_string());
+        source = s.source();
+    }
+    parts.join(": ")
+}
+
+/// Preserve `?` ergonomics: any `reqwest::Error` is automatically converted
+/// into `GitLabError::RequestError` with the full cause chain formatted as
+/// a human-readable string.
+impl From<reqwest::Error> for GitLabError {
+    fn from(e: reqwest::Error) -> Self {
+        GitLabError::RequestError(format_error_chain(&e))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1321,5 +1349,34 @@ mod tests {
         assert_eq!(trigger.variables.get("event_id").unwrap(), "500");
         assert_eq!(trigger.variables.get("branch").unwrap(), "feature");
         assert_eq!(trigger.variables.get("pushed_sha").unwrap(), "deadbeef");
+    }
+
+    // -- RequestError formatting tests ----------------------------------------
+
+    #[tokio::test]
+    async fn test_request_error_includes_cause_chain() {
+        // Point the client at a closed port so the send() fails with a
+        // connection error. The resulting GitLabError::RequestError should
+        // contain a human-readable cause chain, not just a bare "error
+        // sending request for url (...)".
+        let client = GitLabClient::new(
+            "test-token".to_string(),
+            Some("http://127.0.0.1:1".to_string()), // port 1 — nothing listening
+        );
+        let result = client.list_webhooks("1").await;
+
+        match result {
+            Err(GitLabError::RequestError(msg)) => {
+                assert!(
+                    !msg.is_empty(),
+                    "RequestError message should not be empty"
+                );
+                assert!(
+                    msg.contains("error sending request"),
+                    "expected 'error sending request' in message, got: {msg}"
+                );
+            }
+            other => panic!("expected RequestError, got: {other:?}"),
+        }
     }
 }
