@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,7 +65,7 @@ async fn handle_webhooks_command(
     config: &Config,
     cmd: &WebhooksSubcommand,
     workflows_dir: &std::path::Path,
-) {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Determine the gitlab_url for GitLab platform
     let gitlab_url = config.gitlab_url.as_ref().map(|u| {
         let s = u.to_string();
@@ -77,41 +78,29 @@ async fn handle_webhooks_command(
         .map(|r| r.owner.clone())
         .unwrap_or_default();
 
-    let client = match webhooks::WebhookClient::new(&config.platform, &owner, gitlab_url) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to create webhook client");
-            std::process::exit(1);
-        }
-    };
+    let client = webhooks::WebhookClient::new(&config.platform, &owner, gitlab_url)?;
 
     match cmd {
         WebhooksSubcommand::Add { workflows } => {
             let workflows_path = workflows.as_deref().unwrap_or(workflows_dir);
-            if let Err(e) = webhooks::webhooks_add(config, &client, workflows_path).await {
-                tracing::error!(error = %e, "Failed to add webhooks");
-                std::process::exit(1);
-            }
+            webhooks::webhooks_add(config, &client, workflows_path).await?;
         }
         WebhooksSubcommand::Remove => {
-            if let Err(e) = webhooks::webhooks_remove(config, &client).await {
-                tracing::error!(error = %e, "Failed to remove webhooks");
-                std::process::exit(1);
-            }
+            webhooks::webhooks_remove(config, &client).await?;
         }
         WebhooksSubcommand::List => {
-            if let Err(e) = webhooks::webhooks_list(config, &client).await {
-                tracing::error!(error = %e, "Failed to list webhooks");
-                std::process::exit(1);
-            }
+            webhooks::webhooks_list(config, &client).await?;
         }
     }
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing subscriber for structured logging
+    // Initialize tracing subscriber for structured logging.
     // Timestamps in HH:MM:SS format (local time). RUST_LOG controls levels at runtime.
+    // ANSI color codes are disabled when stderr is not a TTY (e.g. when run under
+    // Ansible, systemd, or piped to a file) to keep log output clean.
     let timer = tracing_subscriber::fmt::time::LocalTime::new(
         time::format_description::parse("[hour]:[minute]:[second]").expect("valid time format"),
     );
@@ -121,32 +110,35 @@ async fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_timer(timer)
+        .with_ansi(std::io::stderr().is_terminal())
         .init();
 
+    if let Err(e) = run().await {
+        // {e:#} on a boxed Error prints the full Display chain, surfacing
+        // every layer of context so startup failures are easy to diagnose.
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+/// Main application logic.
+///
+/// All startup and runtime errors are returned as `Result` rather than
+/// logged-and-exited inline, so that `main()` can print them to stderr in
+/// a clean, ANSI-free format suitable for non-TTY environments.
+async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = cli::Cli::parse();
 
     // If a subcommand was provided, handle it and exit
     if let Some(Command::Webhooks(webhooks_cmd)) = &args.command {
-        let config = match Config::load(&args.config) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(path = %args.config.display(), error = %e, "Failed to load config");
-                std::process::exit(1);
-            }
-        };
+        let config = Config::load(&args.config)?;
 
-        handle_webhooks_command(&config, &webhooks_cmd.command, &args.workflows).await;
-        return;
+        handle_webhooks_command(&config, &webhooks_cmd.command, &args.workflows).await?;
+        return Ok(());
     }
 
     // Default behavior: start the server
-    let mut config = match Config::load(&args.config) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(path = %args.config.display(), error = %e, "Failed to load config");
-            std::process::exit(1);
-        }
-    };
+    let mut config = Config::load(&args.config)?;
 
     // Apply CLI overrides for server settings
     if let Some(host) = args.host {
@@ -160,35 +152,16 @@ async fn main() {
     }
 
     // Validate required environment variables before starting
-    if let Err(e) = config::validate_env_vars(&config.platform) {
-        tracing::error!(error = %e, "Configuration error");
-        std::process::exit(1);
-    }
+    config::validate_env_vars(&config.platform)?;
 
-    let workflows = match workflow::load_workflows(&args.workflows) {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::error!(
-                path = %args.workflows.display(),
-                error = %e,
-                "Failed to load workflows"
-            );
-            std::process::exit(1);
-        }
-    };
+    let workflows = workflow::load_workflows(&args.workflows)?;
 
     // Validate that all agents referenced in workflow steps exist in config
     let workflow_refs: Vec<workflow::Workflow> = workflows.iter().map(|(_, w)| w.clone()).collect();
-    if let Err(e) = config::resolve_agents(&config, &workflow_refs) {
-        tracing::error!(error = %e, "Configuration error");
-        std::process::exit(1);
-    }
+    config::resolve_agents(&config, &workflow_refs)?;
 
     // Validate that all trigger types match the configured platform
-    if let Err(e) = workflow::validate_triggers(&config.platform, &workflows) {
-        tracing::error!(error = %e, "Configuration error");
-        std::process::exit(1);
-    }
+    workflow::validate_triggers(&config.platform, &workflows)?;
 
     tracing::info!(
         workflow_count = workflows.len(),
@@ -260,8 +233,7 @@ async fn main() {
         drain_timeout = %config.runtime.drain_timeout_secs,
         "Starting server...",
     );
-    if let Err(e) = server::run_server(&config, drain_timeout, shutdown_rx, state).await {
-        tracing::error!(error = %e, "Server error");
-        std::process::exit(1);
-    }
+    server::run_server(&config, drain_timeout, shutdown_rx, state).await?;
+
+    Ok(())
 }
