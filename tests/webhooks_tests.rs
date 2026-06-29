@@ -6,7 +6,9 @@
 use std::fs;
 use std::sync::Mutex as StdMutex;
 use yoke::config::{Config, Repo, ServerConfig};
-use yoke::webhooks::{self, AddSummary, GitHubWebhookClient, RemoveSummary, WebhookClient};
+use yoke::webhooks::{
+    self, AddSummary, GitHubWebhookClient, ListSummary, RemoveSummary, WebhookClient,
+};
 
 /// Mutex to serialize tests that read/write the `WEBHOOK_SECRET` env var.
 /// Uses `tokio::sync::Mutex` so the guard can be held across `.await` points.
@@ -114,6 +116,14 @@ async fn test_webhooks_list_empty() {
 
     let result = webhooks::webhooks_list(&config, &client).await;
     assert!(result.is_ok());
+    let summary = result.unwrap();
+    assert_eq!(
+        summary,
+        ListSummary {
+            listed: 1,
+            errors: 0
+        }
+    );
     mock.assert_async().await;
 }
 
@@ -136,7 +146,42 @@ async fn test_webhooks_list_with_hooks() {
 
     let result = webhooks::webhooks_list(&config, &client).await;
     assert!(result.is_ok());
+    let summary = result.unwrap();
+    assert_eq!(
+        summary,
+        ListSummary {
+            listed: 1,
+            errors: 0
+        }
+    );
     mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_webhooks_list_api_error() {
+    let mut server = mockito::Server::new_async().await;
+    let url = server.url();
+
+    let list_mock = server
+        .mock("GET", "/repos/test-owner/test-repo/hooks")
+        .with_status(401)
+        .create_async()
+        .await;
+
+    let config = test_config();
+    let client = mock_github_client(&url);
+
+    let result = webhooks::webhooks_list(&config, &client).await;
+    assert!(result.is_ok());
+    let summary = result.unwrap();
+    assert_eq!(
+        summary,
+        ListSummary {
+            listed: 0,
+            errors: 1
+        }
+    );
+    list_mock.assert_async().await;
 }
 
 #[tokio::test]

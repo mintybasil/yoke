@@ -6,12 +6,31 @@ use thiserror::Error;
 // Error types
 // ---------------------------------------------------------------------------
 
+/// Walk the full `source()` chain of an error and join each layer's Display
+/// with `": "`, producing a single string that surfaces the root cause
+/// (e.g. DNS failure, connection refused) rather than just the top-level
+/// message (which for `reqwest::Error` is typically only "error sending
+/// request for url (...)").
+fn format_error_chain(err: &dyn std::error::Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut source = err.source();
+    while let Some(s) = source {
+        parts.push(s.to_string());
+        source = s.source();
+    }
+    parts.join(": ")
+}
+
 /// Errors returned by the GitHub REST API client.
 #[derive(Error, Debug)]
 pub enum GitHubError {
     /// The HTTP request itself failed (network error, timeout, etc.).
+    ///
+    /// Stores a pre-formatted string that includes the full error cause
+    /// chain so the user can see the root reason (DNS failure, connection
+    /// refused, TLS error, etc.) rather than just "error sending request".
     #[error("HTTP request failed: {0}")]
-    RequestError(#[from] reqwest::Error),
+    RequestError(String),
     /// Authentication failed (HTTP 401).
     #[error("Authentication failed (401)")]
     Unauthorized,
@@ -27,6 +46,15 @@ pub enum GitHubError {
     /// Any other API error with an HTTP status code and response body.
     #[error("API error: {0}")]
     ApiError(String),
+}
+
+/// Preserve `?` ergonomics: any `reqwest::Error` is automatically converted
+/// into `GitHubError::RequestError` with the full cause chain formatted as
+/// a human-readable string.
+impl From<reqwest::Error> for GitHubError {
+    fn from(e: reqwest::Error) -> Self {
+        GitHubError::RequestError(format_error_chain(&e))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +374,10 @@ impl GitHubClient {
             return Err(Self::map_status_with_body(status, &body));
         }
 
-        response.json().await.map_err(GitHubError::RequestError)
+        response
+            .json()
+            .await
+            .map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
     }
 
     /// Update an existing webhook for the given repository.
@@ -385,7 +416,10 @@ impl GitHubClient {
             return Err(Self::map_status_with_body(status, &body));
         }
 
-        response.json().await.map_err(GitHubError::RequestError)
+        response
+            .json()
+            .await
+            .map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
     }
 
     /// Delete a webhook for the given repository.
@@ -491,7 +525,10 @@ impl GitHubClient {
             return Err(Self::map_status_with_body(status, &body));
         }
 
-        response.json().await.map_err(GitHubError::RequestError)
+        response
+            .json()
+            .await
+            .map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
     }
 
     /// Trigger GitHub to re-send a specific webhook delivery.
@@ -561,7 +598,10 @@ impl GitHubClient {
             return Err(Self::map_status_with_body(status, &body));
         }
 
-        response.json().await.map_err(GitHubError::RequestError)
+        response
+            .json()
+            .await
+            .map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
     }
 
     /// Get the current state of a GitHub pull request.
@@ -595,7 +635,10 @@ impl GitHubClient {
             return Err(Self::map_status_with_body(status, &body));
         }
 
-        response.json().await.map_err(GitHubError::RequestError)
+        response
+            .json()
+            .await
+            .map_err(|e| GitHubError::RequestError(format_error_chain(&e)))
     }
 
     /// Ensures a webhook exists with the given configuration.
@@ -1410,5 +1453,37 @@ mod tests {
         let result = client.redeliver_delivery("owner", "repo", 42, 200).await;
 
         assert!(matches!(result, Err(GitHubError::ApiError(_))));
+    }
+
+    // -- RequestError formatting tests ----------------------------------------
+
+    #[tokio::test]
+    async fn test_request_error_includes_cause_chain() {
+        // Point the client at a closed port so the send() fails with a
+        // connection error. The resulting GitHubError::RequestError should
+        // contain a human-readable cause chain, not just a bare "error
+        // sending request for url (...)".
+        let client = GitHubClient::new(
+            "test-token".to_string(),
+            Some("http://127.0.0.1:1".to_string()), // port 1 — nothing listening
+        );
+        let result = client.list_webhooks("owner", "repo").await;
+
+        match result {
+            Err(GitHubError::RequestError(msg)) => {
+                // The message should mention that an error occurred sending
+                // the request, and should NOT just be "HTTP request failed: "
+                // with a bare reqwest::Error Display that only says "error
+                // sending request for url (...)".
+                assert!(!msg.is_empty(), "RequestError message should not be empty");
+                // The formatted chain should include the top-level message,
+                // which for reqwest contains "error sending request".
+                assert!(
+                    msg.contains("error sending request"),
+                    "expected 'error sending request' in message, got: {msg}"
+                );
+            }
+            other => panic!("expected RequestError, got: {other:?}"),
+        }
     }
 }

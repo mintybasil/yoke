@@ -61,6 +61,11 @@ pub fn setup_signal_handler(shutdown_tx: watch::Sender<bool>) -> tokio::task::Jo
 }
 
 /// Handle the `webhooks` subcommand.
+///
+/// Returns `Ok(())` if all per-repo operations succeeded, or
+/// `Err(EXIT_WEBHOOK_ERRORS)` if any errors were recorded in the summary
+/// (e.g. API auth failure, network error). This allows the caller to
+/// exit with a non-zero status code so scripts and CI can detect failures.
 async fn handle_webhooks_command(
     config: &Config,
     cmd: &WebhooksSubcommand,
@@ -80,17 +85,26 @@ async fn handle_webhooks_command(
 
     let client = webhooks::WebhookClient::new(&config.platform, &owner, gitlab_url)?;
 
-    match cmd {
+    let had_errors = match cmd {
         WebhooksSubcommand::Add { workflows } => {
             let workflows_path = workflows.as_deref().unwrap_or(workflows_dir);
-            webhooks::webhooks_add(config, &client, workflows_path).await?;
+            let summary = webhooks::webhooks_add(config, &client, workflows_path).await?;
+            summary.errors > 0
         }
         WebhooksSubcommand::Remove => {
-            webhooks::webhooks_remove(config, &client).await?;
+            let summary = webhooks::webhooks_remove(config, &client).await?;
+            summary.errors > 0
         }
         WebhooksSubcommand::List => {
-            webhooks::webhooks_list(config, &client).await?;
+            let summary = webhooks::webhooks_list(config, &client).await?;
+            summary.errors > 0
         }
+    };
+
+    if had_errors {
+        return Err(Box::new(std::io::Error::other(
+            "webhook command completed with one or more errors",
+        )));
     }
     Ok(())
 }
