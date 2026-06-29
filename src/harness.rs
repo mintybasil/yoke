@@ -7,6 +7,7 @@
 //! - Parses responses to extract `output_text` content blocks
 //! - Writes non-2xx error details to a `.error` file in the current directory
 
+use std::error::Error as StdError;
 use std::fs;
 use std::path::Path;
 
@@ -110,9 +111,18 @@ pub struct StepResult {
 /// Errors that can occur during harness operations.
 #[derive(Debug, Error)]
 pub enum HarnessError {
-    /// HTTP request failed (network or server error).
-    #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    /// HTTP request failed (network error, timeout, or server error).
+    ///
+    /// Carries structured details so the error message includes *why* the
+    /// request failed (timeout, connection refused, DNS error, etc.) rather
+    /// than only the opaque `error sending request for url (...)` string that
+    /// `reqwest::Error` produces by default.
+    #[error("HTTP request failed: {message}")]
+    Http {
+        /// Human-readable summary of the failure, including the URL,
+        /// timeout/connect status, and the full cause chain.
+        message: String,
+    },
     /// The API returned a non-2xx status code.
     #[error("API error {status}: {body}")]
     Api {
@@ -124,6 +134,68 @@ pub enum HarnessError {
     /// An I/O error occurred writing the `.error` file.
     #[error("IO error writing .error file: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl HarnessError {
+    /// Build a descriptive `HarnessError::Http` from a `reqwest::Error`.
+    ///
+    /// Extracts timeout/connect status and walks the cause chain to produce a
+    /// message that actually explains *why* the request failed, not just
+    /// *that* it failed.
+    fn from_reqwest_error(err: reqwest::Error, url: &str) -> Self {
+        let mut parts: Vec<String> = Vec::new();
+
+        // Timeout is the most actionable piece of information for operators —
+        // it tells them to either raise the timeout or check if the server is
+        // overloaded. Surface it prominently.
+        if err.is_timeout() {
+            parts.push("timeout reached".to_string());
+        }
+
+        // A connect error means the server was unreachable (connection
+        // refused, DNS failure, etc.) — distinct from a timeout or a server
+        // that returned an error status.
+        if err.is_connect() {
+            parts.push("connection failed".to_string());
+        }
+
+        // If we somehow got a status code back (e.g. from a redirect or the
+        // response was received but the body read failed), include it.
+        if let Some(status) = err.status() {
+            parts.push(format!("status {}", status.as_u16()));
+        }
+
+        // Walk the cause chain to get the real root cause (e.g. "dns error:
+        // failed to lookup address information", "connection refused", etc.).
+        // reqwest::Error implements std::error::Error, so `source()` gives us
+        // the next link in the chain.
+        let mut chain_sources: Vec<String> = Vec::new();
+        let mut source: Option<&dyn StdError> = err.source();
+        while let Some(s) = source {
+            let display = format!("{s}");
+            // Avoid duplicate entries in the chain
+            if !chain_sources.contains(&display) {
+                chain_sources.push(display);
+            }
+            source = s.source();
+        }
+
+        // Build the final message: "error sending request for url (X):
+        // [timeout reached] [connection failed] [status N]: cause1: cause2"
+        let mut message = format!("error sending request for url ({url})");
+
+        if !parts.is_empty() {
+            message.push_str(": ");
+            message.push_str(&parts.join(", "));
+        }
+
+        if !chain_sources.is_empty() {
+            message.push_str(": ");
+            message.push_str(&chain_sources.join(": "));
+        }
+
+        HarnessError::Http { message }
+    }
 }
 
 /// HTTP client for the Hermes Agent API.
@@ -217,10 +289,14 @@ impl HermesClient {
             .bearer_auth(&self.api_key)
             .json(&request)
             .send()
-            .await?;
+            .await
+            .map_err(|e| HarnessError::from_reqwest_error(e, &url))?;
 
         let status = response.status();
-        let raw_response = response.text().await?;
+        let raw_response = response
+            .text()
+            .await
+            .map_err(|e| HarnessError::from_reqwest_error(e, &url))?;
 
         if !status.is_success() {
             let error_path = error_path.unwrap_or(Path::new(".error"));
@@ -469,5 +545,38 @@ mod tests {
             "file not found",
         ));
         assert!(format!("{io_err}").contains("file not found"));
+    }
+
+    #[test]
+    fn test_harness_error_http_includes_url() {
+        let err = HarnessError::Http {
+            message: "error sending request for url (http://10.200.0.3:8500/v1/responses): timeout reached: operation timed out".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("HTTP request failed"));
+        assert!(display.contains("http://10.200.0.3:8500/v1/responses"));
+        assert!(display.contains("timeout reached"));
+        assert!(display.contains("operation timed out"));
+    }
+
+    #[test]
+    fn test_harness_error_http_connection_refused() {
+        let err = HarnessError::Http {
+            message: "error sending request for url (http://localhost:8500/v1/responses): connection failed: Connection refused (os error 111)".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("connection failed"));
+        assert!(display.contains("Connection refused"));
+    }
+
+    #[test]
+    fn test_harness_error_http_minimal() {
+        // Even with no extra details, the message should still be meaningful.
+        let err = HarnessError::Http {
+            message: "error sending request for url (http://example.com/v1/responses)".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("HTTP request failed"));
+        assert!(display.contains("http://example.com/v1/responses"));
     }
 }

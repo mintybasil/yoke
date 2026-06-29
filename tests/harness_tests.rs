@@ -277,3 +277,24 @@ fn test_hermes_response_skips_non_message_items() {
     let response: HermesResponse = serde_json::from_str(json).unwrap();
     assert!(response.extract_text().is_empty());
 }
+
+/// Verify that HarnessError::Http includes the URL and cause details.
+///
+/// Regression test for issue #225: the error message was just
+/// "HTTP request failed: error sending request for url (...)" with no
+/// indication of *why* the request failed (timeout, connection refused,
+/// DNS error, etc.). The new structured variant must include the URL,
+/// timeout/connect status, and the cause chain.
+#[test]
+fn test_harness_http_error_includes_details() {
+    use yoke::harness::HarnessError;
+
+    let err = HarnessError::Http {
+        message: "error sending request for url (http://10.200.0.3:8500/v1/responses): timeout reached: operation timed out".to_string(),
+    };
+    let display = format!("{err}");
+    assert!(display.contains("HTTP request failed"));
+    assert!(display.contains("http://10.200.0.3:8500/v1/responses"));
+    assert!(display.contains("timeout reached"));
+    assert!(display.contains("operation timed out"));
+}
