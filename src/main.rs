@@ -8,8 +8,7 @@ use tokio::sync::watch;
 
 use yoke::cli;
 use yoke::cli::{Command, WebhooksSubcommand};
-use yoke::config;
-use yoke::config::Config;
+use yoke::config::{Config, resolve_agents, validate_env_vars};
 use yoke::reload;
 use yoke::reload::WorkflowState;
 use yoke::server;
@@ -58,6 +57,42 @@ pub fn setup_signal_handler(shutdown_tx: watch::Sender<bool>) -> tokio::task::Jo
             }
         }
     })
+}
+
+/// Wrap an error with additional context, preserving the full error chain.
+///
+/// The `{e:#}` format in `main()` will print:
+/// `context: <original error Display>`
+/// followed by each `source()` in turn, joined by `: `.
+fn context<T, E>(context: &str, result: Result<T, E>) -> Result<T, ContextError>
+where
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    result.map_err(|e| ContextError {
+        context: context.to_string(),
+        source: e.into(),
+    })
+}
+
+/// A wrapper that prepends a context string to any error,
+/// preserving the original as its `source()` so that `{e:#}` prints
+/// the full chain: `context: original error: source: ...`
+#[derive(Debug)]
+struct ContextError {
+    context: String,
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl std::fmt::Display for ContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.context, self.source)
+    }
+}
+
+impl std::error::Error for ContextError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
 }
 
 /// Handle the `webhooks` subcommand.
@@ -130,7 +165,7 @@ async fn main() {
     if let Err(e) = run().await {
         // {e:#} on a boxed Error prints the full Display chain, surfacing
         // every layer of context so startup failures are easy to diagnose.
-        eprintln!("error: {e:#}");
+        eprintln!("Yoke failed to start: {e:#}");
         std::process::exit(1);
     }
 }
@@ -145,14 +180,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // If a subcommand was provided, handle it and exit
     if let Some(Command::Webhooks(webhooks_cmd)) = &args.command {
-        let config = Config::load(&args.config)?;
+        let config = context("failed to load config", Config::load(&args.config))?;
 
-        handle_webhooks_command(&config, &webhooks_cmd.command, &args.workflows).await?;
+        context(
+            "webhooks command failed",
+            handle_webhooks_command(&config, &webhooks_cmd.command, &args.workflows).await,
+        )?;
         return Ok(());
     }
 
     // Default behavior: start the server
-    let mut config = Config::load(&args.config)?;
+    let mut config = context("failed to load config", Config::load(&args.config))?;
 
     // Apply CLI overrides for server settings
     if let Some(host) = args.host {
@@ -166,16 +204,31 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Validate required environment variables before starting
-    config::validate_env_vars(&config.platform)?;
+    context(
+        "environment variable validation failed",
+        validate_env_vars(&config.platform),
+    )?;
 
-    let workflows = workflow::load_workflows(&args.workflows)?;
+    let workflows = context(
+        "failed to load workflows",
+        workflow::load_workflows(&args.workflows),
+    )?;
 
     // Validate that all agents referenced in workflow steps exist in config
     let workflow_refs: Vec<workflow::Workflow> = workflows.iter().map(|(_, w)| w.clone()).collect();
-    config::resolve_agents(&config, &workflow_refs)?;
+    context(
+        "agent resolution failed",
+        resolve_agents(&config, &workflow_refs),
+    )?;
 
     // Validate that all trigger types match the configured platform
-    workflow::validate_triggers(&config.platform, &workflows)?;
+    if let Err(msg) = workflow::validate_triggers(&config.platform, &workflows) {
+        return Err(ContextError {
+            context: "trigger validation failed".to_string(),
+            source: Box::new(std::io::Error::other(msg)),
+        }
+        .into());
+    }
 
     tracing::info!(
         workflow_count = workflows.len(),
