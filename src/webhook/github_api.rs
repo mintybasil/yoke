@@ -10,7 +10,7 @@ use thiserror::Error;
 /// with `": "`, producing a single string that surfaces the root cause
 /// (e.g. DNS failure, connection refused) rather than just the top-level
 /// message (which for `reqwest::Error` is typically only "error sending
-/// request for url (...)")
+/// request for url (...)").
 fn format_error_chain(err: &dyn std::error::Error) -> String {
     let mut parts = vec![err.to_string()];
     let mut source = err.source();
@@ -498,7 +498,6 @@ impl GitHubClient {
             }
 
             next_url = Self::parse_next_link(response.headers());
-
             let page: Vec<WebhookDelivery> = response.json().await?;
             all_deliveries.extend(page);
         }
@@ -1517,3 +1516,4 @@ mod tests {
             other => panic!("expected RequestError, got: {other:?}"),
         }
     }
+}
