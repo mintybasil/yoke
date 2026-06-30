@@ -10,7 +10,7 @@ use thiserror::Error;
 /// with `": "`, producing a single string that surfaces the root cause
 /// (e.g. DNS failure, connection refused) rather than just the top-level
 /// message (which for `reqwest::Error` is typically only "error sending
-/// request for url (...)").
+/// request for url (...)")
 fn format_error_chain(err: &dyn std::error::Error) -> String {
     let mut parts = vec![err.to_string()];
     let mut source = err.source();
@@ -256,19 +256,28 @@ impl GitHubClient {
     }
 
     /// Build the authentication + user-agent headers that every request needs.
-    fn auth_headers(&self) -> reqwest::header::HeaderMap {
+    ///
+    /// Returns an error if the token cannot be parsed into a valid HTTP
+    /// header value (e.g. contains control characters).
+    fn auth_headers(&self) -> Result<reqwest::header::HeaderMap, GitHubError> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::AUTHORIZATION,
             format!("Bearer {}", self.token)
                 .parse()
-                .expect("header value should be valid"),
+                .map_err(|e| {
+                    GitHubError::ApiError(format!("invalid token for Authorization header: {e}"))
+                })?,
         );
+        // "yoke-agent" is a static ASCII string literal — it always parses
+        // successfully. Use unwrap_or_else with a fallback for robustness.
         headers.insert(
             reqwest::header::USER_AGENT,
-            "yoke-agent".parse().expect("header value should be valid"),
+            "yoke-agent"
+                .parse()
+                .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("yoke-agent")),
         );
-        headers
+        Ok(headers)
     }
 
     /// Map an HTTP status code and response body to a [`GitHubError`].
@@ -317,7 +326,7 @@ impl GitHubClient {
             let response = self
                 .client
                 .get(&url)
-                .headers(self.auth_headers())
+                .headers(self.auth_headers()?)
                 .send()
                 .await?;
 
@@ -358,7 +367,7 @@ impl GitHubClient {
         let response = self
             .client
             .post(&url)
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .json(config)
             .send()
             .await?;
@@ -402,7 +411,7 @@ impl GitHubClient {
         let response = self
             .client
             .patch(&url)
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .json(config)
             .send()
             .await?;
@@ -437,7 +446,7 @@ impl GitHubClient {
         let response = self
             .client
             .delete(&url)
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .send()
             .await?;
 
@@ -475,7 +484,7 @@ impl GitHubClient {
             let response = self
                 .client
                 .get(&url)
-                .headers(self.auth_headers())
+                .headers(self.auth_headers()?)
                 .send()
                 .await?;
 
@@ -489,6 +498,7 @@ impl GitHubClient {
             }
 
             next_url = Self::parse_next_link(response.headers());
+
             let page: Vec<WebhookDelivery> = response.json().await?;
             all_deliveries.extend(page);
         }
@@ -512,7 +522,7 @@ impl GitHubClient {
         let response = self
             .client
             .get(&url)
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .send()
             .await?;
 
@@ -547,7 +557,7 @@ impl GitHubClient {
         let response = self
             .client
             .post(&url)
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .send()
             .await?;
 
@@ -585,7 +595,7 @@ impl GitHubClient {
         let response = self
             .client
             .get(&url)
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .send()
             .await?;
 
@@ -622,7 +632,7 @@ impl GitHubClient {
         let response = self
             .client
             .get(&url)
-            .headers(self.auth_headers())
+            .headers(self.auth_headers()?)
             .send()
             .await?;
 
@@ -697,6 +707,27 @@ impl GitHubClient {
 mod tests {
     use super::*;
     use mockito::Server;
+
+    // -- auth_headers tests ---------------------------------------------------
+
+    #[test]
+    fn test_auth_headers_with_invalid_token_returns_error() {
+        // A token with a control character (newline) is invalid for HTTP
+        // header values and should return an error, not panic.
+        let client = GitHubClient::new("invalid\ntoken".to_string(), None);
+        let result = client.auth_headers();
+        assert!(result.is_err(), "auth_headers should return Err for invalid token");
+    }
+
+    #[test]
+    fn test_auth_headers_with_valid_token_returns_ok() {
+        let client = GitHubClient::new("ghp_valid_token_123".to_string(), None);
+        let result = client.auth_headers();
+        assert!(result.is_ok(), "auth_headers should return Ok for valid token");
+        let headers = result.unwrap();
+        assert!(headers.contains(reqwest::header::AUTHORIZATION));
+        assert!(headers.contains(reqwest::header::USER_AGENT));
+    }
 
     #[tokio::test]
     async fn test_list_webhooks_success() {
@@ -1486,4 +1517,3 @@ mod tests {
             other => panic!("expected RequestError, got: {other:?}"),
         }
     }
-}
