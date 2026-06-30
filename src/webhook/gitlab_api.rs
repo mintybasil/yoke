@@ -646,27 +646,21 @@ mod tests {
 
     #[test]
     fn test_auth_headers_with_invalid_token_returns_error() {
-        // A token with a control character (tab) is invalid for HTTP
+        // A token with a control character (newline) is invalid for HTTP
         // header values and should return an error, not panic.
-        let client = GitLabClient::new("invalid\ttoken".to_string(), None);
+        let client = GitLabClient::new("invalid\ntoken".to_string(), None);
         let result = client.auth_headers();
-        assert!(
-            result.is_err(),
-            "auth_headers should return Err for invalid token"
-        );
+        assert!(result.is_err(), "auth_headers should return Err for invalid token");
     }
 
     #[test]
     fn test_auth_headers_with_valid_token_returns_ok() {
         let client = GitLabClient::new("glpat-valid-token-123".to_string(), None);
         let result = client.auth_headers();
-        assert!(
-            result.is_ok(),
-            "auth_headers should return Ok for valid token"
-        );
+        assert!(result.is_ok(), "auth_headers should return Ok for valid token");
         let headers = result.unwrap();
-        assert!(headers.contains_key("PRIVATE-TOKEN"));
-        assert!(headers.contains_key(reqwest::header::USER_AGENT));
+        assert!(headers.contains("PRIVATE-TOKEN"));
+        assert!(headers.contains(reqwest::header::USER_AGENT));
     }
 
     // -- create_webhook tests -------------------------------------------------
