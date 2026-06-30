@@ -263,11 +263,9 @@ impl GitHubClient {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", self.token)
-                .parse()
-                .map_err(|e| {
-                    GitHubError::ApiError(format!("invalid token for Authorization header: {e}"))
-                })?,
+            format!("Bearer {}", self.token).parse().map_err(|e| {
+                GitHubError::ApiError(format!("invalid token for Authorization header: {e}"))
+            })?,
         );
         // "yoke-agent" is a static ASCII string literal — it always parses
         // successfully. Use unwrap_or_else with a fallback for robustness.
@@ -715,14 +713,20 @@ mod tests {
         // header values and should return an error, not panic.
         let client = GitHubClient::new("invalid\ntoken".to_string(), None);
         let result = client.auth_headers();
-        assert!(result.is_err(), "auth_headers should return Err for invalid token");
+        assert!(
+            result.is_err(),
+            "auth_headers should return Err for invalid token"
+        );
     }
 
     #[test]
     fn test_auth_headers_with_valid_token_returns_ok() {
         let client = GitHubClient::new("ghp_valid_token_123".to_string(), None);
         let result = client.auth_headers();
-        assert!(result.is_ok(), "auth_headers should return Ok for valid token");
+        assert!(
+            result.is_ok(),
+            "auth_headers should return Ok for valid token"
+        );
         let headers = result.unwrap();
         assert!(headers.contains(reqwest::header::AUTHORIZATION));
         assert!(headers.contains(reqwest::header::USER_AGENT));

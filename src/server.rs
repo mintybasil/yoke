@@ -241,11 +241,7 @@ pub async fn run_server(
         ))
     })?;
     let state = AppState {
-        webhook_handler: webhook::WebhookHandler::new(
-            platform.clone(),
-            webhook_secret,
-            tx,
-        ),
+        webhook_handler: webhook::WebhookHandler::new(platform.clone(), webhook_secret, tx),
         dispatcher: dispatcher.clone(),
     };
 

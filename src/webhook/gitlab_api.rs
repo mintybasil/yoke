@@ -650,14 +650,20 @@ mod tests {
         // header values and should return an error, not panic.
         let client = GitLabClient::new("invalid\ttoken".to_string(), None);
         let result = client.auth_headers();
-        assert!(result.is_err(), "auth_headers should return Err for invalid token");
+        assert!(
+            result.is_err(),
+            "auth_headers should return Err for invalid token"
+        );
     }
 
     #[test]
     fn test_auth_headers_with_valid_token_returns_ok() {
         let client = GitLabClient::new("glpat-valid-token-123".to_string(), None);
         let result = client.auth_headers();
-        assert!(result.is_ok(), "auth_headers should return Ok for valid token");
+        assert!(
+            result.is_ok(),
+            "auth_headers should return Ok for valid token"
+        );
         let headers = result.unwrap();
         assert!(headers.contains("PRIVATE-TOKEN"));
         assert!(headers.contains(reqwest::header::USER_AGENT));
