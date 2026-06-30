@@ -140,7 +140,7 @@ pub struct WebhookConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub events: Option<Vec<String>>,
+    pub events: Option<Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ impl GitLabClient {
     /// Map an HTTP status code to a [`GitLabError`].
     fn map_status(status: reqwest::StatusCode) -> GitLabError {
         match status {
-            reqwest::StatusCode::UNAUTHORIZED=*** GitLabError::Unauthorized,
+            reqwest::StatusCode::UNAUTHORIZED => GitLabError::Unauthorized,
             reqwest::StatusCode::NOT_FOUND => GitLabError::NotFound,
             other => GitLabError::ApiError(format!("Unexpected status: {other}")),
         }
