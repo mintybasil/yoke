@@ -728,8 +728,8 @@ mod tests {
             "auth_headers should return Ok for valid token"
         );
         let headers = result.unwrap();
-        assert!(headers.contains(reqwest::header::AUTHORIZATION));
-        assert!(headers.contains(reqwest::header::USER_AGENT));
+        assert!(headers.contains_key(reqwest::header::AUTHORIZATION));
+        assert!(headers.contains_key(reqwest::header::USER_AGENT));
     }
 
     #[tokio::test]

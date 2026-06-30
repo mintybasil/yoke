@@ -665,8 +665,8 @@ mod tests {
             "auth_headers should return Ok for valid token"
         );
         let headers = result.unwrap();
-        assert!(headers.contains("PRIVATE-TOKEN"));
-        assert!(headers.contains(reqwest::header::USER_AGENT));
+        assert!(headers.contains_key("PRIVATE-TOKEN"));
+        assert!(headers.contains_key(reqwest::header::USER_AGENT));
     }
 
     // -- create_webhook tests -------------------------------------------------
