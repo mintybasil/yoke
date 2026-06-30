@@ -21,13 +21,21 @@ use yoke::workflow;
 /// trigger graceful shutdown across all components (HTTP server, dispatcher).
 /// On a second signal, forces an immediate `process::exit(1)`.
 ///
-/// Returns a `JoinHandle` for the spawned signal handler task.
-pub fn setup_signal_handler(shutdown_tx: watch::Sender<bool>) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
-        let mut sigterm =
-            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+/// Signal handler installation happens outside `tokio::spawn` so that
+/// installation errors are returned to the caller rather than swallowed
+/// by the spawned task.
+///
+/// Returns a `JoinHandle` for the spawned signal handler task, or an error
+/// if signal handler installation fails.
+pub fn setup_signal_handler(
+    shutdown_tx: watch::Sender<bool>,
+) -> Result<tokio::task::JoinHandle<()>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut sigint = signal(SignalKind::interrupt())
+        .map_err(|e| format!("failed to install SIGINT handler: {e}"))?;
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| format!("failed to install SIGTERM handler: {e}"))?;
 
+    Ok(tokio::spawn(async move {
         // Wait for the first signal
         tokio::select! {
             _ = sigint.recv() => {
@@ -56,7 +64,7 @@ pub fn setup_signal_handler(shutdown_tx: watch::Sender<bool>) -> tokio::task::Jo
                 tracing::info!("Shutdown timeout reached in signal handler");
             }
         }
-    })
+    }))
 }
 
 /// Wrap an error with additional context, preserving the full error chain.
@@ -151,7 +159,10 @@ async fn main() {
     // ANSI color codes are disabled when stderr is not a TTY (e.g. when run under
     // Ansible, systemd, or piped to a file) to keep log output clean.
     let timer = tracing_subscriber::fmt::time::LocalTime::new(
-        time::format_description::parse("[hour]:[minute]:[second]").expect("valid time format"),
+        time::format_description::parse("[hour]:[minute]:[second]").unwrap_or_else(|e| {
+            eprintln!("Failed to parse time format: {e}. This is a bug; please report it.");
+            std::process::exit(1);
+        }),
     );
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -239,7 +250,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Set up SIGINT/SIGTERM signal handler
-    let _signal_handler = setup_signal_handler(shutdown_tx);
+    let _signal_handler = setup_signal_handler(shutdown_tx)?;
     // Create the global workflow state with ArcSwap for lock-free atomic updates
     let state = Arc::new(WorkflowState::new(workflows));
 
@@ -303,4 +314,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     server::run_server(&config, drain_timeout, shutdown_rx, state).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::watch;
+
+    #[tokio::test]
+    async fn test_setup_signal_handler_returns_ok() {
+        let (tx, _rx) = watch::channel(false);
+        let handle = setup_signal_handler(tx);
+        assert!(handle.is_ok());
+        // Abort the spawned task to clean up
+        if let Ok(h) = handle {
+            h.abort();
+        }
+    }
 }
