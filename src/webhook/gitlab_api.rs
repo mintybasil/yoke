@@ -99,7 +99,7 @@ pub struct ProjectEvent {
     pub target_id: Option<u64>,
 }
 
-/// Push-specific data included in project events with `action_name == "pushed_to".
+/// Push-specific data included in project events with `action_name == "pushed_to"`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectPushData {
     /// The full SHA of the pushed commit.
@@ -510,7 +510,7 @@ impl ProjectEvent {
     /// `None` if the event type does not map to any known trigger.
     ///
     /// The mapping follows the same logic as the live webhook handler in
-    /// [`crate::webhook::gitlab::make_to_trigger_event`]:
+    /// [`crate::webhook::gitlab::map_to_trigger_event`]:
     ///
     /// | `action_name`            | `target_type`     | `TriggerType`                           |
     /// |--------------------------|-------------------|-----------------------------------------|
