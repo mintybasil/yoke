@@ -91,6 +91,16 @@ cargo run -- --config /path/to/config.toml --workflows /path/to/workflows
 
 Yoke listens for webhook events on `http://{host}:{port}/webhook`. The `webhook_host` setting determines the hostname used in webhook registration URLs, which may differ from the bind address (`host`), for example, binding to `0.0.0.0` locally while advertising `yoke.example.com` in webhook URLs. 
 
+### 6. Agent Health Check
+
+On startup, Yoke performs a connectivity check for all configured agents by querying each agent's `/health` endpoint. The agent is expected to return a JSON response like:
+
+```json
+{"status": "ok", "platform": "hermes-agent", "version": "0.17.0"}
+```
+
+If `status` is `ok` for all agents, Yoke proceeds with startup. If any agent is unreachable, returns a non-200 status code, or reports a status other than `ok`, Yoke reports an error and exits without starting the server. This helps surface connectivity issues early before any webhook events are processed.
+
 ## Configuration
 
 Yoke reads configuration from a `config.toml` file. The default path is `config.toml` in the current directory; override with `--config`.
@@ -301,7 +311,7 @@ Creates or updates webhooks on all configured repositories, subscribing to the e
 yoke --config config.toml webhooks remove
 ```
 
-Removes all Yoke webhooks (matched by URL) from each configured repository.
+Removes all Yoke webhooks (matched by URL) from each repository.
 
 ## Secure Webhook Exposure with Tailscale Funnel
 
