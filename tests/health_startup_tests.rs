@@ -6,15 +6,15 @@
 use url::Url;
 
 use yoke::config::AgentConfig;
-use yoke::harness::{HealthCheckError, check_agent_health};
+use yoke::harness::{check_agent_health, HealthCheckError};
 
 /// Verify that health checks pass for multiple healthy agents.
 #[tokio::test]
 async fn test_multi_agent_all_healthy() {
-    use mockito::ServerGuard;
+    use mockito::Server;
 
-    let mut server_a = ServerGuard::new_async().await;
-    let mut server_b = ServerGuard::new_async().await;
+    let mut server_a = Server::new_async().await;
+    let mut server_b = Server::new_async().await;
 
     let mock_a = server_a
         .mock("GET", "/health")
@@ -52,10 +52,10 @@ async fn test_multi_agent_all_healthy() {
 /// Verify that health check fails when one agent out of many is unhealthy.
 #[tokio::test]
 async fn test_multi_agent_one_unhealthy() {
-    use mockito::ServerGuard;
+    use mockito::Server;
 
-    let mut server_a = ServerGuard::new_async().await;
-    let mut server_b = ServerGuard::new_async().await;
+    let mut server_a = Server::new_async().await;
+    let mut server_b = Server::new_async().await;
 
     let mock_a = server_a
         .mock("GET", "/health")
@@ -104,9 +104,9 @@ async fn test_multi_agent_one_unhealthy() {
 /// not "ok".
 #[tokio::test]
 async fn test_multi_agent_status_not_ok() {
-    use mockito::ServerGuard;
+    use mockito::Server;
 
-    let mut server = ServerGuard::new_async().await;
+    let mut server = Server::new_async().await;
     let mock = server
         .mock("GET", "/health")
         .with_status(200)
@@ -135,9 +135,9 @@ async fn test_multi_agent_status_not_ok() {
 /// Verify that health check fails when an agent returns invalid JSON.
 #[tokio::test]
 async fn test_multi_agent_invalid_json() {
-    use mockito::ServerGuard;
+    use mockito::Server;
 
-    let mut server = ServerGuard::new_async().await;
+    let mut server = Server::new_async().await;
     let mock = server
         .mock("GET", "/health")
         .with_status(200)
@@ -185,9 +185,9 @@ async fn test_multi_agent_connection_refused() {
 /// that the mock server receives the request at `/health`.
 #[tokio::test]
 async fn test_health_check_url_construction() {
-    use mockito::ServerGuard;
+    use mockito::Server;
 
-    let mut server = ServerGuard::new_async().await;
+    let mut server = Server::new_async().await;
     let mock = server
         .mock("GET", "/health")
         .with_status(200)
