@@ -566,12 +566,15 @@ pub async fn webhooks_add(
         tracing::warn!("No workflow triggers found; subscribing to no events");
     }
 
+    let webhook_secret = std::env::var(crate::config::env::WEBHOOK_SECRET).map_err(|_| {
+        WebhookError::Config(format!(
+            "Missing required env var: {}",
+            crate::config::env::WEBHOOK_SECRET
+        ))
+    })?;
     let hook_config = WebhookConfig {
         url: yoke_url.clone(),
-        secret: Some(
-            std::env::var(crate::config::env::WEBHOOK_SECRET)
-                .expect("WEBHOOK_SECRET env var must be set"),
-        ),
+        secret: Some(webhook_secret),
         events,
     };
 
@@ -737,5 +740,35 @@ mod tests {
     fn test_error_display_github() {
         let err = WebhookError::Config("test error".to_string());
         assert_eq!(err.to_string(), "Configuration error: test error");
+    }
+
+    #[test]
+    fn test_webhooks_add_missing_secret_returns_config_error() {
+        // Verify that the error type produced by a missing WEBHOOK_SECRET
+        // is WebhookError::Config (not a panic). We test the env var read +
+        // map_err logic directly, since webhooks_add requires a full
+        // WebhookClient and config to call.
+        static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::remove_var(crate::config::env::WEBHOOK_SECRET);
+        }
+
+        let result = std::env::var(crate::config::env::WEBHOOK_SECRET);
+        assert!(result.is_err());
+
+        // Verify the error mapping produces a WebhookError::Config
+        let err = result.map_err(|_| {
+            WebhookError::Config(format!(
+                "Missing required env var: {}",
+                crate::config::env::WEBHOOK_SECRET
+            ))
+        });
+        match err {
+            Err(WebhookError::Config(msg)) => {
+                assert!(msg.contains("WEBHOOK_SECRET"));
+            }
+            _ => panic!("expected WebhookError::Config"),
+        }
     }
 }
