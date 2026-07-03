@@ -388,25 +388,20 @@ pub enum HealthCheckError {
 pub async fn check_agent_health(
     agent: &crate::config::AgentConfig,
 ) -> Result<HealthResponse, HealthCheckError> {
-    let url = format!("{}/health", agent.base_url.as_str().trim_end_matches('/'));
+    let url = format!("{}/health", agent.base_url.as_str().trim_end_matches('/'))
 
-    let response = reqwest::get(&url)
-        .await
-        .map_err(|e| HealthCheckError::Http {
-            agent: agent.name.clone(),
-            url: url.clone(),
-            message: format!("{e}"),
-        })?;
+    let response = reqwest::get(&url).await.map_err(|e| HealthCheckError::Http {
+        agent: agent.name.clone(),
+        url: url.clone(),
+        message: format!("{e}"),
+    })?;
 
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| HealthCheckError::Http {
-            agent: agent.name.clone(),
-            url: url.clone(),
-            message: format!("Failed to read response body: {e}"),
-        })?;
+    let body = response.text().await.map_err(|e| HealthCheckError::Http {
+        agent: agent.name.clone(),
+        url: url.clone(),
+        message: format!("Failed to read response body: {e}"),
+    })?;
 
     if !status.is_success() {
         return Err(HealthCheckError::BadStatus {
@@ -420,7 +415,7 @@ pub async fn check_agent_health(
     let health: HealthResponse =
         serde_json::from_str(&body).map_err(|e| HealthCheckError::Parse {
             agent: agent.name.clone(),
-            url,
+            url: url.clone(),
             message: format!("{e}"),
         })?;
 
