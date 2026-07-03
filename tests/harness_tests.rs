@@ -341,7 +341,7 @@ async fn test_health_check_bad_status() {
     use mockito::ServerGuard;
     use url::Url;
     use yoke::config::AgentConfig;
-    use yoke::harness::{check_agent_health, HealthCheckError};
+    use yoke::harness::{HealthCheckError, check_agent_health};
 
     let mut server = ServerGuard::new_async().await;
     let mock = server
@@ -376,7 +376,7 @@ async fn test_health_check_bad_status() {
 async fn test_health_check_http_error() {
     use url::Url;
     use yoke::config::AgentConfig;
-    use yoke::harness::{check_agent_health, HealthCheckError};
+    use yoke::harness::{HealthCheckError, check_agent_health};
 
     // Use a port that's almost certainly not listening
     let url = Url::parse("http://127.0.0.1:1").unwrap();
@@ -402,7 +402,7 @@ async fn test_health_check_parse_error() {
     use mockito::ServerGuard;
     use url::Url;
     use yoke::config::AgentConfig;
-    use yoke::harness::{check_agent_health, HealthCheckError};
+    use yoke::harness::{HealthCheckError, check_agent_health};
 
     let mut server = ServerGuard::new_async().await;
     let mock = server
@@ -437,7 +437,7 @@ async fn test_health_check_unhealthy_status() {
     use mockito::ServerGuard;
     use url::Url;
     use yoke::config::AgentConfig;
-    use yoke::harness::{check_agent_health, HealthCheckError};
+    use yoke::harness::{HealthCheckError, check_agent_health};
 
     let mut server = ServerGuard::new_async().await;
     let mock = server
@@ -491,7 +491,10 @@ async fn test_health_check_trailing_slash() {
     };
 
     let result = check_agent_health(&agent).await;
-    assert!(result.is_ok(), "expected health check to succeed with trailing slash");
+    assert!(
+        result.is_ok(),
+        "expected health check to succeed with trailing slash"
+    );
 
     mock.assert();
 }

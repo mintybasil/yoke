@@ -6,7 +6,7 @@
 use url::Url;
 
 use yoke::config::AgentConfig;
-use yoke::harness::{check_agent_health, HealthCheckError};
+use yoke::harness::{HealthCheckError, check_agent_health};
 
 /// Verify that health checks pass for multiple healthy agents.
 #[tokio::test]
