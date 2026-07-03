@@ -385,7 +385,9 @@ pub enum HealthCheckError {
 ///
 /// Returns `Ok(HealthResponse)` if the agent is healthy, or an error
 /// indicating the type of failure.
-pub async fn check_agent_health(agent: &crate::config::AgentConfig) -> Result<HealthResponse, HealthCheckError> {
+pub async fn check_agent_health(
+    agent: &crate::config::AgentConfig,
+) -> Result<HealthResponse, HealthCheckError> {
     let url = format!("{}/health", agent.base_url.as_str().trim_end_matches('/'));
 
     let response = reqwest::get(&url)
@@ -397,11 +399,14 @@ pub async fn check_agent_health(agent: &crate::config::AgentConfig) -> Result<He
         })?;
 
     let status = response.status();
-    let body = response.text().await.map_err(|e| HealthCheckError::Http {
-        agent: agent.name.clone(),
-        url: url.clone(),
-        message: format!("Failed to read response body: {e}"),
-    })?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| HealthCheckError::Http {
+            agent: agent.name.clone(),
+            url: url.clone(),
+            message: format!("Failed to read response body: {e}"),
+        })?;
 
     if !status.is_success() {
         return Err(HealthCheckError::BadStatus {
@@ -412,11 +417,12 @@ pub async fn check_agent_health(agent: &crate::config::AgentConfig) -> Result<He
         });
     }
 
-    let health: HealthResponse = serde_json::from_str(&body).map_err(|e| HealthCheckError::Parse {
-        agent: agent.name.clone(),
-        url,
-        message: format!("{e}"),
-    })?;
+    let health: HealthResponse =
+        serde_json::from_str(&body).map_err(|e| HealthCheckError::Parse {
+            agent: agent.name.clone(),
+            url,
+            message: format!("{e}"),
+        })?;
 
     if health.status != "ok" {
         return Err(HealthCheckError::BadStatus {
