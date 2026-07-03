@@ -9,6 +9,7 @@ use tokio::sync::watch;
 use yoke::cli;
 use yoke::cli::{Command, WebhooksSubcommand};
 use yoke::config::{Config, resolve_agents, validate_env_vars};
+use yoke::harness::check_agent_health;
 use yoke::reload;
 use yoke::reload::WorkflowState;
 use yoke::server;
@@ -239,6 +240,28 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             source: Box::new(std::io::Error::other(msg)),
         }
         .into());
+    }
+
+    // Perform agent health checks — verify each configured agent is reachable
+    // and reports a healthy status before starting the server.
+    for agent in &config.agents {
+        match check_agent_health(agent).await {
+            Ok(health) => {
+                tracing::info!(
+                    agent = %agent.name,
+                    platform = %health.platform,
+                    version = %health.version,
+                    "Agent health check passed"
+                );
+            }
+            Err(e) => {
+                return Err(ContextError {
+                    context: "agent health check failed".to_string(),
+                    source: Box::new(e),
+                }
+                .into());
+            }
+        }
     }
 
     tracing::info!(

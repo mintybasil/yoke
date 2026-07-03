@@ -298,3 +298,203 @@ fn test_harness_http_error_includes_details() {
     assert!(display.contains("timeout reached"));
     assert!(display.contains("operation timed out"));
 }
+
+// --- Agent health check tests ---
+
+/// Verify that `check_agent_health` succeeds when the agent returns a healthy
+/// response with `status: "ok"`.
+#[tokio::test]
+async fn test_health_check_all_healthy() {
+    use mockito::ServerGuard;
+    use url::Url;
+    use yoke::config::AgentConfig;
+    use yoke::harness::check_agent_health;
+
+    let mut server = ServerGuard::new_async().await;
+    let mock = server
+        .mock("GET", "/health")
+        .with_status(200)
+        .with_body(r#"{"status":"ok","platform":"hermes-agent","version":"0.17.0"}"#)
+        .create_async()
+        .await;
+
+    let url = Url::parse(&server.url()).unwrap();
+    let agent = AgentConfig {
+        name: "pm".to_string(),
+        base_url: url,
+    };
+
+    let result = check_agent_health(&agent).await;
+    assert!(result.is_ok(), "expected health check to succeed");
+    let health = result.unwrap();
+    assert_eq!(health.status, "ok");
+    assert_eq!(health.platform, "hermes-agent");
+    assert_eq!(health.version, "0.17.0");
+
+    mock.assert();
+}
+
+/// Verify that `check_agent_health` returns `BadStatus` when the agent
+/// returns a non-200 status code.
+#[tokio::test]
+async fn test_health_check_bad_status() {
+    use mockito::ServerGuard;
+    use url::Url;
+    use yoke::config::AgentConfig;
+    use yoke::harness::{HealthCheckError, check_agent_health};
+
+    let mut server = ServerGuard::new_async().await;
+    let mock = server
+        .mock("GET", "/health")
+        .with_status(503)
+        .with_body("Service Unavailable")
+        .create_async()
+        .await;
+
+    let url = Url::parse(&server.url()).unwrap();
+    let agent = AgentConfig {
+        name: "swe".to_string(),
+        base_url: url,
+    };
+
+    let result = check_agent_health(&agent).await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        HealthCheckError::BadStatus { agent, status, .. } => {
+            assert_eq!(agent, "swe");
+            assert_eq!(status, 503);
+        }
+        other => panic!("expected BadStatus, got: {other:?}"),
+    }
+
+    mock.assert();
+}
+
+/// Verify that `check_agent_health` returns `Http` when the agent is
+/// unreachable (connection refused).
+#[tokio::test]
+async fn test_health_check_http_error() {
+    use url::Url;
+    use yoke::config::AgentConfig;
+    use yoke::harness::{HealthCheckError, check_agent_health};
+
+    // Use a port that's almost certainly not listening
+    let url = Url::parse("http://127.0.0.1:1").unwrap();
+    let agent = AgentConfig {
+        name: "pm".to_string(),
+        base_url: url,
+    };
+
+    let result = check_agent_health(&agent).await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        HealthCheckError::Http { agent, .. } => {
+            assert_eq!(agent, "pm");
+        }
+        other => panic!("expected Http, got: {other:?}"),
+    }
+}
+
+/// Verify that `check_agent_health` returns `Parse` when the agent
+/// returns a 200 response with an unparseable body.
+#[tokio::test]
+async fn test_health_check_parse_error() {
+    use mockito::ServerGuard;
+    use url::Url;
+    use yoke::config::AgentConfig;
+    use yoke::harness::{HealthCheckError, check_agent_health};
+
+    let mut server = ServerGuard::new_async().await;
+    let mock = server
+        .mock("GET", "/health")
+        .with_status(200)
+        .with_body("not json at all")
+        .create_async()
+        .await;
+
+    let url = Url::parse(&server.url()).unwrap();
+    let agent = AgentConfig {
+        name: "reviewer".to_string(),
+        base_url: url,
+    };
+
+    let result = check_agent_health(&agent).await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        HealthCheckError::Parse { agent, .. } => {
+            assert_eq!(agent, "reviewer");
+        }
+        other => panic!("expected Parse, got: {other:?}"),
+    }
+
+    mock.assert();
+}
+
+/// Verify that `check_agent_health` returns `BadStatus` when the agent
+/// returns a 200 response but with `status: "unhealthy"`.
+#[tokio::test]
+async fn test_health_check_unhealthy_status() {
+    use mockito::ServerGuard;
+    use url::Url;
+    use yoke::config::AgentConfig;
+    use yoke::harness::{HealthCheckError, check_agent_health};
+
+    let mut server = ServerGuard::new_async().await;
+    let mock = server
+        .mock("GET", "/health")
+        .with_status(200)
+        .with_body(r#"{"status":"unhealthy","platform":"hermes-agent","version":"0.17.0"}"#)
+        .create_async()
+        .await;
+
+    let url = Url::parse(&server.url()).unwrap();
+    let agent = AgentConfig {
+        name: "pm".to_string(),
+        base_url: url,
+    };
+
+    let result = check_agent_health(&agent).await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        HealthCheckError::BadStatus { agent, body, .. } => {
+            assert_eq!(agent, "pm");
+            assert!(body.contains("unhealthy"));
+        }
+        other => panic!("expected BadStatus, got: {other:?}"),
+    }
+
+    mock.assert();
+}
+
+/// Verify that `check_agent_health` works correctly when the base_url
+/// has a trailing slash.
+#[tokio::test]
+async fn test_health_check_trailing_slash() {
+    use mockito::ServerGuard;
+    use url::Url;
+    use yoke::config::AgentConfig;
+    use yoke::harness::check_agent_health;
+
+    let mut server = ServerGuard::new_async().await;
+    let mock = server
+        .mock("GET", "/health")
+        .with_status(200)
+        .with_body(r#"{"status":"ok","platform":"hermes-agent","version":"0.17.0"}"#)
+        .create_async()
+        .await;
+
+    // Note: Url::parse normalizes trailing slashes, but test anyway
+    let url = Url::parse(&format!("{}/", server.url())).unwrap();
+    let agent = AgentConfig {
+        name: "pm".to_string(),
+        base_url: url,
+    };
+
+    let result = check_agent_health(&agent).await;
+    assert!(
+        result.is_ok(),
+        "expected health check to succeed with trailing slash"
+    );
+
+    mock.assert();
+}
