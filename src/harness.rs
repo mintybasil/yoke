@@ -325,6 +325,111 @@ impl HermesClient {
     }
 }
 
+/// Response from the Hermes Agent `/health` endpoint.
+///
+/// The `/health` endpoint returns a JSON object with the agent's status,
+/// platform identifier, and version. This struct is used by the startup
+/// health check to verify that each configured agent is reachable and
+/// reports a healthy status.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HealthResponse {
+    /// The agent's health status (e.g. `"ok"`).
+    pub status: String,
+    /// The platform identifier (e.g. `"hermes-agent"`).
+    pub platform: String,
+    /// The agent version string (e.g. `"0.17.0"`).
+    pub version: String,
+}
+
+/// Errors that can occur during an agent health check.
+#[derive(Debug, Error)]
+pub enum HealthCheckError {
+    /// HTTP request failed (network error, connection refused, timeout, etc.).
+    #[error("Failed to connect to agent '{agent}' at {url}: {message}")]
+    Http {
+        /// The agent name from the configuration.
+        agent: String,
+        /// The health endpoint URL that was queried.
+        url: String,
+        /// Human-readable description of the failure.
+        message: String,
+    },
+    /// The agent returned a non-200 status code.
+    #[error("Agent '{agent}' at {url} returned status {status}: {body}")]
+    BadStatus {
+        /// The agent name from the configuration.
+        agent: String,
+        /// The health endpoint URL that was queried.
+        url: String,
+        /// The HTTP status code returned.
+        status: u16,
+        /// The response body.
+        body: String,
+    },
+    /// The response body could not be parsed as a `HealthResponse`.
+    #[error("Agent '{agent}' at {url} returned unparseable health response: {message}")]
+    Parse {
+        /// The agent name from the configuration.
+        agent: String,
+        /// The health endpoint URL that was queried.
+        url: String,
+        /// The parse error message.
+        message: String,
+    },
+}
+
+/// Check the health of a single agent by querying its `/health` endpoint.
+///
+/// Sends a GET request to `{base_url}/health` and verifies that the response
+/// body contains a `HealthResponse` with `status: "ok"`.
+///
+/// Returns `Ok(HealthResponse)` if the agent is healthy, or an error
+/// indicating the type of failure.
+pub async fn check_agent_health(agent: &crate::config::AgentConfig) -> Result<HealthResponse, HealthCheckError> {
+    let url = format!("{}/health", agent.base_url.as_str().trim_end_matches('/'));
+
+    let response = reqwest::get(&url)
+        .await
+        .map_err(|e| HealthCheckError::Http {
+            agent: agent.name.clone(),
+            url: url.clone(),
+            message: format!("{e}"),
+        })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| HealthCheckError::Http {
+        agent: agent.name.clone(),
+        url: url.clone(),
+        message: format!("Failed to read response body: {e}"),
+    })?;
+
+    if !status.is_success() {
+        return Err(HealthCheckError::BadStatus {
+            agent: agent.name.clone(),
+            url,
+            status: status.as_u16(),
+            body,
+        });
+    }
+
+    let health: HealthResponse = serde_json::from_str(&body).map_err(|e| HealthCheckError::Parse {
+        agent: agent.name.clone(),
+        url,
+        message: format!("{e}"),
+    })?;
+
+    if health.status != "ok" {
+        return Err(HealthCheckError::BadStatus {
+            agent: agent.name.clone(),
+            url,
+            status: 200,
+            body: format!("status is '{}', expected 'ok'", health.status),
+        });
+    }
+
+    Ok(health)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,5 +683,47 @@ mod tests {
         let display = format!("{err}");
         assert!(display.contains("HTTP request failed"));
         assert!(display.contains("http://example.com/v1/responses"));
+    }
+
+    #[test]
+    fn test_health_check_error_http_display() {
+        let err = HealthCheckError::Http {
+            agent: "pm".to_string(),
+            url: "http://localhost:8000/health".to_string(),
+            message: "connection refused".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("Failed to connect to agent 'pm'"));
+        assert!(display.contains("http://localhost:8000/health"));
+        assert!(display.contains("connection refused"));
+    }
+
+    #[test]
+    fn test_health_check_error_bad_status_display() {
+        let err = HealthCheckError::BadStatus {
+            agent: "swe".to_string(),
+            url: "http://localhost:8001/health".to_string(),
+            status: 503,
+            body: "Service Unavailable".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("Agent 'swe'"));
+        assert!(display.contains("http://localhost:8001/health"));
+        assert!(display.contains("503"));
+        assert!(display.contains("Service Unavailable"));
+    }
+
+    #[test]
+    fn test_health_check_error_parse_display() {
+        let err = HealthCheckError::Parse {
+            agent: "reviewer".to_string(),
+            url: "http://localhost:8002/health".to_string(),
+            message: "expected value at line 1 column 1".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("Agent 'reviewer'"));
+        assert!(display.contains("http://localhost:8002/health"));
+        assert!(display.contains("unparseable health response"));
+        assert!(display.contains("expected value at line 1 column 1"));
     }
 }
